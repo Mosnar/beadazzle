@@ -5,6 +5,7 @@ import SwiftUI
 struct BeadazzleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = BeadStore()
+    private let updaterController = UpdaterController()
 
     var body: some Scene {
         WindowGroup("Beadazzle", id: "main") {
@@ -14,6 +15,10 @@ struct BeadazzleApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: updaterController.updater)
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button("New Bead") {
                     NotificationCenter.default.post(name: .newBeadRequested, object: nil)
@@ -72,6 +77,7 @@ struct BeadazzleApp: App {
         Settings {
             SettingsView()
                 .environment(store)
+                .environmentObject(updaterController)
         }
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.contentMinSize)
