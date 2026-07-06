@@ -5,7 +5,6 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsSidebar = true
     @State private var workspaceWidth: CGFloat = 0
-    @State private var creationDraft: IssueDraft?
     @State private var showingDeleteConfirmation = false
     @State private var closeBeadRequest: CloseBeadRequest?
     @State private var searchPresented = false
@@ -37,7 +36,7 @@ struct ContentView: View {
                 .disabled(store.projectURL == nil || store.isInitializingBeads || store.isLoading)
 
                 Button {
-                    beginCreatingBead()
+                    store.beginCreatingBead()
                 } label: {
                     Label("New Bead", systemImage: "plus")
                 }
@@ -81,7 +80,7 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .newBeadRequested)) { _ in
             if store.hasReadableProject {
-                beginCreatingBead()
+                store.beginCreatingBead()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openProjectRequested)) { _ in
@@ -95,13 +94,7 @@ struct ContentView: View {
                 searchPresented = true
             }
         }
-        .onChange(of: store.selectedIDs) {
-            if creationDraft != nil, !store.selectedIDs.isEmpty {
-                creationDraft = nil
-            }
-        }
         .onChange(of: store.projectURL) {
-            creationDraft = nil
             closeBeadRequest = nil
         }
     }
@@ -131,6 +124,15 @@ struct ContentView: View {
             )
         }
         .searchable(text: searchText, isPresented: $searchPresented, placement: .toolbar, prompt: "Search beads")
+        .background {
+            WorkspaceMouseNavigationBridge(
+                canGoBack: store.canGoBack,
+                canGoForward: store.canGoForward,
+                goBack: store.goBack,
+                goForward: store.goForward
+            )
+            .frame(width: 0, height: 0)
+        }
     }
 
     // Keep `IssueListView` in a single, stable structural slot (HSplitView[0]) across
@@ -153,7 +155,7 @@ struct ContentView: View {
             }
 
             if showsWorkspaceDetail {
-                DetailView(creationDraft: $creationDraft, requestClose: requestClose)
+                DetailView(requestClose: requestClose)
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             }
         }
@@ -161,7 +163,7 @@ struct ContentView: View {
     }
 
     private var showsWorkspaceDetail: Bool {
-        !store.selectedIDs.isEmpty || creationDraft != nil
+        !store.selectedIDs.isEmpty || store.creationDraft != nil
     }
 
     private var showsIssueListPane: Bool {
@@ -177,16 +179,8 @@ struct ContentView: View {
 
     private func openProject() {
         guard let url = PanelService.chooseProjectFolder() else { return }
-        creationDraft = nil
         closeBeadRequest = nil
         store.openProject(url)
-    }
-
-    private func beginCreatingBead() {
-        guard store.canCreateBead else { return }
-        guard creationDraft == nil else { return }
-        store.clearSelection()
-        creationDraft = store.blankDraft()
     }
 
     private func requestClose(_ issue: BeadIssue) {

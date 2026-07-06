@@ -2,7 +2,6 @@ import SwiftUI
 
 struct DetailView: View {
     @Environment(BeadStore.self) private var store: BeadStore
-    @Binding var creationDraft: IssueDraft?
     let requestClose: (BeadIssue) -> Void
     @State private var draft: IssueDraft?
     @State private var draftIssueID: String?
@@ -10,8 +9,10 @@ struct DetailView: View {
     @State private var isCreatingDraft = false
 
     var body: some View {
+        @Bindable var store = store
+
         Group {
-            if creationDraft != nil {
+            if store.creationDraft != nil {
                 IssueCreationPage(
                     draft: creationDraftBinding,
                     isCreating: isCreatingDraft,
@@ -39,21 +40,20 @@ struct DetailView: View {
             }
         }
         .focusedValue(\.beadSaveAction, activeSaveAction)
-        .focusedSceneValue(\.beadNavigationAction, activeNavigationAction)
     }
 
     private var creationDraftBinding: Binding<IssueDraft> {
         Binding(
-            get: { creationDraft ?? store.blankDraft() },
+            get: { store.creationDraft ?? store.blankDraft() },
             set: { nextDraft in
                 guard !suppressesCreationDraftUpdates, store.selectedIDs.isEmpty else { return }
-                creationDraft = nextDraft
+                store.creationDraft = nextDraft
             }
         )
     }
 
     private var activeSaveAction: BeadSaveAction? {
-        if let creationDraft {
+        if let creationDraft = store.creationDraft {
             guard !isCreatingDraft, canSave(creationDraft) else { return nil }
             return BeadSaveAction(title: "Create Bead", perform: createDraft)
         }
@@ -62,15 +62,6 @@ struct DetailView: View {
         let draft = activeDraft(for: issue)
         guard draft != IssueDraft(issue: issue), canSave(draft) else { return nil }
         return BeadSaveAction(title: "Save Bead", perform: { save(issue) })
-    }
-
-    private var activeNavigationAction: BeadNavigationAction? {
-        if creationDraft != nil {
-            return BeadNavigationAction(title: "Cancel New Bead", perform: cancelCreation)
-        }
-
-        guard !store.selectedIDs.isEmpty else { return nil }
-        return BeadNavigationAction(title: "Back to Beads", perform: store.clearSelection)
     }
 
     private func draftBinding(for issue: BeadIssue) -> Binding<IssueDraft> {
@@ -91,21 +82,25 @@ struct DetailView: View {
     }
 
     private func createDraft() {
-        guard !isCreatingDraft, let creationDraft else { return }
+        guard !isCreatingDraft, let creationDraft = store.creationDraft else { return }
         isCreatingDraft = true
         Task {
             defer {
                 isCreatingDraft = false
             }
             if await store.save(creationDraft) {
-                self.creationDraft = nil
+                store.creationDraft = nil
             }
         }
     }
 
     private func cancelCreation() {
         suppressesCreationDraftUpdates = true
-        creationDraft = nil
+        if store.canGoBack {
+            store.goBack()
+        } else {
+            store.cancelCreation()
+        }
         Task { @MainActor in
             await Task.yield()
             suppressesCreationDraftUpdates = false

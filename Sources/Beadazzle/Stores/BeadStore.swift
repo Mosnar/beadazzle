@@ -35,6 +35,12 @@ final class BeadStore {
     private(set) var commentRefreshIssueID: String?
     private(set) var selectedIDs: Set<String> = []
     private(set) var selectedBookmark: BeadBookmark = .ready
+    var creationDraft: IssueDraft? {
+        didSet {
+            guard oldValue != creationDraft else { return }
+            syncCurrentWorkspaceSnapshotIfNeeded()
+        }
+    }
     private(set) var filterCounts = BeadFilterCounts.empty
     /// Bumped whenever issue *content* changes (project load/reload after a mutation, index
     /// rebuild) even if the derived row list keeps the same structure. Lets the list view
@@ -91,6 +97,7 @@ final class BeadStore {
         didSet {
             guard oldValue != issueListMode else { return }
             rebuildIssueListRows()
+            syncCurrentWorkspaceSnapshotIfNeeded()
         }
     }
     var bdCLIPath = "" {
@@ -142,6 +149,8 @@ final class BeadStore {
     var lastError: String?
     private(set) var hiddenTypeNames: Set<String> = []
     private(set) var hiddenStatusNames: Set<String> = []
+    private(set) var canGoBack = false
+    private(set) var canGoForward = false
 
     @ObservationIgnored private let commands: any BeadsCommanding
     @ObservationIgnored private let projectLoader: BeadProjectLoader
@@ -155,6 +164,9 @@ final class BeadStore {
     @ObservationIgnored private var monitoredSourceFingerprint: String?
     @ObservationIgnored private var commentCache: [String: [BeadComment]] = [:]
     @ObservationIgnored private var outlineState = BeadOutlineSelectionState()
+    @ObservationIgnored private var workspaceHistory = BeadWorkspaceHistory()
+    @ObservationIgnored private var isRestoringWorkspace = false
+    @ObservationIgnored private var suppressesHistoryRecording = false
     @ObservationIgnored private var suppressesFilterUpdates = false
     @ObservationIgnored private let userDefaults: UserDefaults
 
@@ -222,6 +234,37 @@ final class BeadStore {
 
     var missingDataSourceURL: URL? {
         projectReadiness.missingDataSourceURL
+    }
+
+    var currentWorkspaceSnapshot: BeadWorkspaceSnapshot? {
+        workspaceHistory.currentSnapshot
+    }
+
+    func beginCreatingBead() {
+        guard canCreateBead, creationDraft == nil else { return }
+        suppressesHistoryRecording = true
+        clearSelection()
+        creationDraft = blankDraft()
+        suppressesHistoryRecording = false
+        recordWorkspaceSnapshotIfNeeded()
+    }
+
+    func cancelCreation() {
+        guard creationDraft != nil else { return }
+        creationDraft = nil
+        recordWorkspaceSnapshotIfNeeded()
+    }
+
+    func goBack() {
+        guard let snapshot = workspaceHistory.goBack() else { return }
+        syncWorkspaceHistoryAvailability()
+        restoreWorkspace(snapshot)
+    }
+
+    func goForward() {
+        guard let snapshot = workspaceHistory.goForward() else { return }
+        syncWorkspaceHistoryAvailability()
+        restoreWorkspace(snapshot)
     }
 
     var selectedIssue: BeadIssue? {
@@ -422,6 +465,7 @@ final class BeadStore {
         }
         clearLoadedProjectData()
         selectedBookmark = .ready
+        resetWorkspaceHistory()
         if isMissingDataSourceProject(url) {
             setMissingDataSource(url)
             if Self.beadsDirectoryExists(at: url) {
@@ -596,6 +640,7 @@ final class BeadStore {
         lastError = nil
         stopDataSourceMonitor()
         clearLoadedProjectData()
+        resetWorkspaceHistory()
     }
 
     private func clearLoadedProjectData() {
@@ -616,14 +661,21 @@ final class BeadStore {
         gatesByID = [:]
         currentDataSource = nil
         selectedIDs.removeAll()
+        creationDraft = nil
         outlineState.clear()
         filterCounts = .empty
         isLoadingComments = false
         isAddingComment = false
+        syncWorkspaceHistoryAvailability()
     }
 
     func select(_ ids: Set<String>) {
         guard selectedIDs != ids else { return }
+        if !ids.isEmpty, creationDraft != nil {
+            suppressesHistoryRecording = true
+            creationDraft = nil
+            suppressesHistoryRecording = false
+        }
         selectedIDs = ids
         selectionDidChange()
     }
@@ -878,6 +930,7 @@ final class BeadStore {
         }
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
+        recordWorkspaceSnapshotIfNeeded()
     }
 
     func applyBookmark(_ bookmark: BeadBookmark) {
@@ -892,6 +945,7 @@ final class BeadStore {
             scheduleSelectionSideDataRefresh()
         }
         applyFilters()
+        recordWorkspaceSnapshotIfNeeded()
     }
 
     @discardableResult
@@ -1268,6 +1322,7 @@ final class BeadStore {
         labelFilters = []
         suppressesFilterUpdates = false
         applyFilters()
+        syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     private func setFilter<Value: Hashable>(_ filters: inout Set<Value>, value: Value, isOn: Bool) {
@@ -1284,16 +1339,84 @@ final class BeadStore {
     private func filterStateDidChange(debounce: Bool = false) {
         guard !suppressesFilterUpdates else { return }
         scheduleFilterUpdate(debounce: debounce)
+        syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     private func sortStateDidChange() {
         guard !suppressesFilterUpdates else { return }
         applySortOnly()
+        syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     private func selectionDidChange() {
         expandAncestorsForSelection()
         scheduleSelectionSideDataRefresh()
+        recordWorkspaceSnapshotIfNeeded()
+    }
+
+    private func makeWorkspaceSnapshot() -> BeadWorkspaceSnapshot {
+        BeadWorkspaceSnapshot(
+            bookmark: selectedBookmark,
+            selectedIDs: selectedIDs,
+            searchText: searchText,
+            statusFilters: statusFilters,
+            typeFilters: typeFilters,
+            priorityFilters: priorityFilters,
+            labelFilters: labelFilters,
+            sort: sort,
+            sortDirection: sortDirection,
+            issueListMode: issueListMode,
+            outlineState: outlineState,
+            creationDraft: creationDraft
+        )
+    }
+
+    private func resetWorkspaceHistory() {
+        workspaceHistory.reset(to: makeWorkspaceSnapshot())
+        syncWorkspaceHistoryAvailability()
+    }
+
+    private func recordWorkspaceSnapshotIfNeeded() {
+        guard !isRestoringWorkspace, !suppressesHistoryRecording, hasReadableProject else { return }
+        workspaceHistory.record(makeWorkspaceSnapshot())
+        syncWorkspaceHistoryAvailability()
+    }
+
+    private func syncCurrentWorkspaceSnapshotIfNeeded() {
+        guard !isRestoringWorkspace, !suppressesHistoryRecording, hasReadableProject else { return }
+        workspaceHistory.updateCurrent(makeWorkspaceSnapshot())
+        syncWorkspaceHistoryAvailability()
+    }
+
+    private func restoreWorkspace(_ snapshot: BeadWorkspaceSnapshot) {
+        guard hasReadableProject else { return }
+
+        isRestoringWorkspace = true
+        suppressesFilterUpdates = true
+        selectedBookmark = snapshot.bookmark
+        selectedIDs = snapshot.selectedIDs.intersection(index.allIssueIDs)
+        creationDraft = snapshot.creationDraft
+        searchText = snapshot.searchText
+        statusFilters = snapshot.statusFilters
+        typeFilters = snapshot.typeFilters
+        priorityFilters = snapshot.priorityFilters
+        labelFilters = snapshot.labelFilters
+        sort = snapshot.sort
+        sortDirection = snapshot.sortDirection
+        issueListMode = snapshot.issueListMode
+        outlineState = snapshot.outlineState
+        suppressesFilterUpdates = false
+        isRestoringWorkspace = false
+
+        expandAncestorsForSelection()
+        applyFilters()
+        scheduleSelectionSideDataRefresh()
+        syncWorkspaceHistoryAvailability()
+    }
+
+    private func syncWorkspaceHistoryAvailability() {
+        canGoBack = workspaceHistory.canGoBack
+        canGoForward = workspaceHistory.canGoForward
     }
 
     private func scheduleSelectionSideDataRefresh() {
@@ -1351,6 +1474,7 @@ final class BeadStore {
     private func setIssueExpansion(issueID: String, isExpanded: Bool) {
         outlineState.setExpansion(issueID: issueID, isExpanded: isExpanded)
         rebuildIssueListRows()
+        syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     private func firstVisibleChildID(of row: IssueListRow) -> String? {
@@ -1545,6 +1669,7 @@ final class BeadStore {
         finishCommentRefreshIfNeeded(projectURL: projectURL)
         pruneGateDetailsForCurrentSnapshot()
         loadWaitersForSelectedGateIfNeeded()
+        resetWorkspaceHistory()
     }
 
     private func pruneGateDetailsForCurrentSnapshot() {

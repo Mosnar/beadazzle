@@ -5,7 +5,6 @@ import SwiftUI
 struct BeadazzleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = BeadStore()
-    @FocusedValue(\.beadNavigationAction) private var navigationAction
 
     var body: some Scene {
         WindowGroup("Beadazzle", id: "main") {
@@ -44,11 +43,17 @@ struct BeadazzleApp: App {
             }
 
             CommandMenu("Navigate") {
-                Button(navigationAction?.title ?? "Back to Beads") {
-                    navigationAction?.perform()
+                Button(BeadNavigationDirection.back.title) {
+                    handleBackNavigation()
                 }
-                .keyboardShortcut("[", modifiers: [.command])
-                .disabled(navigationAction == nil)
+                .keyboardShortcut(BeadNavigationDirection.back.shortcut)
+                .disabled(!canNavigateBack)
+
+                Button(BeadNavigationDirection.forward.title) {
+                    store.goForward()
+                }
+                .keyboardShortcut(BeadNavigationDirection.forward.shortcut)
+                .disabled(!store.canGoForward)
 
                 Divider()
 
@@ -78,6 +83,14 @@ struct BeadazzleApp: App {
         .defaultSize(width: 760, height: 500)
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.contentMinSize)
+    }
+
+    private var canNavigateBack: Bool {
+        store.canGoBack
+    }
+
+    private func handleBackNavigation() {
+        store.goBack()
     }
 }
 

@@ -1,18 +1,25 @@
 import SwiftUI
 
-struct BeadNavigationAction {
-    let title: String
-    let perform: () -> Void
-}
+enum BeadNavigationDirection {
+    case back
+    case forward
 
-private struct BeadNavigationActionKey: FocusedValueKey {
-    typealias Value = BeadNavigationAction
-}
+    var title: String {
+        switch self {
+        case .back:
+            return "Back"
+        case .forward:
+            return "Forward"
+        }
+    }
 
-extension FocusedValues {
-    var beadNavigationAction: BeadNavigationAction? {
-        get { self[BeadNavigationActionKey.self] }
-        set { self[BeadNavigationActionKey.self] = newValue }
+    var shortcut: KeyboardShortcut {
+        switch self {
+        case .back:
+            return KeyboardShortcut("[", modifiers: [.command])
+        case .forward:
+            return KeyboardShortcut("]", modifiers: [.command])
+        }
     }
 }
 
