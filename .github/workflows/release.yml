@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: macos-14
+    runs-on: macos-26
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       target_ref: ${{ steps.release.outputs.target_ref }}
@@ -83,7 +83,7 @@ jobs:
 
   publish:
     needs: validate
-    runs-on: macos-14
+    runs-on: macos-26
     environment: public-beta-release
     permissions:
       contents: write
