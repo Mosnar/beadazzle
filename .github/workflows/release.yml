@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Version tag to publish, such as v0.1.0-beta.1
+        required: true
+        type: string
+      target_ref:
+        description: Git ref or SHA to package when running manually
+        required: false
+        type: string
+      build_number:
+        description: Optional CFBundleVersion override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event.inputs.release_tag || github.ref_name || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: macos-14
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      target_ref: ${{ steps.release.outputs.target_ref }}
+      build_number: ${{ steps.release.outputs.build_number }}
+    steps:
+      - name: Resolve release context
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="${{ inputs.release_tag }}"
+            target_ref="${{ inputs.target_ref }}"
+            build_number="${{ inputs.build_number }}"
+
+            if [[ -z "$target_ref" ]]; then
+              target_ref="$GITHUB_SHA"
+            fi
+          else
+            release_tag="$GITHUB_REF_NAME"
+            target_ref="$GITHUB_REF"
+            build_number=""
+          fi
+
+          if [[ -z "$release_tag" ]]; then
+            echo "::error::Release tag is required." >&2
+            exit 1
+          fi
+
+          if [[ -z "$build_number" ]]; then
+            build_number="$GITHUB_RUN_NUMBER"
+          fi
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "target_ref=$target_ref" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.release.outputs.target_ref }}
+
+      - name: Run Swift tests
+        shell: bash
+        run: swift test
+
+      - name: Verify release metadata helper
+        shell: bash
+        run: ./script/test_release_common.sh
+
+  publish:
+    needs: validate
+    runs-on: macos-14
+    environment: public-beta-release
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+      APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+      APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
+    steps:
+      - name: Validate release secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for variable_name in \
+            DEVELOPER_ID_APPLICATION \
+            APPLE_DEVELOPER_ID_P12_BASE64 \
+            APPLE_DEVELOPER_ID_P12_PASSWORD \
+            APPLE_ID \
+            APPLE_TEAM_ID \
+            APPLE_APP_SPECIFIC_PASSWORD; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Missing required secret or environment value: $variable_name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Check out release ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.target_ref }}
+
+      - name: Import Developer ID certificate
+        id: keychain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cert_path="$RUNNER_TEMP/beadazzle-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/beadazzle-release.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | /usr/bin/base64 -D -o "$cert_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+          echo "keychain_path=$keychain_path" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed app bundle
+        id: build_app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app_bundle="$(./script/build_app_bundle.sh \
+            --release-tag "${{ needs.validate.outputs.release_tag }}" \
+            --build-number "${{ needs.validate.outputs.build_number }}" \
+            --codesign-identity "$DEVELOPER_ID_APPLICATION" \
+            --configuration release)"
+
+          echo "app_bundle=$app_bundle" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./script/notarize_release.sh --app-bundle "${{ steps.build_app.outputs.app_bundle }}"
+
+      - name: Create signed DMG
+        id: create_dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t artifacts < <(./script/create_release_dmg.sh \
+            --release-tag "${{ needs.validate.outputs.release_tag }}" \
+            --build-number "${{ needs.validate.outputs.build_number }}" \
+            --codesign-identity "$DEVELOPER_ID_APPLICATION" \
+            --configuration release \
+            --app-bundle "${{ steps.build_app.outputs.app_bundle }}")
+
+          echo "dmg_path=${artifacts[0]}" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=${artifacts[1]}" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize DMG and refresh checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./script/notarize_release.sh \
+            --dmg-path "${{ steps.create_dmg.outputs.dmg_path }}" \
+            --checksum-path "${{ steps.create_dmg.outputs.checksum_path }}"
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          TARGET_REF: ${{ needs.validate.outputs.target_ref }}
+          DMG_PATH: ${{ steps.create_dmg.outputs.dmg_path }}
+          CHECKSUM_PATH: ${{ steps.create_dmg.outputs.checksum_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$DMG_PATH" "$CHECKSUM_PATH" --clobber
+          else
+            release_args=(release create "$RELEASE_TAG" "$DMG_PATH" "$CHECKSUM_PATH" --title "$RELEASE_TAG" --notes "Beta release $RELEASE_TAG")
+
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              release_args+=(--target "$TARGET_REF")
+            else
+              release_args+=(--verify-tag)
+            fi
+
+            gh "${release_args[@]}"
+          fi
+
+      - name: Remove temporary signing keychain
+        if: always() && steps.keychain.outputs.keychain_path != ''
+        shell: bash
+        run: security delete-keychain "${{ steps.keychain.outputs.keychain_path }}"
