@@ -36,6 +36,7 @@ The read and write paths are deliberately separate:
 - SwiftUI first; use AppKit interop only for narrow platform edges (panels, window behavior). Keep files small and focused.
 - Preserve native macOS source-list behavior in the sidebar. Keep filters in the sidebar and list-specific controls (e.g. sorting) near the issue list. Favor compact, stable metadata over wrapped badges or card-heavy layouts.
 - Keep navigation/search responsive — avoid disk reads on simple selection; that's what the in-memory index is for.
+- Record user-facing changes in `CHANGELOG.md` under `## [Unreleased]` as you make them (features, behavior changes, notable fixes) — written for users, not as commit summaries. Skip internal-only churn a user wouldn't notice. The release workflow reads the tag's section for the GitHub release notes and the in-app Sparkle update dialog, and fails if it's missing; see `docs/AUTO_UPDATES.md`.
 
 ## Xcode warnings
 
