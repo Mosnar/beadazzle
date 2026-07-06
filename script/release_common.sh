@@ -114,7 +114,7 @@ beadazzle_release_validate_spctl_app() {
 }
 
 beadazzle_release_validate_spctl_open() {
-  /usr/sbin/spctl -a -vv --type open "$1"
+  /usr/sbin/spctl -a -vv --type open --context context:primary-signature "$1"
 }
 
 beadazzle_release_write_checksum() {
