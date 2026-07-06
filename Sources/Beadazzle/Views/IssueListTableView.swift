@@ -187,22 +187,40 @@ struct IssueListTableView: NSViewRepresentable {
                 return AnyView(Color.clear)
             }
             let store = parent.store
-            return AnyView(
-                IssueRowView(
-                    issue: issue,
-                    row: row,
-                    showsDisclosure: parent.mode == .outline,
-                    displayOptions: parent.displayOptions,
-                    statusCategory: store.statusCategory(for: issue.status),
-                    toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
+            let rowContent: AnyView
+            if let gate = store.gate(for: itemID) {
+                rowContent = AnyView(
+                    GateRowView(
+                        issue: issue,
+                        row: row,
+                        gate: gate,
+                        // Gate rows disclose their blocked beads in the Gates section.
+                        showsDisclosure: parent.mode == .outline || parent.store.selectedBookmark == .gates,
+                        toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
+                    )
+                    .equatable()
                 )
-                .equatable()
-                .padding(.leading, 12)
-                .padding(.trailing, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // Targets resolve when the menu opens, using the current selection — so a
-                // selection change never requires reconfiguring this cell.
-                .contextMenu { self.contextMenu(forClicked: itemID) }
+            } else {
+                rowContent = AnyView(
+                    IssueRowView(
+                        issue: issue,
+                        row: row,
+                        showsDisclosure: parent.mode == .outline,
+                        displayOptions: parent.displayOptions,
+                        statusCategory: store.statusCategory(for: issue.status),
+                        toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
+                    )
+                    .equatable()
+                )
+            }
+            return AnyView(
+                rowContent
+                    .padding(.leading, 12)
+                    .padding(.trailing, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Targets resolve when the menu opens, using the current selection — so a
+                    // selection change never requires reconfiguring this cell.
+                    .contextMenu { self.contextMenu(forClicked: itemID) }
             )
         }
 

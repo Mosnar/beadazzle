@@ -20,6 +20,8 @@ struct DetailView: View {
                 )
             } else if store.selectedIDs.count > 1 {
                 BulkDetailPage()
+            } else if let issue = store.selectedIssue, let gate = store.gate(for: issue.id) {
+                GateDetailPage(issue: issue, gate: gate)
             } else if let issue = store.selectedIssue {
                 IssueDetailPage(
                     issue: issue,

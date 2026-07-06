@@ -37,6 +37,39 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(issues.first?.parentID, "bd-parent")
     }
 
+    func testJSONLIssueParsingReadsGateFields() throws {
+        let reader = BeadsSnapshotReader()
+
+        let issues = reader.loadJSONLIssuesForTesting(records: [
+            [
+                "_type": "issue",
+                "id": "bd-gate",
+                "title": "Release gate",
+                "description": "Ad-hoc gate blocking bd-target\n\nReason: Ship review",
+                "status": "open",
+                "issue_type": "gate",
+                "await_type": "timer",
+                "await_id": "run-42",
+                "timeout": 3_600_000_000_000,
+                "created_at": "2026-07-03T20:58:35Z",
+                "updated_at": "2026-07-03T21:58:35Z"
+            ]
+        ])
+
+        let issue = try XCTUnwrap(issues.first)
+        XCTAssertTrue(issue.isGate)
+        XCTAssertEqual(issue.gateAwaitType, .timer)
+        XCTAssertEqual(issue.gateAwaitID, "run-42")
+        XCTAssertEqual(issue.gateTimeoutNanoseconds, 3_600_000_000_000)
+
+        let gate = try XCTUnwrap(BeadGate(issue: issue))
+        XCTAssertEqual(gate.awaitType, .timer)
+        XCTAssertEqual(gate.awaitID, "run-42")
+        XCTAssertEqual(gate.timeoutNanoseconds, 3_600_000_000_000)
+        XCTAssertEqual(gate.reason, "Ship review")
+        XCTAssertEqual(gate.blocksIssueID, "bd-target")
+    }
+
     func testPopulatedSQLiteWinsOverJSONL() throws {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": issueLine(id: "bd-jsonl", title: "From JSONL")

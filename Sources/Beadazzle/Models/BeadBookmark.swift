@@ -7,6 +7,7 @@ enum BeadBookmark: CaseIterable, Hashable, Identifiable, Sendable {
     case inProgress
     case blocked
     case closed
+    case gates
     case all
 
     var id: Self { self }
@@ -25,6 +26,8 @@ enum BeadBookmark: CaseIterable, Hashable, Identifiable, Sendable {
             "Blocked"
         case .closed:
             "Closed"
+        case .gates:
+            "Gates"
         case .all:
             "All Beads"
         }
@@ -36,6 +39,8 @@ enum BeadBookmark: CaseIterable, Hashable, Identifiable, Sendable {
             "checkmark.circle"
         case .stale:
             "clock.arrow.circlepath"
+        case .gates:
+            "flag.checkered"
         case .all:
             "circle.hexagongrid"
         case .open, .inProgress, .blocked, .closed:
@@ -45,7 +50,7 @@ enum BeadBookmark: CaseIterable, Hashable, Identifiable, Sendable {
 
     func statusNames(in semantics: BeadProjectSemantics) -> [String]? {
         switch self {
-        case .all:
+        case .all, .gates:
             return nil
         case .ready, .open:
             return semantics.statuses
@@ -77,7 +82,7 @@ enum BeadBookmark: CaseIterable, Hashable, Identifiable, Sendable {
 
     var statusCategory: BeadStatusCategory? {
         switch self {
-        case .all:
+        case .all, .gates:
             nil
         case .ready, .stale, .open:
             .active

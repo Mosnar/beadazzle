@@ -17,6 +17,12 @@ protocol BeadsCommanding: Sendable {
     func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition]
     func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws
+
+    func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate?
+    func resolveGate(projectURL: URL, id: String, reason: String?) async throws
+    func checkGates(projectURL: URL, type: String?, escalate: Bool, dryRun: Bool) async throws -> String
+    func createGate(projectURL: URL, blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) async throws -> String
+    func addGateWaiter(projectURL: URL, id: String, waiter: String) async throws
 }
 
 extension BeadsCommanding {
@@ -27,6 +33,14 @@ extension BeadsCommanding {
     func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition] {
         try await loadTypeDefinitions(projectURL: projectURL).filter(\.isCustom)
     }
+
+    // Gate support is optional: conformers that don't shell out to `bd` (test doubles) get
+    // safe no-op defaults so a `bd` without gate support degrades to an empty Gates section.
+    func loadGateDetail(projectURL _: URL, id _: String) async throws -> BeadGate? { nil }
+    func resolveGate(projectURL _: URL, id _: String, reason _: String?) async throws {}
+    func checkGates(projectURL _: URL, type _: String?, escalate _: Bool, dryRun _: Bool) async throws -> String { "" }
+    func createGate(projectURL _: URL, blocks _: String, type _: GateAwaitType, reason _: String?, timeout _: String?, awaitID _: String?) async throws -> String { "" }
+    func addGateWaiter(projectURL _: URL, id _: String, waiter _: String) async throws {}
 }
 
 struct BeadsCommandService {
@@ -85,6 +99,28 @@ struct BeadsCommandService {
 
     func addComment(projectURL: URL, issueID: String, text: String) async throws {
         try await run(projectURL: projectURL, arguments: BeadsCommandArguments.addComment(issueID: issueID), standardInput: text)
+    }
+
+    func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate? {
+        let text = try await runOutput(projectURL: projectURL, arguments: BeadsCommandArguments.gateShow(id: id))
+        guard !text.isEmpty else { return nil }
+        return try BeadGate.decodeOne(from: Data(text.utf8))
+    }
+
+    func resolveGate(projectURL: URL, id: String, reason: String?) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.gateResolve(id: id, reason: reason))
+    }
+
+    func checkGates(projectURL: URL, type: String?, escalate: Bool, dryRun: Bool) async throws -> String {
+        try await runOutput(projectURL: projectURL, arguments: BeadsCommandArguments.gateCheck(type: type, escalate: escalate, dryRun: dryRun))
+    }
+
+    func createGate(projectURL: URL, blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) async throws -> String {
+        try await runOutput(projectURL: projectURL, arguments: BeadsCommandArguments.gateCreate(blocks: blocks, type: type, reason: reason, timeout: timeout, awaitID: awaitID))
+    }
+
+    func addGateWaiter(projectURL: URL, id: String, waiter: String) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.gateAddWaiter(id: id, waiter: waiter))
     }
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
@@ -351,6 +387,40 @@ enum BeadsCommandArguments {
             .map(\.name)
             .joined(separator: ",")
         return configSetOrUnset(key: "types.custom", value: value)
+    }
+
+    static func gateShow(id: String) -> [String] {
+        ["--readonly", "gate", "show", id, "--json"]
+    }
+
+    static func gateResolve(id: String, reason: String?) -> [String] {
+        var arguments = ["gate", "resolve", id]
+        appendNonEmpty(&arguments, flag: "--reason", value: reason)
+        return arguments
+    }
+
+    static func gateCheck(type: String?, escalate: Bool, dryRun: Bool) -> [String] {
+        var arguments = ["gate", "check"]
+        appendNonEmpty(&arguments, flag: "--type", value: type)
+        if escalate {
+            arguments.append("--escalate")
+        }
+        if dryRun {
+            arguments.append("--dry-run")
+        }
+        return arguments
+    }
+
+    static func gateCreate(blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) -> [String] {
+        var arguments = ["gate", "create", "--blocks", blocks, "--type", type.commandValue]
+        appendNonEmpty(&arguments, flag: "--reason", value: reason)
+        appendNonEmpty(&arguments, flag: "--timeout", value: timeout)
+        appendNonEmpty(&arguments, flag: "--await-id", value: awaitID)
+        return arguments
+    }
+
+    static func gateAddWaiter(id: String, waiter: String) -> [String] {
+        ["gate", "add-waiter", id, waiter]
     }
 
     private static func configSetOrUnset(key: String, value: String) -> [String] {

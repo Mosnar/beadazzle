@@ -61,6 +61,9 @@ struct InspectorRowLabel: View {
     let value: String
     let showsChevron: Bool
     let isHighlighted: Bool
+    /// The trailing affordance glyph. Defaults to the option-picker chevron; pass a
+    /// navigation glyph (e.g. "arrow.up.right") for rows that link elsewhere.
+    var chevronSymbol: String = "chevron.up.chevron.down"
 
     var body: some View {
         HStack(spacing: 8) {
@@ -86,7 +89,7 @@ struct InspectorRowLabel: View {
                 .layoutPriority(1)
 
             if showsChevron {
-                Image(systemName: "chevron.up.chevron.down")
+                Image(systemName: chevronSymbol)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 15, alignment: .trailing)

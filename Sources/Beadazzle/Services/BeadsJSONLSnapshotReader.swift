@@ -31,6 +31,9 @@ struct BeadsJSONLSnapshotReader {
                 status: record.string("status"),
                 priority: record.int("priority", default: 2),
                 issueType: record.string("issue_type"),
+                gateAwaitType: record.gateAwaitType(),
+                gateAwaitID: record.optionalString("await_id"),
+                gateTimeoutNanoseconds: record.int64("timeout"),
                 assignee: record.optionalString("assignee"),
                 owner: record.optionalString("owner"),
                 createdAt: parseDate(record.optionalString("created_at")),
@@ -189,6 +192,26 @@ private extension Dictionary where Key == String, Value == Any {
             return int
         }
         return defaultValue
+    }
+
+    func int64(_ key: String) -> Int64? {
+        if let int = self[key] as? Int {
+            return Int64(int)
+        }
+        if let number = self[key] as? NSNumber {
+            return number.int64Value
+        }
+        if let string = self[key] as? String {
+            return Int64(string)
+        }
+        return nil
+    }
+
+    func gateAwaitType() -> GateAwaitType? {
+        guard let rawValue = optionalString("await_type") ?? optionalString("gate_type") else {
+            return nil
+        }
+        return GateAwaitType(rawValue: rawValue)
     }
 
     func bool(_ key: String) -> Bool {

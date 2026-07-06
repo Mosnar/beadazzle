@@ -20,6 +20,12 @@ struct IssueInspector: View {
                     availableLabels: store.availableLabels
                 )
 
+                let blockingGates = store.gatesBlocking(issueID: issue.id)
+                if !blockingGates.isEmpty {
+                    InspectorRowDivider()
+                    InspectorGatesRow(gates: blockingGates) { store.select([$0]) }
+                }
+
                 if issue.pinned {
                     InspectorRowDivider()
                     InspectorValueRow(title: "Pinned", systemImage: "pin", value: "Yes")
@@ -60,6 +66,38 @@ struct IssueInspector: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Lists the gate(s) blocking a bead as clickable rows that jump to the gate.
+struct InspectorGatesRow: View {
+    let gates: [BeadGate]
+    let onSelect: (String) -> Void
+    @State private var hoveredID: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(gates.enumerated()), id: \.element.id) { index, gate in
+                Button {
+                    onSelect(gate.id)
+                } label: {
+                    InspectorRowLabel(
+                        title: index == 0 ? "Gates" : "",
+                        systemImage: gate.awaitType.systemImage,
+                        tint: GatePresentation.tint(isOpen: gate.isOpen),
+                        value: gate.id,
+                        showsChevron: true,
+                        isHighlighted: hoveredID == gate.id,
+                        chevronSymbol: "arrow.up.right"
+                    )
+                }
+                .buttonStyle(.plain)
+                .onHover { isHovering in
+                    hoveredID = isHovering ? gate.id : (hoveredID == gate.id ? nil : hoveredID)
+                }
+                .help("Blocked by \(gate.awaitType.title) gate \(gate.id) — open it")
+            }
+        }
     }
 }
 

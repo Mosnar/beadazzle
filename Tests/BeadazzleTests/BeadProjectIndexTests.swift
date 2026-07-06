@@ -12,6 +12,7 @@ final class BeadProjectIndexTests: XCTestCase {
             "In Progress",
             "Blocked",
             "Closed",
+            "Gates",
             "All Beads"
         ])
     }
@@ -670,6 +671,72 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(rows.last?.depth, issueCount - 1)
         XCTAssertTrue(rows.dropLast().allSatisfy(\.isContext))
         XCTAssertEqual(rows.last?.isContext, false)
+    }
+
+    func testGatesBookmarkReturnsOnlyOpenGateBeads() {
+        let issues = [
+            issue("t-1", status: "open", type: "task"),
+            issue("g-open", status: "open", type: "gate"),
+            issue("g-closed", status: "closed", type: "gate")
+        ]
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.issueIDs(for: .gates), ["g-open"])
+        XCTAssertEqual(index.count(for: .gates), 1)
+    }
+
+    func testGatesOutlineNestsBlockedBeadsUnderTheGate() {
+        let issues = [
+            issue("g-1", status: "open", type: "gate"),
+            issue("bead-a", status: "open", type: "task"),
+            issue("bead-b", status: "open", type: "task"),
+            issue("unrelated", status: "open", type: "task")
+        ]
+        let dependencies = [
+            BeadDependency(issueID: "bead-a", dependsOnID: "g-1", type: "blocks", createdAt: nil),
+            BeadDependency(issueID: "bead-b", dependsOnID: "g-1", type: "blocks", createdAt: nil)
+        ]
+        let index = BeadProjectIndex(issues: issues, dependencies: dependencies, semantics: semantics())
+        let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
+
+        // Default (nothing collapsed): the gate is expanded, blocked beads are context children.
+        let expanded = index.issueListRows(
+            for: ["g-1"],
+            mode: .outline,
+            expandedIssueIDs: [],
+            sortOrder: sortOrder,
+            bookmark: .gates
+        )
+        XCTAssertEqual(expanded.map(\.issueID), ["g-1", "bead-a", "bead-b"])
+        XCTAssertEqual(expanded.map(\.depth), [0, 1, 1])
+        XCTAssertTrue(expanded[0].hasChildren)
+        XCTAssertTrue(expanded[0].isExpanded)
+        XCTAssertTrue(expanded[1].isContext)
+        XCTAssertTrue(expanded[2].isContext)
+
+        // Collapsing the gate hides the blocked beads.
+        let collapsed = index.issueListRows(
+            for: ["g-1"],
+            mode: .outline,
+            expandedIssueIDs: [],
+            collapsedIssueIDs: ["g-1"],
+            sortOrder: sortOrder,
+            bookmark: .gates
+        )
+        XCTAssertEqual(collapsed.map(\.issueID), ["g-1"])
+        XCTAssertFalse(collapsed[0].isExpanded)
+
+        // The Gates section nests blocked beads regardless of the global list mode — the
+        // flat/outline toggle is hidden there, so flat must produce the same tree.
+        let flat = index.issueListRows(
+            for: ["g-1"],
+            mode: .flat,
+            expandedIssueIDs: [],
+            sortOrder: sortOrder,
+            bookmark: .gates
+        )
+        XCTAssertEqual(flat.map(\.issueID), ["g-1", "bead-a", "bead-b"])
+        XCTAssertTrue(flat[0].hasChildren)
     }
 
     private func issue(

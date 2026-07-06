@@ -80,4 +80,9 @@ enum SQLiteDatabase {
     static func int(_ statement: OpaquePointer?, _ index: Int32) -> Int {
         Int(sqlite3_column_int(statement, index))
     }
+
+    static func optionalInt64(_ statement: OpaquePointer?, _ index: Int32) -> Int64? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return sqlite3_column_int64(statement, index)
+    }
 }

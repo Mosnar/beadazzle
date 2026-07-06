@@ -10,6 +10,9 @@ struct BeadIssue: Identifiable, Hashable, Sendable {
     var status: String
     var priority: Int
     var issueType: String
+    var gateAwaitType: GateAwaitType? = nil
+    var gateAwaitID: String? = nil
+    var gateTimeoutNanoseconds: Int64? = nil
     var assignee: String?
     var owner: String?
     var createdAt: Date?
@@ -40,6 +43,10 @@ struct BeadIssue: Identifiable, Hashable, Sendable {
             externalRef ?? ""
         ]
             .joined(separator: " ")
+    }
+
+    var isGate: Bool {
+        issueType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == BeadProjectIndex.gateIssueType
     }
 }
 
@@ -81,6 +88,12 @@ struct BeadDependency: Identifiable, Hashable, Sendable {
     var dependsOnID: String
     var type: String
     var createdAt: Date?
+
+    /// A "blocks" edge (`issueID` is blocked until `dependsOnID` closes). Matched
+    /// case- and whitespace-insensitively, the single definition of the relationship.
+    var isBlocking: Bool {
+        type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "blocks"
+    }
 }
 
 struct BeadComment: Identifiable, Hashable, Sendable {

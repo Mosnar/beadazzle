@@ -29,13 +29,13 @@ final class BeadStoreBookmarkTests: XCTestCase {
         store.select(["bd-child", "bd-closed"])
         await store.waitForPendingQueryRecompute()
 
-        // Switching to .open prunes bd-closed, collapsing the selection to the single
-        // bd-child — which now expands its ancestor, triggering the historically canceling
-        // second recompute.
+        // Switching bookmarks returns to the list, clearing the detail selection, and must
+        // still refresh filterCounts exactly once (historically a second recompute here
+        // canceled the first via the generation guard, leaving counts stale).
         store.applyBookmark(.open)
         await store.waitForPendingQueryRecompute()
 
-        XCTAssertEqual(store.selectedIDs, ["bd-child"], "closed bug must be pruned, child retained")
+        XCTAssertTrue(store.selectedIDs.isEmpty, "switching bookmarks returns to the list")
 
         let openTypeTotal = store.filterCounts.typeCounts.reduce(0) { $0 + $1.1 }
         XCTAssertEqual(
@@ -43,6 +43,29 @@ final class BeadStoreBookmarkTests: XCTestCase {
             2,
             "filterCounts must refresh to .open (parent+child = 2), not stay stale at .all's 3"
         )
+    }
+
+    func testSwitchingBookmarksClearsDetailSelectionToReturnToList() async throws {
+        let store = try await makeLoadedStore(
+            issuesJSONL: """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task"}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"closed","priority":2,"issue_type":"task"}
+            """
+        )
+
+        store.applyBookmark(.all)
+        await store.waitForPendingQueryRecompute()
+        store.select(["bd-1"])
+        await store.waitForPendingQueryRecompute()
+        XCTAssertNotNil(store.selectedIssue, "sanity: on a detail page")
+
+        // bd-1 is still present under .open, but choosing a bookmark should still return to
+        // the list rather than stranding the user on the detail page.
+        store.applyBookmark(.open)
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        XCTAssertNil(store.selectedIssue)
     }
 
     // MARK: - Harness

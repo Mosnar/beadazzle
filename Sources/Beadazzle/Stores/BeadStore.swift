@@ -42,6 +42,9 @@ final class BeadStore {
     /// selection change.
     private(set) var contentRevision = 0
     private(set) var currentDataSource: BeadsDataSource?
+    /// Gate detail cache keyed by gate bead id. The issue snapshot is the source of truth
+    /// for display fields; `bd gate show` only enriches the selected gate with waiters.
+    private(set) var gatesByID: [String: BeadGate] = [:]
     var searchText = "" {
         didSet {
             guard oldValue != searchText else { return }
@@ -147,6 +150,7 @@ final class BeadStore {
     @ObservationIgnored private var recomputeTask: Task<Void, Never>?
     @ObservationIgnored private var queryGeneration = 0
     @ObservationIgnored private var selectionSideDataTask: Task<Void, Never>?
+    @ObservationIgnored private var gateDetailTask: Task<Void, Never>?
     @ObservationIgnored private var dataSourceMonitor: BeadsDataSourceMonitor?
     @ObservationIgnored private var monitoredSourceFingerprint: String?
     @ObservationIgnored private var commentCache: [String: [BeadComment]] = [:]
@@ -210,6 +214,12 @@ final class BeadStore {
         projectURL != nil && projectReadiness.isReady
     }
 
+    /// The Gates section has no free-standing "new" — gates are created on an existing bead
+    /// (a bead's ⋯ menu), so plain bead creation is suppressed there.
+    var canCreateBead: Bool {
+        hasReadableProject && selectedBookmark != .gates
+    }
+
     var missingDataSourceURL: URL? {
         projectReadiness.missingDataSourceURL
     }
@@ -217,6 +227,42 @@ final class BeadStore {
     var selectedIssue: BeadIssue? {
         guard let id = selectedIDs.first, selectedIDs.count == 1 else { return nil }
         return index.issue(with: id)
+    }
+
+    /// The gate metadata for an issue, if that issue is a gate bead.
+    func gate(for id: String) -> BeadGate? {
+        guard let issue = index.issue(with: id),
+              var gate = BeadGate(issue: issue) else {
+            return nil
+        }
+        if let detail = gatesByID[id], detail.updatedAt == gate.updatedAt {
+            gate.waiters = detail.waiters
+        }
+        return gate
+    }
+
+    /// The beads a gate blocks, derived from the dependency graph (`blocks` edges pointing
+    /// at the gate). This is authoritative — no need to parse the gate description.
+    func blockedBeads(byGateID gateID: String) -> [BeadIssue] {
+        let fromGraph = (index.dependentsByIssueID[gateID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { index.issue(with: $0.issueID) }
+        if !fromGraph.isEmpty {
+            return fromGraph
+        }
+        // Fallback: the blocked id parsed from the gate description, for the window before the
+        // `blocks` edge lands in the snapshot (or a `bd` that omits it from the export).
+        if let blockedID = gate(for: gateID)?.blocksIssueID, let issue = index.issue(with: blockedID) {
+            return [issue]
+        }
+        return []
+    }
+
+    /// The gates currently blocking a bead (its `blocks` dependencies whose target is a gate).
+    func gatesBlocking(issueID: String) -> [BeadGate] {
+        (index.dependenciesByIssueID[issueID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { gate(for: $0.dependsOnID) }
     }
 
     var availableStatuses: [String] {
@@ -565,6 +611,9 @@ final class BeadStore {
         commentRefreshIssueID = nil
         selectionSideDataTask?.cancel()
         selectionSideDataTask = nil
+        gateDetailTask?.cancel()
+        gateDetailTask = nil
+        gatesByID = [:]
         currentDataSource = nil
         selectedIDs.removeAll()
         outlineState.clear()
@@ -834,14 +883,12 @@ final class BeadStore {
     func applyBookmark(_ bookmark: BeadBookmark) {
         guard selectedBookmark != bookmark else { return }
         selectedBookmark = bookmark
-        // Settle selection + ancestor expansion first, then recompute exactly once.
-        // Previously `applyFilters()` scheduled a counts-bearing recompute that the
-        // subsequent `selectionDidChange()` immediately canceled via the generation
-        // guard — doubling work and dropping the only filter-counts pass.
-        let nextSelectedIDs = selectedIDs.filter { index.issueIDs(for: bookmark).contains($0) }
-        if selectedIDs != nextSelectedIDs {
-            selectedIDs = nextSelectedIDs
-            expandAncestorsForSelection(rebuildRows: false)
+        // Choosing a bookmark returns you to the list: drop any detail selection so the
+        // detail pane collapses back to the bead list instead of stranding you on a page.
+        // Recompute exactly once afterward — a stray `applyFilters()` before this would be
+        // canceled by the selection change's generation guard, dropping the filter-counts pass.
+        if !selectedIDs.isEmpty {
+            selectedIDs = []
             scheduleSelectionSideDataRefresh()
         }
         applyFilters()
@@ -951,6 +998,80 @@ final class BeadStore {
         do {
             try await commands.bulkUpdate(projectURL: projectURL, ids: ids, status: status, type: type, priority: priority)
             guard self.projectURL == projectURL else { return false }
+            refresh(reason: .mutation, showsLoadingIndicator: true)
+            return true
+        } catch {
+            guard self.projectURL == projectURL else { return false }
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func resolveGate(id: String, reason: String?) async -> Bool {
+        guard let projectURL else { return false }
+        do {
+            try await commands.resolveGate(projectURL: projectURL, id: id, reason: reason?.nilIfBlank)
+            guard self.projectURL == projectURL else { return false }
+            refresh(reason: .mutation, showsLoadingIndicator: true)
+            return true
+        } catch {
+            guard self.projectURL == projectURL else { return false }
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Evaluate open gates (auto-closing resolved timers/GitHub gates). Returns the `bd`
+    /// summary output, or nil on failure.
+    @discardableResult
+    func checkGates(type: String? = nil, escalate: Bool = false, dryRun: Bool = false) async -> String? {
+        guard let projectURL else { return nil }
+        do {
+            let output = try await commands.checkGates(projectURL: projectURL, type: type, escalate: escalate, dryRun: dryRun)
+            guard self.projectURL == projectURL else { return nil }
+            if !dryRun {
+                refresh(reason: .mutation, showsLoadingIndicator: true)
+            }
+            return output
+        } catch {
+            guard self.projectURL == projectURL else { return nil }
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    @discardableResult
+    func createGate(blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) async -> Bool {
+        guard let projectURL else { return false }
+        do {
+            _ = try await commands.createGate(
+                projectURL: projectURL,
+                blocks: blocks,
+                type: type,
+                reason: reason?.nilIfBlank,
+                timeout: timeout?.nilIfBlank,
+                awaitID: awaitID?.nilIfBlank
+            )
+            guard self.projectURL == projectURL else { return false }
+            refresh(reason: .mutation, showsLoadingIndicator: true)
+            return true
+        } catch {
+            guard self.projectURL == projectURL else { return false }
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func addGateWaiter(id: String, waiter: String) async -> Bool {
+        guard let projectURL else { return false }
+        let trimmed = waiter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        do {
+            try await commands.addGateWaiter(projectURL: projectURL, id: id, waiter: trimmed)
+            guard self.projectURL == projectURL else { return false }
+            gatesByID[id] = nil
             refresh(reason: .mutation, showsLoadingIndicator: true)
             return true
         } catch {
@@ -1184,6 +1305,7 @@ final class BeadStore {
             guard !Task.isCancelled, let self, self.selectedIDs == expectedSelectedIDs else { return }
             self.loadDependenciesForSelection()
             self.syncCommentsForSelectionFromCache()
+            self.loadWaitersForSelectedGateIfNeeded()
         }
     }
 
@@ -1302,7 +1424,8 @@ final class BeadStore {
                     mode: mode,
                     outlineState: outlineState,
                     sort: sort,
-                    direction: direction
+                    direction: direction,
+                    bookmark: bookmark
                 )
                 let didPruneExpansion = pruneExpansion && outlineState.prune(toVisibleRows: rows)
                 if didPruneExpansion {
@@ -1312,7 +1435,8 @@ final class BeadStore {
                         mode: mode,
                         outlineState: outlineState,
                         sort: sort,
-                        direction: direction
+                        direction: direction,
+                        bookmark: bookmark
                     )
                 }
 
@@ -1419,6 +1543,52 @@ final class BeadStore {
         lastError = nil
         synchronizeDataSourceMonitor(projectURL: projectURL, source: loadedProject.source)
         finishCommentRefreshIfNeeded(projectURL: projectURL)
+        pruneGateDetailsForCurrentSnapshot()
+        loadWaitersForSelectedGateIfNeeded()
+    }
+
+    private func pruneGateDetailsForCurrentSnapshot() {
+        let gateIssueIDs = index.issueIDsByType[BeadProjectIndex.gateIssueType, default: []]
+        let pruned = gatesByID.filter { id, detail in
+            guard gateIssueIDs.contains(id),
+                  let issue = index.issue(with: id),
+                  let gate = BeadGate(issue: issue) else {
+                return false
+            }
+            return detail.updatedAt == gate.updatedAt
+        }
+        if pruned != gatesByID {
+            gatesByID = pruned
+        }
+        if gateIssueIDs.isEmpty {
+            gateDetailTask?.cancel()
+            gateDetailTask = nil
+        }
+    }
+
+    /// Enrich the selected gate with waiters via `bd gate show`, skipping unchanged gates.
+    private func loadWaitersForSelectedGateIfNeeded() {
+        guard let projectURL,
+              let id = selectedIDs.first, selectedIDs.count == 1,
+              let gate = gate(for: id) else {
+            gateDetailTask?.cancel()
+            gateDetailTask = nil
+            return
+        }
+        guard gatesByID[id]?.updatedAt != gate.updatedAt else {
+            return
+        }
+        gateDetailTask?.cancel()
+        let commands = commands
+        gateDetailTask = Task { @MainActor [weak self] in
+            let detail = try? await commands.loadGateDetail(projectURL: projectURL, id: id)
+            guard !Task.isCancelled, let self, let detail,
+                  self.projectURL == projectURL,
+                  self.selectedIDs.first == id else {
+                return
+            }
+            self.gatesByID[id] = detail
+        }
     }
 
     private func synchronizeDataSourceMonitor(projectURL: URL, source: BeadsDataSource) {

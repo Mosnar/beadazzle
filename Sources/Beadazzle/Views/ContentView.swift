@@ -42,7 +42,8 @@ struct ContentView: View {
                     Label("New Bead", systemImage: "plus")
                 }
                 .keyboardShortcut("n")
-                .disabled(!store.hasReadableProject)
+                .disabled(!store.canCreateBead)
+                .help(store.selectedBookmark == .gates ? "Gates are created from a bead's ⋯ menu, not here" : "New Bead")
 
                 BulkActionsMenu(
                     showingDeleteConfirmation: $showingDeleteConfirmation,
@@ -182,7 +183,7 @@ struct ContentView: View {
     }
 
     private func beginCreatingBead() {
-        guard store.hasReadableProject else { return }
+        guard store.canCreateBead else { return }
         guard creationDraft == nil else { return }
         store.clearSelection()
         creationDraft = store.blankDraft()

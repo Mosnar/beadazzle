@@ -78,14 +78,19 @@ struct IssueBreadcrumbBar: View {
     let saveAction: () -> Void
     let revertAction: () -> Void
     let requestClose: (BeadIssue) -> Void
+    @State private var showingGateCreation = false
 
     var body: some View {
         HStack(spacing: 8) {
             BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
                 store.clearSelection()
             }
-            BreadcrumbSeparator()
-            BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
+            // The Gates crumb is dropped here — a task nested under a gate doesn't belong to
+            // "Gates", and hiding it reclaims horizontal space.
+            if store.selectedBookmark != .gates {
+                BreadcrumbSeparator()
+                BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
+            }
             BreadcrumbSeparator()
 
             BreadcrumbIssueLabel(
@@ -128,6 +133,11 @@ struct IssueBreadcrumbBar: View {
 
                 Menu {
                     Button {
+                        showingGateCreation = true
+                    } label: {
+                        Label("Create Gate...", systemImage: "flag.checkered")
+                    }
+                    Button {
                         requestClose(issue)
                     } label: {
                         Label("Close Bead...", systemImage: "checkmark.circle")
@@ -139,6 +149,11 @@ struct IssueBreadcrumbBar: View {
                 .menuStyle(.borderlessButton)
                 .controlSize(.small)
                 .accessibilityLabel("More")
+                .popover(isPresented: $showingGateCreation, arrowEdge: .bottom) {
+                    GateCreationForm(blockedIssueID: issue.id, blockedTitle: issue.title) {
+                        showingGateCreation = false
+                    }
+                }
             }
             .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(2)

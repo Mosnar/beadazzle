@@ -34,6 +34,9 @@ struct BeadsSQLiteSnapshotReader {
         func column(_ name: String, fallback: String) -> String {
             issueColumns.contains(name) ? "i.\(name)" : fallback
         }
+        let awaitTypeExpression = issueColumns.contains("await_type")
+            ? "i.await_type"
+            : (issueColumns.contains("gate_type") ? "i.gate_type" : "NULL")
         let whereClause = issueColumns.contains("deleted_at") ? "WHERE i.deleted_at IS NULL" : ""
         let updatedOrder = issueColumns.contains("updated_at") ? "i.updated_at DESC" : "i.id ASC"
         let dependencyCounts = dependencies.reduce(into: [String: Int]()) { counts, dependency in
@@ -54,6 +57,9 @@ struct BeadsSQLiteSnapshotReader {
           \(column("status", fallback: "'open'")),
           \(column("priority", fallback: "2")),
           \(column("issue_type", fallback: "'task'")),
+          \(awaitTypeExpression),
+          \(column("await_id", fallback: "NULL")),
+          \(column("timeout", fallback: "NULL")),
           \(column("assignee", fallback: "NULL")),
           \(column("owner", fallback: "NULL")),
           \(column("created_at", fallback: "NULL")),
@@ -99,22 +105,25 @@ struct BeadsSQLiteSnapshotReader {
                     status: SQLiteDatabase.text(statement, 6),
                     priority: SQLiteDatabase.int(statement, 7),
                     issueType: SQLiteDatabase.text(statement, 8),
-                    assignee: SQLiteDatabase.optionalText(statement, 9),
-                    owner: SQLiteDatabase.optionalText(statement, 10),
-                    createdAt: parseDate(SQLiteDatabase.optionalText(statement, 11)),
-                    updatedAt: parseDate(SQLiteDatabase.optionalText(statement, 12)),
-                    closedAt: parseDate(SQLiteDatabase.optionalText(statement, 13)),
-                    dueAt: parseDate(SQLiteDatabase.optionalText(statement, 14)),
-                    deferUntil: parseDate(SQLiteDatabase.optionalText(statement, 15)),
-                    externalRef: SQLiteDatabase.optionalText(statement, 16),
-                    parentID: SQLiteDatabase.optionalText(statement, 17),
+                    gateAwaitType: SQLiteDatabase.optionalText(statement, 9).map(GateAwaitType.init(rawValue:)),
+                    gateAwaitID: SQLiteDatabase.optionalText(statement, 10),
+                    gateTimeoutNanoseconds: SQLiteDatabase.optionalInt64(statement, 11),
+                    assignee: SQLiteDatabase.optionalText(statement, 12),
+                    owner: SQLiteDatabase.optionalText(statement, 13),
+                    createdAt: parseDate(SQLiteDatabase.optionalText(statement, 14)),
+                    updatedAt: parseDate(SQLiteDatabase.optionalText(statement, 15)),
+                    closedAt: parseDate(SQLiteDatabase.optionalText(statement, 16)),
+                    dueAt: parseDate(SQLiteDatabase.optionalText(statement, 17)),
+                    deferUntil: parseDate(SQLiteDatabase.optionalText(statement, 18)),
+                    externalRef: SQLiteDatabase.optionalText(statement, 19),
+                    parentID: SQLiteDatabase.optionalText(statement, 20),
                     labels: labelsByIssueID[id, default: []],
                     dependencyCount: dependencyCounts[id, default: 0],
                     dependentCount: dependentCounts[id, default: 0],
                     commentCount: commentCounts[id, default: 0],
-                    pinned: SQLiteDatabase.int(statement, 18) == 1,
-                    ephemeral: SQLiteDatabase.int(statement, 19) == 1,
-                    isTemplate: SQLiteDatabase.int(statement, 20) == 1
+                    pinned: SQLiteDatabase.int(statement, 21) == 1,
+                    ephemeral: SQLiteDatabase.int(statement, 22) == 1,
+                    isTemplate: SQLiteDatabase.int(statement, 23) == 1
                 )
             )
         }

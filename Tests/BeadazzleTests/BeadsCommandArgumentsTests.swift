@@ -57,6 +57,53 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertTrue(arguments.contains("--silent"))
     }
 
+    func testGateShowArgumentsAreReadOnlyJSON() {
+        let arguments = BeadsCommandArguments.gateShow(id: "g-1")
+        XCTAssertEqual(arguments, ["--readonly", "gate", "show", "g-1", "--json"])
+    }
+
+    func testGateResolveOmitsBlankReason() {
+        XCTAssertEqual(BeadsCommandArguments.gateResolve(id: "g-1", reason: nil), ["gate", "resolve", "g-1"])
+        XCTAssertEqual(BeadsCommandArguments.gateResolve(id: "g-1", reason: "  "), ["gate", "resolve", "g-1"])
+    }
+
+    func testGateResolveIncludesReasonWhenPresent() {
+        let arguments = BeadsCommandArguments.gateResolve(id: "g-1", reason: "done soaking")
+        XCTAssertEqual(value(after: "--reason", in: arguments), "done soaking")
+    }
+
+    func testGateCheckFlags() {
+        let plain = BeadsCommandArguments.gateCheck(type: nil, escalate: false, dryRun: false)
+        XCTAssertEqual(plain, ["gate", "check"])
+
+        let full = BeadsCommandArguments.gateCheck(type: "timer", escalate: true, dryRun: true)
+        XCTAssertEqual(value(after: "--type", in: full), "timer")
+        XCTAssertTrue(full.contains("--escalate"))
+        XCTAssertTrue(full.contains("--dry-run"))
+    }
+
+    func testGateCreateUsesTypeCommandValueAndOptionalFlags() {
+        let timer = BeadsCommandArguments.gateCreate(blocks: "bd-1", type: .timer, reason: "soak", timeout: "8h", awaitID: nil)
+        XCTAssertEqual(Array(timer.prefix(4)), ["gate", "create", "--blocks", "bd-1"])
+        XCTAssertEqual(value(after: "--type", in: timer), "timer")
+        XCTAssertEqual(value(after: "--timeout", in: timer), "8h")
+        XCTAssertEqual(value(after: "--reason", in: timer), "soak")
+        XCTAssertFalse(timer.contains("--await-id"))
+
+        let pr = BeadsCommandArguments.gateCreate(blocks: "bd-2", type: .githubPR, reason: nil, timeout: nil, awaitID: "42")
+        XCTAssertEqual(value(after: "--type", in: pr), "gh:pr")
+        XCTAssertEqual(value(after: "--await-id", in: pr), "42")
+        XCTAssertFalse(pr.contains("--timeout"))
+        XCTAssertFalse(pr.contains("--reason"))
+    }
+
+    func testGateAddWaiterArguments() {
+        XCTAssertEqual(
+            BeadsCommandArguments.gateAddWaiter(id: "g-1", waiter: "proj/workers/a1"),
+            ["gate", "add-waiter", "g-1", "proj/workers/a1"]
+        )
+    }
+
     func testUpdateArgumentsIncludeDueAndDeferredDatesWhenPresent() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.update(
             draft: draft(

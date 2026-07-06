@@ -67,7 +67,11 @@ private struct IssueListHeader: View {
 
                 Spacer(minLength: 8)
 
-                IssueListModePicker()
+                // The Gates section always shows gate → blocked beads, so the flat/outline
+                // toggle has no meaning there.
+                if store.selectedBookmark != .gates {
+                    IssueListModePicker()
+                }
             }
             .controlSize(.small)
             .frame(height: IssueListMetrics.headerControlHeight, alignment: .center)
@@ -160,6 +164,84 @@ private struct SortMenu: View {
         .controlSize(.small)
         .fixedSize()
         .help("Sort: \(store.sort.rawValue)")
+    }
+}
+
+/// Row for a gate bead: type-appropriate icon + the condition it's waiting on, with the
+/// reason as the subtitle. Used wherever a gate bead appears (chiefly the Gates section,
+/// where its blocked beads nest beneath it).
+struct GateRowView: View, Equatable {
+    let issue: BeadIssue
+    let row: IssueListRow
+    let gate: BeadGate
+    let showsDisclosure: Bool
+    let toggleExpansion: () -> Void
+
+    static func == (lhs: GateRowView, rhs: GateRowView) -> Bool {
+        lhs.issue == rhs.issue
+            && lhs.row == rhs.row
+            && lhs.gate == rhs.gate
+            && lhs.showsDisclosure == rhs.showsDisclosure
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if showsDisclosure {
+                Spacer()
+                    .frame(width: CGFloat(row.depth) * IssueListMetrics.depthIndent)
+
+                Button(action: toggleExpansion) {
+                    Image(systemName: row.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: IssueListMetrics.disclosureWidth, height: IssueListMetrics.rowHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!row.hasChildren)
+                .opacity(row.hasChildren ? 1 : 0)
+                .accessibilityHidden(!row.hasChildren)
+                .help(row.isExpanded ? "Collapse blocked beads" : "Expand blocked beads")
+            }
+
+            Image(systemName: gate.awaitType.systemImage)
+                .font(.caption.weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(GatePresentation.tint(isOpen: gate.isOpen))
+                .frame(width: 16, alignment: .center)
+                .padding(.trailing, 8)
+                .help("\(gate.awaitType.title) gate")
+                .accessibilityLabel("\(gate.awaitType.title) gate")
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(GatePresentation.conditionHeadline(for: gate))
+                        .font(.headline)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+
+                    Spacer(minLength: 8)
+
+                    Text(BeadFormatters.relative(issue.updatedAt))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 8) {
+                    CopyableIssueIDButton(issueID: issue.id)
+                    if let subtitle = gate.reason?.nilIfBlank {
+                        Text(subtitle)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .font(.caption)
+            }
+        }
+        .frame(height: IssueListMetrics.rowHeight, alignment: .center)
+        .contentShape(Rectangle())
     }
 }
 

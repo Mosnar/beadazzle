@@ -42,6 +42,24 @@ struct IssueMetadataRibbon: View {
                     presentation: .ribbonChip
                 )
 
+                if let issueID = draft.id {
+                    ForEach(store.gatesBlocking(issueID: issueID)) { gate in
+                        Button {
+                            store.select([gate.id])
+                        } label: {
+                            IssueMetadataRibbonChipLabel(
+                                systemImage: gate.awaitType.systemImage,
+                                tint: GatePresentation.tint(isOpen: gate.isOpen),
+                                value: gate.id,
+                                showsChevron: false,
+                                isHighlighted: false
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .help("Blocked by \(gate.awaitType.title) gate \(gate.id) — open it")
+                    }
+                }
+
                 IssueMetadataDateControl(
                     title: "Due",
                     systemImage: "calendar",

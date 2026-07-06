@@ -167,6 +167,104 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.comments(for: "bd-a").map(\.id), ["comment-a"])
     }
 
+    func testGatePresentationComesFromSnapshotWithoutGateRoster() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(gateUpdatedAt: "2026-07-03T21:58:35Z"))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-gate") != nil }
+
+        let gate = try XCTUnwrap(store.gate(for: "bd-gate"))
+        XCTAssertEqual(gate.awaitType, .timer)
+        XCTAssertEqual(gate.timeoutNanoseconds, 3_600_000_000_000)
+        XCTAssertEqual(gate.reason, "Ship review")
+        XCTAssertEqual(gate.blocksIssueID, "bd-task")
+
+        let blockingGates = store.gatesBlocking(issueID: "bd-task")
+        XCTAssertEqual(blockingGates.map(\.id), ["bd-gate"])
+        XCTAssertEqual(blockingGates.first?.awaitType, .timer)
+
+        store.applyBookmark(.gates)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-gate", "bd-task"])
+    }
+
+    func testSelectedGateLoadsWaitersOnlyWhenGateUpdatedAtChanges() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(gateUpdatedAt: "2026-07-03T21:58:35Z"))
+        let commands = RecordingBeadsCommands()
+        await commands.setGateDetail(gateDetail(updatedAt: "2026-07-03T21:58:35Z", waiters: ["bd-task"]))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-gate") != nil }
+
+        store.select(["bd-gate"])
+
+        try await waitUntil { store.gate(for: "bd-gate")?.waiters == ["bd-task"] }
+        var loadGateDetailCalls = await commands.loadGateDetailCalls
+        XCTAssertEqual(loadGateDetailCalls.map(\.id), ["bd-gate"])
+
+        let revision = store.contentRevision
+        store.refresh()
+        try await waitUntil { !store.isLoading && store.contentRevision > revision }
+        try await Task.sleep(for: .milliseconds(100))
+        loadGateDetailCalls = await commands.loadGateDetailCalls
+        XCTAssertEqual(loadGateDetailCalls.map(\.id), ["bd-gate"])
+
+        await commands.setGateDetail(gateDetail(updatedAt: "2026-07-03T22:58:35Z", waiters: ["bd-task", "bd-other"]))
+        try gateProjectJSONL(gateUpdatedAt: "2026-07-03T22:58:35Z").write(
+            to: projectURL.appendingPathComponent(".beads/issues.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        store.refresh()
+
+        try await waitUntil { store.gate(for: "bd-gate")?.waiters == ["bd-task", "bd-other"] }
+        loadGateDetailCalls = await commands.loadGateDetailCalls
+        XCTAssertEqual(loadGateDetailCalls.map(\.id), ["bd-gate", "bd-gate"])
+    }
+
+    func testGateActionWrappersInvokeCommands() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(gateUpdatedAt: "2026-07-03T21:58:35Z"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCheckGatesOutput("checked 1 gate")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-gate") != nil }
+
+        let didResolve = await store.resolveGate(id: "bd-gate", reason: " approved ")
+        let checkOutput = await store.checkGates(type: "timer", escalate: true, dryRun: true)
+        let didCreate = await store.createGate(
+            blocks: "bd-task",
+            type: .githubPR,
+            reason: " needs review ",
+            timeout: " ",
+            awaitID: " 42 "
+        )
+        let didAddWaiter = await store.addGateWaiter(id: "bd-gate", waiter: " bd-task ")
+
+        XCTAssertTrue(didResolve)
+        XCTAssertEqual(checkOutput, "checked 1 gate")
+        XCTAssertTrue(didCreate)
+        XCTAssertTrue(didAddWaiter)
+
+        let resolveGateCalls = await commands.resolveGateCalls
+        let checkGatesCalls = await commands.checkGatesCalls
+        let createGateCalls = await commands.createGateCalls
+        let addGateWaiterCalls = await commands.addGateWaiterCalls
+
+        XCTAssertEqual(resolveGateCalls.map(\.id), ["bd-gate"])
+        XCTAssertEqual(resolveGateCalls.first?.reason, "approved")
+        XCTAssertEqual(checkGatesCalls.first?.type, "timer")
+        XCTAssertEqual(checkGatesCalls.first?.escalate, true)
+        XCTAssertEqual(checkGatesCalls.first?.dryRun, true)
+        XCTAssertEqual(createGateCalls.first?.blocks, "bd-task")
+        XCTAssertEqual(createGateCalls.first?.type, .githubPR)
+        XCTAssertEqual(createGateCalls.first?.reason, "needs review")
+        XCTAssertNil(createGateCalls.first?.timeout)
+        XCTAssertEqual(createGateCalls.first?.awaitID, "42")
+        XCTAssertEqual(addGateWaiterCalls.first?.waiter, "bd-task")
+        XCTAssertNil(store.lastError)
+    }
+
     private func makeProject(_ issuesJSONL: String) throws -> URL {
         let projectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeadStoreAsyncMutationTests-\(UUID().uuidString)", isDirectory: true)
@@ -187,6 +285,29 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         """
         {"_type":"issue","id":"\(id)","title":"\(title)","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
         """
+    }
+
+    private func gateProjectJSONL(gateUpdatedAt: String) -> String {
+        """
+        {"_type":"issue","id":"bd-gate","title":"Release gate","description":"Ad-hoc gate blocking bd-task\\n\\nReason: Ship review","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":3600000000000,"created_at":"2026-07-03T20:58:35Z","updated_at":"\(gateUpdatedAt)"}
+        {"_type":"issue","id":"bd-task","title":"Ship app","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-gate","type":"blocks"}]}
+        """
+    }
+
+    private func gateDetail(updatedAt: String, waiters: [String]) -> BeadGate {
+        BeadGate(
+            id: "bd-gate",
+            title: "Release gate",
+            awaitType: .timer,
+            status: "open",
+            reason: "Ship review",
+            awaitID: nil,
+            timeoutNanoseconds: 3_600_000_000_000,
+            createdAt: BeadFormatters.parseDate("2026-07-03T20:58:35Z"),
+            updatedAt: BeadFormatters.parseDate(updatedAt),
+            waiters: waiters,
+            blocksIssueID: "bd-task"
+        )
     }
 
     private func draft(title: String) -> IssueDraft {
@@ -233,11 +354,20 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var createCalls: [(projectURL: URL, draft: IssueDraft)] = []
     private(set) var bulkUpdateCalls: [(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?)] = []
+    private(set) var loadGateDetailCalls: [(projectURL: URL, id: String)] = []
+    private(set) var resolveGateCalls: [(projectURL: URL, id: String, reason: String?)] = []
+    private(set) var checkGatesCalls: [(projectURL: URL, type: String?, escalate: Bool, dryRun: Bool)] = []
+    private(set) var createGateCalls: [
+        (projectURL: URL, blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?)
+    ] = []
+    private(set) var addGateWaiterCalls: [(projectURL: URL, id: String, waiter: String)] = []
     private var createIssueID = "bd-created"
     private var createError: Error?
     private var bulkUpdateError: Error?
     private var bulkUpdateDelay: Duration?
     private var exportError: Error?
+    private var gateDetail: BeadGate?
+    private var checkGatesOutput = ""
 
     func setCreateResult(issueID: String) {
         createIssueID = issueID
@@ -257,6 +387,14 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setExportError(_ error: Error?) {
         exportError = error
+    }
+
+    func setGateDetail(_ gate: BeadGate?) {
+        gateDetail = gate
+    }
+
+    func setCheckGatesOutput(_ output: String) {
+        checkGatesOutput = output
     }
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
@@ -298,6 +436,31 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws {}
 
     func addComment(projectURL: URL, issueID: String, text: String) async throws {}
+
+    func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate? {
+        loadGateDetailCalls.append((projectURL: projectURL, id: id))
+        return gateDetail
+    }
+
+    func resolveGate(projectURL: URL, id: String, reason: String?) async throws {
+        resolveGateCalls.append((projectURL: projectURL, id: id, reason: reason))
+    }
+
+    func checkGates(projectURL: URL, type: String?, escalate: Bool, dryRun: Bool) async throws -> String {
+        checkGatesCalls.append((projectURL: projectURL, type: type, escalate: escalate, dryRun: dryRun))
+        return checkGatesOutput
+    }
+
+    func createGate(projectURL: URL, blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) async throws -> String {
+        createGateCalls.append(
+            (projectURL: projectURL, blocks: blocks, type: type, reason: reason, timeout: timeout, awaitID: awaitID)
+        )
+        return "bd-gate-created"
+    }
+
+    func addGateWaiter(projectURL: URL, id: String, waiter: String) async throws {
+        addGateWaiterCalls.append((projectURL: projectURL, id: id, waiter: waiter))
+    }
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
         []

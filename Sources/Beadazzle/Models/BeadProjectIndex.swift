@@ -169,6 +169,7 @@ struct BeadProjectIndex: Sendable {
                     allIssueIDs: allIssueIDs,
                     semantics: semantics,
                     issueIDsByStatus: issueIDsByStatus,
+                    issueIDsByType: issueIDsByType,
                     issueByID: issueByID,
                     dependenciesByIssueID: dependenciesByIssueID,
                     staleCutoffDays: normalizedStaleCutoffDays
@@ -297,8 +298,19 @@ struct BeadProjectIndex: Sendable {
         mode: IssueListMode,
         expandedIssueIDs: Set<String>,
         collapsedIssueIDs: Set<String> = [],
-        sortOrder: BeadIssueSortOrder
+        sortOrder: BeadIssueSortOrder,
+        bookmark: BeadBookmark = .all
     ) -> [IssueListRow] {
+        // Gates have no parent-child children, so the generic outline is meaningless for
+        // them. The Gates section always renders as gate → the beads it blocks, regardless
+        // of the global flat/outline mode (which is hidden there).
+        if bookmark == .gates {
+            return gateOutlineRows(
+                gateIDs: filteredIssueIDs,
+                collapsedIssueIDs: collapsedIssueIDs,
+                sortOrder: sortOrder
+            )
+        }
         switch mode {
         case .flat:
             return filteredIssueIDs.map { issueID in
@@ -319,6 +331,54 @@ struct BeadProjectIndex: Sendable {
                 sortOrder: sortOrder
             )
         }
+    }
+
+    /// Beads a gate blocks (`blocks` edges pointing at the gate), sorted for display.
+    func blockedBeadIDs(forGate gateID: String, sortOrder: BeadIssueSortOrder) -> [String] {
+        let blocked = (dependentsByIssueID[gateID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { issueByID[$0.issueID] }
+        return blocked.sorted(by: sortOrder.areInIncreasingOrder).map(\.id)
+    }
+
+    /// Two-level outline for the Gates section: each gate, then the beads it blocks as
+    /// context children. Gates default to expanded (blocked beads visible) unless the user
+    /// collapses them, since seeing what a gate holds up is the point of the view.
+    private func gateOutlineRows(
+        gateIDs: [String],
+        collapsedIssueIDs: Set<String>,
+        sortOrder: BeadIssueSortOrder
+    ) -> [IssueListRow] {
+        var rows: [IssueListRow] = []
+        for gateID in gateIDs {
+            let blockedIDs = blockedBeadIDs(forGate: gateID, sortOrder: sortOrder)
+            let hasChildren = !blockedIDs.isEmpty
+            let isExpanded = hasChildren && !collapsedIssueIDs.contains(gateID)
+            rows.append(
+                IssueListRow(
+                    issueID: gateID,
+                    depth: 0,
+                    hasChildren: hasChildren,
+                    childProgress: nil,
+                    isExpanded: isExpanded,
+                    isContext: false
+                )
+            )
+            guard isExpanded else { continue }
+            for blockedID in blockedIDs {
+                rows.append(
+                    IssueListRow(
+                        issueID: blockedID,
+                        depth: 1,
+                        hasChildren: false,
+                        childProgress: nil,
+                        isExpanded: false,
+                        isContext: true
+                    )
+                )
+            }
+        }
+        return rows
     }
 
     func filterCounts(
@@ -578,10 +638,14 @@ struct BeadProjectIndex: Sendable {
         allIssueIDs: Set<String>,
         semantics: BeadProjectSemantics,
         issueIDsByStatus: [String: Set<String>],
+        issueIDsByType: [String: Set<String>],
         issueByID: [String: BeadIssue],
         dependenciesByIssueID: [String: [BeadDependency]],
         staleCutoffDays: Int
     ) -> Set<String> {
+        if bookmark == .gates {
+            return openGateIssueIDs(issueIDsByType: issueIDsByType, issueByID: issueByID, semantics: semantics)
+        }
         guard let statusNames = bookmark.statusNames(in: semantics) else {
             return allIssueIDs
         }
@@ -605,6 +669,20 @@ struct BeadProjectIndex: Sendable {
             dependenciesByIssueID: dependenciesByIssueID,
             semantics: semantics
         )
+    }
+
+    /// Open (not-done) gate beads — the base set for the Gates sidebar section.
+    static let gateIssueType = "gate"
+
+    private static func openGateIssueIDs(
+        issueIDsByType: [String: Set<String>],
+        issueByID: [String: BeadIssue],
+        semantics: BeadProjectSemantics
+    ) -> Set<String> {
+        (issueIDsByType[gateIssueType] ?? []).filter { issueID in
+            guard let issue = issueByID[issueID] else { return false }
+            return !semantics.isDone(issue)
+        }
     }
 
     private static func staleIssueIDs(
@@ -663,7 +741,7 @@ struct BeadProjectIndex: Sendable {
     }
 
     private static func isBlockingDependency(_ dependency: BeadDependency) -> Bool {
-        dependency.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "blocks"
+        dependency.isBlocking
     }
 
     private static func baseFilterCounts(

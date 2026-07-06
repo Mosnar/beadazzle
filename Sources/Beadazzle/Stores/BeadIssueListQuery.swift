@@ -61,7 +61,8 @@ struct BeadIssueListQuery: Sendable {
         mode: IssueListMode,
         outlineState: BeadOutlineSelectionState,
         sort: IssueSort,
-        direction: SortDirection
+        direction: SortDirection,
+        bookmark: BeadBookmark = .all
     ) -> [IssueListRow] {
         PerformanceSignposts.query.withIntervalSignpost("RowBuild") {
             index.issueListRows(
@@ -69,7 +70,8 @@ struct BeadIssueListQuery: Sendable {
                 mode: mode,
                 expandedIssueIDs: outlineState.expandedIssueIDs,
                 collapsedIssueIDs: outlineState.collapsedIssueIDs,
-                sortOrder: BeadIssueSortOrder(sort: sort, direction: direction)
+                sortOrder: BeadIssueSortOrder(sort: sort, direction: direction),
+                bookmark: bookmark
             )
         }
     }
