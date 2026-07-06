@@ -25,6 +25,12 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Fixed a runaway loop that pinned the CPU, hammered the disk, and slowly grew
+  memory the entire time a project was open — even while the app sat idle. The
+  app's own background reads were tripping its file-change watcher, which kicked
+  off another read, and so on without end. Watching is now limited to real
+  content changes, and routine reloads no longer re-run `bd` for status/type
+  definitions that haven't changed, so an idle window now uses effectively no CPU.
 - Manual Refresh and background reconciliation now re-read current state on
   embedded-database repos, so the list always converges to what `bd` actually
   recorded.

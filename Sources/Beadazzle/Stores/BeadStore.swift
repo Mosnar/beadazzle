@@ -166,6 +166,11 @@ final class BeadStore {
     @ObservationIgnored private var gateDetailTask: Task<Void, Never>?
     @ObservationIgnored private var dataSourceMonitor: BeadsDataSourceMonitor?
     @ObservationIgnored private var monitoredSourceFingerprint: String?
+    /// Cached status/type definitions, reused across reloads so routine reloads don't
+    /// spawn two `bd --readonly` subprocesses. Reloaded on initial/manual refresh, and
+    /// after the app edits custom definitions (which set this back to `nil`). A `nil` cache
+    /// forces the next reload to re-read from `bd`, so a failed reload naturally retries.
+    @ObservationIgnored private var cachedDefinitions: BeadSemanticDefinitions?
     @ObservationIgnored private var commentCache: [String: [BeadComment]] = [:]
     @ObservationIgnored private var outlineState = BeadOutlineSelectionState()
     @ObservationIgnored private var workspaceHistory = BeadWorkspaceHistory()
@@ -664,6 +669,7 @@ final class BeadStore {
         gateDetailTask = nil
         gatesByID = [:]
         currentDataSource = nil
+        cachedDefinitions = nil
         selectedIDs.removeAll()
         creationDraft = nil
         outlineState.clear()
@@ -720,13 +726,20 @@ final class BeadStore {
         // periodic timer, so `bd` writes would otherwise not appear for minutes.
         let forcesSnapshotExport = reason == .mutation || reason == .manual
 
+        // Status/type definitions rarely change, and reading them costs two `bd`
+        // subprocesses. Reuse the cache except when the user explicitly refreshes, on the
+        // first load, or after the app edited definitions (which clears the cache) —
+        // otherwise every routine reload would re-run `bd`.
+        let reloadsDefinitions = reason == .initial || reason == .manual || cachedDefinitions == nil
+        let definitionsForLoad = reloadsDefinitions ? nil : cachedDefinitions
+
         refreshTask = Task { @MainActor [weak self] in
             do {
                 let snapshotTask = Task {
                     if forcesSnapshotExport {
-                        return try await projectLoader.refreshSnapshotAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+                        return try await projectLoader.refreshSnapshotAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: definitionsForLoad)
                     }
-                    return try await projectLoader.loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+                    return try await projectLoader.loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: definitionsForLoad)
                 }
                 let loadedProject = try await withTaskCancellationHandler {
                     try await snapshotTask.value
@@ -752,7 +765,7 @@ final class BeadStore {
                     return
                 }
                 let recoveryTask = Task {
-                    try await projectLoader.exportAndLoadProject(projectURL: projectURL, staleCutoffDays: self.staleCutoffDays)
+                    try await projectLoader.exportAndLoadProject(projectURL: projectURL, staleCutoffDays: self.staleCutoffDays, cachedDefinitions: definitionsForLoad)
                 }
                 do {
                     let recoveredProject = try await withTaskCancellationHandler(operation: {
@@ -1393,6 +1406,7 @@ final class BeadStore {
             types.append(BeadTypeDefinition(name: name, description: nil, source: .custom))
             try await commands.saveCustomTypes(projectURL: projectURL, types: types.sorted { $0.name < $1.name })
             guard self.projectURL == projectURL else { return false }
+            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
             requestReconcile()
             return true
         } catch {
@@ -1413,6 +1427,7 @@ final class BeadStore {
             guard self.projectURL == projectURL else { return false }
             hiddenTypeNames.remove(name)
             persistProjectVisibility()
+            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
             requestReconcile()
             return true
         } catch {
@@ -1443,6 +1458,7 @@ final class BeadStore {
             )
             try await commands.saveCustomStatuses(projectURL: projectURL, statuses: statuses.sorted { $0.name < $1.name })
             guard self.projectURL == projectURL else { return false }
+            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
             requestReconcile()
             return true
         } catch {
@@ -1463,6 +1479,7 @@ final class BeadStore {
             guard self.projectURL == projectURL else { return false }
             hiddenStatusNames.remove(name)
             persistProjectVisibility()
+            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
             requestReconcile()
             return true
         } catch {
@@ -1868,6 +1885,9 @@ final class BeadStore {
         index = loadedProject.index
         issues = loadedProject.snapshot.issues
         contentRevision &+= 1
+        if let definitions = loadedProject.definitions {
+            cachedDefinitions = definitions
+        }
         currentDataSource = loadedProject.source
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
         pruneExpandedIssueIDs()

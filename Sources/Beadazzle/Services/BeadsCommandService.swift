@@ -124,12 +124,12 @@ struct BeadsCommandService {
     }
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
-        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "statuses", "--json"])
+        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "statuses", "--json"], terminatesOnCancel: true)
         return try BeadsMetadataService.decodeStatuses(from: Data(text.utf8))
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
-        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "types", "--json"])
+        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "types", "--json"], terminatesOnCancel: true)
         return try BeadsMetadataService.decodeTypes(from: Data(text.utf8))
     }
 
@@ -155,14 +155,21 @@ struct BeadsCommandService {
         _ = try await runOutput(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
     }
 
-    private func runOutput(projectURL: URL, arguments: [String], standardInput: String? = nil) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
+    /// - Parameter terminatesOnCancel: when `true`, cancelling the surrounding task kills
+    ///   the `bd` subprocess instead of letting `readDataToEndOfFile` block until it exits
+    ///   on its own. Only safe for read-only reads — never for writes, which must not be
+    ///   interrupted mid-flight. Defaults to `false`.
+    private func runOutput(projectURL: URL, arguments: [String], standardInput: String? = nil, terminatesOnCancel: Bool = false) async throws -> String {
+        if terminatesOnCancel {
+            return try await Self.runOutputTerminatingOnCancel(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
+        }
+        return try await Task.detached(priority: .userInitiated) {
             try Self.runOutputSynchronously(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
         }.value
     }
 
     private func configValue(projectURL: URL, key: String) async throws -> String? {
-        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "config", "get", key])
+        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "config", "get", key], terminatesOnCancel: true)
         guard !text.hasSuffix(" (not set)") else { return nil }
         return text.isEmpty ? nil : text
     }
@@ -196,6 +203,69 @@ struct BeadsCommandService {
             throw BeadError.commandFailed(command: (["bd"] + arguments).joined(separator: " "), output: text)
         }
         return text
+    }
+
+    /// Runs `bd` off the cooperative pool and terminates the subprocess if the surrounding
+    /// task is cancelled. `readDataToEndOfFile` is not cancellation-aware, so without this
+    /// a superseded read would keep an entire `bd`/Dolt process running to completion —
+    /// overlapping reads would pile up instead of the newest winning.
+    private static func runOutputTerminatingOnCancel(projectURL: URL, arguments: [String], standardInput: String?) async throws -> String {
+        let process = Process()
+        let executable = BeadsCLI.executable()
+        process.executableURL = executable.url
+        process.arguments = executable.prefix + arguments
+        process.currentDirectoryURL = projectURL
+
+        let output = Pipe()
+        let input = standardInput.map { _ in Pipe() }
+        if let input {
+            process.standardInput = input
+        }
+        process.standardOutput = output
+        process.standardError = output
+
+        // `launched` gates `terminate()`: `Process.terminate()` raises if the process was
+        // never launched, and `onCancel` can fire before (or racing) `process.run()` — most
+        // obviously when the task is already cancelled on entry, where the handler runs
+        // immediately. `cancelled` lets the worker bail before launching and distinguishes a
+        // termination we caused from a genuine `bd` failure.
+        let state = SubprocessRunState()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        guard !state.isCancelled else {
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
+                        try process.run()
+                        state.markLaunched()
+                        if let standardInput, let input {
+                            input.fileHandleForWriting.write(Data(standardInput.utf8))
+                            input.fileHandleForWriting.closeFile()
+                        }
+                        let data = output.fileHandleForReading.readDataToEndOfFile()
+                        process.waitUntilExit()
+                        if state.isCancelled {
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
+                        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        guard process.terminationStatus == 0 else {
+                            continuation.resume(throwing: BeadError.commandFailed(command: (["bd"] + arguments).joined(separator: " "), output: text))
+                            return
+                        }
+                        continuation.resume(returning: text)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            if state.markCancelledAndShouldTerminate() {
+                process.terminate()
+            }
+        }
     }
 
     static func exportedIssuesJSONLURL(projectURL: URL) -> URL {
@@ -454,5 +524,36 @@ enum BeadsCommandArguments {
         for label in IssueDraft.normalizedLabels(originalLabels.joined(separator: ",")) {
             arguments += ["--remove-label", label]
         }
+    }
+}
+
+/// Shared, thread-safe state coordinating a `bd` subprocess with its task-cancellation
+/// handler. Guards two hazards under one lock: (1) `Process.terminate()` raises if the
+/// process was never launched, so cancellation must only terminate a launched process; and
+/// (2) the worker must be able to tell a termination we caused from a genuine `bd` failure.
+private final class SubprocessRunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var launched = false
+    private var cancelled = false
+
+    func markLaunched() {
+        lock.lock()
+        launched = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    /// Records cancellation and reports whether the caller should terminate the process —
+    /// true only if it has already been launched, so `terminate()` is always safe to call.
+    func markCancelledAndShouldTerminate() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+        return launched
     }
 }

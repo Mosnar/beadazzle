@@ -1,9 +1,23 @@
 import Foundation
 
+/// The raw status/type definitions read from `bd` (`statuses`/`types --json`), before
+/// they are merged with the statuses/types actually observed on issues. These change only
+/// when someone edits custom definitions, so they are cached across reloads to avoid
+/// spawning two `bd` subprocesses on every project reload (the embedded-Dolt startup cost
+/// of those reads dominated the reload path).
+struct BeadSemanticDefinitions: Sendable, Equatable {
+    var statuses: [BeadStatusDefinition]
+    var types: [BeadTypeDefinition]
+}
+
 struct LoadedProject: Sendable {
     var source: BeadsDataSource
     var snapshot: BeadsSnapshot
     var index: BeadProjectIndex
+    /// The definitions used to build `index.semantics`, so the caller can cache them and
+    /// pass them back on subsequent reloads. `nil` when the `bd` read failed (built-in
+    /// fallbacks were used) — the caller should not cache a failure.
+    var definitions: BeadSemanticDefinitions?
 }
 
 struct BeadProjectLoader: Sendable {
@@ -13,16 +27,33 @@ struct BeadProjectLoader: Sendable {
         self.commands = commands
     }
 
+    /// - Parameter cachedDefinitions: reuse these status/type definitions instead of
+    ///   reading them from `bd`. Pass the definitions returned by a previous load to skip
+    ///   the two `bd --readonly` subprocesses on reloads where definitions can't have
+    ///   changed (data-source-change reloads, post-mutation reconciles).
     func loadProject(
         projectURL: URL,
-        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays
+        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
         let loadedSnapshot = try await Task.detached(priority: .userInitiated) {
             try PerformanceSignposts.load.withIntervalSignpost("SnapshotRead") {
                 try BeadsSnapshotReader().loadProject(projectURL: projectURL)
             }
         }.value
-        let semantics = await loadSemantics(projectURL: projectURL, issues: loadedSnapshot.snapshot.issues)
+        let definitions: BeadSemanticDefinitions?
+        if let cachedDefinitions {
+            definitions = cachedDefinitions
+        } else {
+            definitions = await loadDefinitions(projectURL: projectURL)
+        }
+        let metadata = BeadsMetadataService()
+        let semantics = metadata.loadSemantics(
+            projectURL: projectURL,
+            issues: loadedSnapshot.snapshot.issues,
+            statusDefinitions: definitions?.statuses,
+            typeDefinitions: definitions?.types
+        )
 
         return await Task.detached(priority: .userInitiated) {
             let index = PerformanceSignposts.load.withIntervalSignpost("IndexBuild") {
@@ -33,7 +64,12 @@ struct BeadProjectLoader: Sendable {
                     staleCutoffDays: staleCutoffDays
                 )
             }
-            return LoadedProject(source: loadedSnapshot.source, snapshot: loadedSnapshot.snapshot, index: index)
+            return LoadedProject(
+                source: loadedSnapshot.source,
+                snapshot: loadedSnapshot.snapshot,
+                index: index,
+                definitions: definitions
+            )
         }.value
     }
 
@@ -48,13 +84,14 @@ struct BeadProjectLoader: Sendable {
 
     func exportAndLoadProject(
         projectURL: URL,
-        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays
+        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
         guard Self.beadsDirectoryExists(at: projectURL) else {
             throw BeadError.projectMissingDataSource(projectURL)
         }
         try await commands.exportReadableSnapshot(projectURL: projectURL)
-        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: cachedDefinitions)
     }
 
     /// Re-exports the readable JSONL snapshot before reading, then loads.
@@ -69,29 +106,24 @@ struct BeadProjectLoader: Sendable {
     /// load the existing snapshot rather than surfacing an error.
     func refreshSnapshotAndLoadProject(
         projectURL: URL,
-        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays
+        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
         if Self.beadsDirectoryExists(at: projectURL) {
             try? await commands.exportReadableSnapshot(projectURL: projectURL)
         }
-        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: cachedDefinitions)
     }
 
-    private func loadSemantics(projectURL: URL, issues: [BeadIssue]) async -> BeadProjectSemantics {
-        let metadata = BeadsMetadataService()
+    /// Reads status/type definitions from `bd`. Returns `nil` if the read fails, so the
+    /// caller falls back to built-in definitions without caching the failure.
+    private func loadDefinitions(projectURL: URL) async -> BeadSemanticDefinitions? {
         do {
             async let statuses = commands.loadStatusDefinitions(projectURL: projectURL)
             async let types = commands.loadTypeDefinitions(projectURL: projectURL)
-            let statusDefinitions = try await statuses
-            let typeDefinitions = try await types
-            return metadata.loadSemantics(
-                projectURL: projectURL,
-                issues: issues,
-                statusDefinitions: statusDefinitions,
-                typeDefinitions: typeDefinitions
-            )
+            return BeadSemanticDefinitions(statuses: try await statuses, types: try await types)
         } catch {
-            return metadata.loadSemantics(projectURL: projectURL, issues: issues)
+            return nil
         }
     }
 

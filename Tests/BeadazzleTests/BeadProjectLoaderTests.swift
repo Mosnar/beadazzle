@@ -22,6 +22,61 @@ final class BeadProjectLoaderTests: XCTestCase {
         XCTAssertTrue(loadedProject.index.semantics.typeNames.contains("incident"))
     }
 
+    func testLoadProjectReturnsLoadedDefinitionsForCaching() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "qa", type: "incident")
+        )
+        let commands = MetadataTestCommands(
+            statusDefinitions: .success([BeadStatusDefinition(name: "qa", category: .wip, icon: nil, description: nil)]),
+            typeDefinitions: .success([BeadTypeDefinition(name: "incident", description: nil)])
+        )
+
+        let loaded = try await BeadProjectLoader(commands: commands).loadProject(projectURL: projectURL)
+
+        let definitions = try XCTUnwrap(loaded.definitions)
+        XCTAssertEqual(definitions.statuses.map(\.name), ["qa"])
+        XCTAssertEqual(definitions.types.map(\.name), ["incident"])
+    }
+
+    func testLoadProjectWithCachedDefinitionsSkipsCommandReads() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "qa", type: "incident")
+        )
+        let counter = CommandCallCounter()
+        let commands = MetadataTestCommands(
+            statusDefinitions: .success([]),
+            typeDefinitions: .success([]),
+            callCounter: counter
+        )
+        let cached = BeadSemanticDefinitions(
+            statuses: [BeadStatusDefinition(name: "qa", category: .wip, icon: nil, description: nil)],
+            types: [BeadTypeDefinition(name: "incident", description: nil)]
+        )
+
+        let loaded = try await BeadProjectLoader(commands: commands)
+            .loadProject(projectURL: projectURL, cachedDefinitions: cached)
+
+        XCTAssertEqual(counter.definitionReads, 0, "cached definitions must not spawn any bd reads")
+        // Cached definitions are still merged with the live snapshot's semantics.
+        XCTAssertEqual(loaded.index.semantics.category(forStatus: "qa"), .wip)
+        XCTAssertTrue(loaded.index.semantics.typeNames.contains("incident"))
+        XCTAssertEqual(loaded.definitions, cached)
+    }
+
+    func testLoadProjectDoesNotCacheDefinitionsWhenCommandsFail() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-open", title: "Open", status: "open", type: "task")
+        )
+        let commands = MetadataTestCommands(
+            statusDefinitions: .failure(MetadataTestError.failed),
+            typeDefinitions: .failure(MetadataTestError.failed)
+        )
+
+        let loaded = try await BeadProjectLoader(commands: commands).loadProject(projectURL: projectURL)
+
+        XCTAssertNil(loaded.definitions, "a failed read must not be cached")
+    }
+
     func testLoadProjectFallsBackWhenMetadataCommandsFail() async throws {
         let projectURL = try makeProject(
             issueLine(id: "bd-open", title: "Open", status: "open", type: "custom")
@@ -60,9 +115,25 @@ final class BeadProjectLoaderTests: XCTestCase {
     }
 }
 
+private final class CommandCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _definitionReads = 0
+    func recordDefinitionRead() {
+        lock.lock()
+        _definitionReads += 1
+        lock.unlock()
+    }
+    var definitionReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _definitionReads
+    }
+}
+
 private struct MetadataTestCommands: BeadsCommanding {
     var statusDefinitions: Result<[BeadStatusDefinition], Error> = .success([])
     var typeDefinitions: Result<[BeadTypeDefinition], Error> = .success([])
+    var callCounter: CommandCallCounter? = nil
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
@@ -85,11 +156,13 @@ private struct MetadataTestCommands: BeadsCommanding {
     func addComment(projectURL: URL, issueID: String, text: String) async throws {}
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
-        try statusDefinitions.get()
+        callCounter?.recordDefinitionRead()
+        return try statusDefinitions.get()
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
-        try typeDefinitions.get()
+        callCounter?.recordDefinitionRead()
+        return try typeDefinitions.get()
     }
 
     func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws {}
