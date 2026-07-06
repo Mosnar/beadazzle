@@ -16,6 +16,7 @@ readonly BEADAZZLE_SCRIPT_DIR
 BEADAZZLE_ROOT_DIR="$(cd "$BEADAZZLE_SCRIPT_DIR/.." && pwd)"
 readonly BEADAZZLE_ROOT_DIR
 readonly BEADAZZLE_DIST_DIR="$BEADAZZLE_ROOT_DIR/dist"
+readonly BEADAZZLE_APP_ICON_SOURCE="$BEADAZZLE_ROOT_DIR/Resources/AppIcon.png"
 
 beadazzle_release_die() {
   printf 'error: %s\n' "$*" >&2
@@ -75,6 +76,38 @@ beadazzle_release_resolve_version_context() {
 
 beadazzle_release_prepare_dist_dir() {
   mkdir -p "$1"
+}
+
+# Generate an .icns from a square source PNG into the bundle Resources dir.
+# Returns non-zero (without generating) when the source PNG is absent so callers
+# can skip wiring CFBundleIconFile.
+beadazzle_release_write_app_icon() {
+  local source_png="$1"
+  local resources_dir="$2"
+  local icon_name="${3:-AppIcon}"
+
+  [[ -f "$source_png" ]] || return 1
+
+  beadazzle_release_require_command sips
+  beadazzle_release_require_command iconutil
+
+  local work_dir
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/beadazzle-iconset.XXXXXX")"
+  local iconset_dir="$work_dir/$icon_name.iconset"
+  mkdir -p "$iconset_dir"
+
+  local size retina
+  for size in 16 32 128 256 512; do
+    retina=$((size * 2))
+    /usr/bin/sips -z "$size" "$size" "$source_png" \
+      --out "$iconset_dir/icon_${size}x${size}.png" >/dev/null
+    /usr/bin/sips -z "$retina" "$retina" "$source_png" \
+      --out "$iconset_dir/icon_${size}x${size}@2x.png" >/dev/null
+  done
+
+  mkdir -p "$resources_dir"
+  /usr/bin/iconutil -c icns "$iconset_dir" -o "$resources_dir/$icon_name.icns"
+  rm -rf "$work_dir"
 }
 
 beadazzle_release_sign_app_bundle() {

@@ -118,6 +118,11 @@ cat >"$info_plist" <<PLIST
 </plist>
 PLIST
 
+app_resources="$app_contents/Resources"
+if beadazzle_release_write_app_icon "$BEADAZZLE_APP_ICON_SOURCE" "$app_resources"; then
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$info_plist" >/dev/null
+fi
+
 beadazzle_release_sign_app_bundle "$codesign_identity" "$app_bundle"
 beadazzle_release_verify_app_bundle_signature "$app_bundle"
 
