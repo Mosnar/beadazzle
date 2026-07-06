@@ -18,6 +18,11 @@ Beadazzle is a SwiftPM native macOS app. Prefer small, focused SwiftUI files and
 - For warnings tied to specific files, use `XcodeRefreshCodeIssuesInFile` on the affected source files after edits.
 - Do not stop at a successful shell build when Xcode reported warnings; verify through Xcode MCP that there are no current warnings or explain any stale runtime entries that remain in the navigator.
 
+## Changelog
+
+- Record user-facing changes in `CHANGELOG.md` under `## [Unreleased]` as part of the work that makes them — new features, behavior changes, notable fixes. Skip internal-only churn (refactors, test-only edits, CI plumbing) that a user would never notice.
+- Write entries for users of the app, not as commit summaries. The release workflow reads the tag's section for both the GitHub release notes and the in-app Sparkle update dialog, and a release fails if its section is missing. See `docs/AUTO_UPDATES.md`.
+
 ## Project Boundaries
 
 - Do not edit generated output in `.build/`, `.swiftpm/`, or `dist/`.

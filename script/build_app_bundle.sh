@@ -114,15 +114,27 @@ cat >"$info_plist" <<PLIST
   <true/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>SUFeedURL</key>
+  <string>$BEADAZZLE_SPARKLE_FEED_URL</string>
 </dict>
 </plist>
 PLIST
+
+if [[ -n "$BEADAZZLE_SPARKLE_PUBLIC_KEY" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $BEADAZZLE_SPARKLE_PUBLIC_KEY" "$info_plist" >/dev/null
+else
+  printf 'warning: BEADAZZLE_SPARKLE_PUBLIC_KEY is unset; built app cannot verify updates\n' >&2
+fi
+
+beadazzle_release_embed_sparkle "$app_contents"
 
 app_resources="$app_contents/Resources"
 if beadazzle_release_write_app_icon "$BEADAZZLE_APP_ICON_SOURCE" "$app_resources"; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$info_plist" >/dev/null
 fi
 
+/usr/bin/xattr -cr "$app_bundle"
+beadazzle_release_sign_sparkle "$codesign_identity" "$app_contents/Frameworks"
 beadazzle_release_sign_app_bundle "$codesign_identity" "$app_bundle"
 beadazzle_release_verify_app_bundle_signature "$app_bundle"
 

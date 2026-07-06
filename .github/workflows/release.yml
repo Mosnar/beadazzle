@@ -73,6 +73,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release.outputs.target_ref }}
 
+      - name: Verify changelog section exists
+        shell: bash
+        run: ./script/extract_changelog.sh --version "${{ steps.release.outputs.release_tag }}" >/dev/null
+
       - name: Run Swift tests
         shell: bash
         run: swift test
@@ -94,6 +98,11 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
+      BEADAZZLE_SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
+      SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+      # Keep in sync with the Sparkle version pinned in Package.swift so the
+      # generate_appcast tool matches the embedded framework.
+      SPARKLE_TOOLS_VERSION: "2.9.4"
     steps:
       - name: Validate release secrets
         shell: bash
@@ -106,7 +115,9 @@ jobs:
             APPLE_DEVELOPER_ID_P12_PASSWORD \
             APPLE_ID \
             APPLE_TEAM_ID \
-            APPLE_APP_SPECIFIC_PASSWORD; do
+            APPLE_APP_SPECIFIC_PASSWORD \
+            BEADAZZLE_SPARKLE_PUBLIC_KEY \
+            SPARKLE_ED_PRIVATE_KEY; do
             if [[ -z "${!variable_name:-}" ]]; then
               echo "::error::Missing required secret or environment value: $variable_name" >&2
               exit 1
@@ -189,6 +200,30 @@ jobs:
             --dmg-path "${{ steps.create_dmg.outputs.dmg_path }}" \
             --checksum-path "${{ steps.create_dmg.outputs.checksum_path }}"
 
+      - name: Prepare release notes from changelog
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notes_md="$RUNNER_TEMP/release-notes.md"
+          notes_html="$RUNNER_TEMP/release-notes.html"
+
+          # Fails the release if the tag has no matching CHANGELOG.md section.
+          ./script/extract_changelog.sh --version "$RELEASE_TAG" > "$notes_md"
+
+          # Render to HTML (GitHub-flavored) for the Sparkle update dialog.
+          gh api --method POST /markdown \
+            -f mode=gfm \
+            -f context="${GITHUB_REPOSITORY}" \
+            -f "text=$(cat "$notes_md")" > "$notes_html"
+
+          echo "notes_md=$notes_md" >> "$GITHUB_OUTPUT"
+          echo "notes_html=$notes_html" >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,6 +231,7 @@ jobs:
           TARGET_REF: ${{ needs.validate.outputs.target_ref }}
           DMG_PATH: ${{ steps.create_dmg.outputs.dmg_path }}
           CHECKSUM_PATH: ${{ steps.create_dmg.outputs.checksum_path }}
+          NOTES_MD: ${{ steps.notes.outputs.notes_md }}
         shell: bash
         run: |
           set -euo pipefail
@@ -203,7 +239,7 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$DMG_PATH" "$CHECKSUM_PATH" --clobber
           else
-            release_args=(release create "$RELEASE_TAG" "$DMG_PATH" "$CHECKSUM_PATH" --title "$RELEASE_TAG" --notes "Beta release $RELEASE_TAG")
+            release_args=(release create "$RELEASE_TAG" "$DMG_PATH" "$CHECKSUM_PATH" --title "$RELEASE_TAG" --notes-file "$NOTES_MD")
 
             # A semver pre-release identifier (e.g. -beta.1, -rc.1) always contains a hyphen.
             if [[ "$RELEASE_TAG" == *-* ]]; then
@@ -219,7 +255,66 @@ jobs:
             gh "${release_args[@]}"
           fi
 
+      - name: Install Sparkle appcast tools
+        id: sparkle_tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tools_dir="$RUNNER_TEMP/sparkle-tools"
+          mkdir -p "$tools_dir"
+          archive="$RUNNER_TEMP/sparkle-tools.tar.xz"
+
+          curl -fsSL \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_TOOLS_VERSION}/Sparkle-${SPARKLE_TOOLS_VERSION}.tar.xz" \
+            -o "$archive"
+          tar -xf "$archive" -C "$tools_dir" bin/generate_appcast
+
+          generate_appcast="$tools_dir/bin/generate_appcast"
+          chmod +x "$generate_appcast"
+          echo "generate_appcast=$generate_appcast" >> "$GITHUB_OUTPUT"
+
+      - name: Build appcast
+        id: appcast
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          DMG_PATH: ${{ steps.create_dmg.outputs.dmg_path }}
+          NOTES_HTML: ${{ steps.notes.outputs.notes_html }}
+          GENERATE_APPCAST: ${{ steps.sparkle_tools.outputs.generate_appcast }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          site_dir="$GITHUB_WORKSPACE/appcast-site"
+          ./script/build_appcast.sh \
+            --dmg-path "$DMG_PATH" \
+            --release-tag "$RELEASE_TAG" \
+            --notes-html "$NOTES_HTML" \
+            --generate-appcast "$GENERATE_APPCAST" \
+            --output-dir "$site_dir"
+
+          echo "site_dir=$site_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload appcast as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.appcast.outputs.site_dir }}
+
       - name: Remove temporary signing keychain
         if: always() && steps.keychain.outputs.keychain_path != ''
         shell: bash
         run: security delete-keychain "${{ steps.keychain.outputs.keychain_path }}"
+
+  deploy_appcast:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy appcast to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -3,6 +3,7 @@ import SwiftUI
 private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
     case general
     case ui
+    case updates
 
     var id: Self { self }
 
@@ -12,6 +13,8 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
             "General"
         case .ui:
             "UI"
+        case .updates:
+            "Updates"
         }
     }
 
@@ -21,6 +24,8 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
             "gearshape"
         case .ui:
             "sidebar.leading"
+        case .updates:
+            "arrow.down.circle"
         }
     }
 }
@@ -64,6 +69,8 @@ private struct AppSettingsDetail: View {
             GeneralSettingsPane()
         case .ui:
             UISettingsPane()
+        case .updates:
+            UpdatesSettingsPane()
         }
     }
 }
@@ -120,6 +127,26 @@ private struct GeneralSettingsPane: View {
     private func chooseBDCLIPath() {
         guard let url = PanelService.chooseExecutable(title: "Choose bd CLI") else { return }
         store.bdCLIPath = url.path
+    }
+}
+
+private struct UpdatesSettingsPane: View {
+    @EnvironmentObject private var updater: UpdaterController
+
+    var body: some View {
+        Form {
+            Section("Software Update") {
+                Toggle("Automatically check for updates", isOn: $updater.automaticallyChecksForUpdates)
+                Toggle("Receive beta updates", isOn: $updater.receivesBetaUpdates)
+            }
+
+            Section {
+                Text("Beta updates deliver pre-release builds as soon as they ship. Turn this off to only receive stable releases once they are available.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .settingsGroupedForm()
     }
 }
 

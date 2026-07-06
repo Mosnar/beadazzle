@@ -7,6 +7,7 @@ enum BeadazzlePreferenceKeys {
     static let showsAssigneeInBeadList = "ShowsAssigneeInBeadList"
     static let showsDueDateInBeadList = "ShowsDueDateInBeadList"
     static let showsCommentsInBeadList = "ShowsCommentsInBeadList"
+    static let receivesBetaUpdates = "ReceivesBetaUpdates"
 
     static func hiddenTypes(projectURL: URL) -> String {
         "HiddenTypes.\(projectURL.standardizedFileURL.path)"
