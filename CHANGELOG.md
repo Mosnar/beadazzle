@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-07-06
+
 ### Added
 
 - Automatic updates via Sparkle: the app checks for new builds in the
@@ -21,7 +23,7 @@ for users, not for the commit log.
 - **Updates** settings pane with toggles for automatic update checks and for
   receiving beta (pre-release) builds.
 
-## [0.1.0-beta.1]
+## [0.1.0-beta.1] - 2026-07-06
 
 ### Added
 
@@ -31,5 +33,6 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v0.1.0-beta.1...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v0.1.0-beta.2...HEAD
 [0.1.0-beta.1]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.1
+[0.1.0-beta.2]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.2
