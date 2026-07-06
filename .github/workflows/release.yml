@@ -168,15 +168,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t artifacts < <(./script/create_release_dmg.sh \
+          dmg_output="$(./script/create_release_dmg.sh \
             --release-tag "${{ needs.validate.outputs.release_tag }}" \
             --build-number "${{ needs.validate.outputs.build_number }}" \
             --codesign-identity "$DEVELOPER_ID_APPLICATION" \
             --configuration release \
-            --app-bundle "${{ steps.build_app.outputs.app_bundle }}")
+            --app-bundle "${{ steps.build_app.outputs.app_bundle }}")"
 
-          echo "dmg_path=${artifacts[0]}" >> "$GITHUB_OUTPUT"
-          echo "checksum_path=${artifacts[1]}" >> "$GITHUB_OUTPUT"
+          dmg_path="$(printf '%s\n' "$dmg_output" | sed -n '1p')"
+          checksum_path="$(printf '%s\n' "$dmg_output" | sed -n '2p')"
+
+          echo "dmg_path=$dmg_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
 
       - name: Notarize DMG and refresh checksum
         shell: bash
