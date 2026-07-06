@@ -205,6 +205,11 @@ jobs:
           else
             release_args=(release create "$RELEASE_TAG" "$DMG_PATH" "$CHECKSUM_PATH" --title "$RELEASE_TAG" --notes "Beta release $RELEASE_TAG")
 
+            # A semver pre-release identifier (e.g. -beta.1, -rc.1) always contains a hyphen.
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              release_args+=(--prerelease)
+            fi
+
             if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
               release_args+=(--target "$TARGET_REF")
             else
