@@ -12,6 +12,7 @@ profiles/
 # AI bullshit
 .omc/
 .claude/settings.local.json
+.junie/
 
 # Local agent/tooling config (not for the public repo)
 .agents/
