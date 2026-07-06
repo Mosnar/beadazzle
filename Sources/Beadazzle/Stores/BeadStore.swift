@@ -155,6 +155,10 @@ final class BeadStore {
     @ObservationIgnored private let commands: any BeadsCommanding
     @ObservationIgnored private let projectLoader: BeadProjectLoader
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var reconcileDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var activeMutationCount = 0
+    @ObservationIgnored private var pendingReconcile = false
+    @ObservationIgnored private var isReconcileInFlight = false
     @ObservationIgnored private var filterTask: Task<Void, Never>?
     @ObservationIgnored private var recomputeTask: Task<Void, Never>?
     @ObservationIgnored private var queryGeneration = 0
@@ -695,6 +699,13 @@ final class BeadStore {
     private func refresh(reason: RefreshReason, showsLoadingIndicator: Bool) {
         guard let projectURL else { return }
         refreshTask?.cancel()
+        // A manual refresh or project (re)load reads authoritative state directly, so any
+        // queued coalesced reconcile would just be a redundant reload — drop it.
+        if reason == .manual || reason == .initial {
+            reconcileDebounceTask?.cancel()
+            reconcileDebounceTask = nil
+            pendingReconcile = false
+        }
         if showsLoadingIndicator {
             isLoading = true
         }
@@ -704,10 +715,18 @@ final class BeadStore {
         let projectLoader = projectLoader
         let staleCutoffDays = staleCutoffDays
 
+        // Mutations and explicit user refreshes must re-export the readable JSONL
+        // snapshot first: Dolt-backed (embedded) projects only back it up on a
+        // periodic timer, so `bd` writes would otherwise not appear for minutes.
+        let forcesSnapshotExport = reason == .mutation || reason == .manual
+
         refreshTask = Task { @MainActor [weak self] in
             do {
                 let snapshotTask = Task {
-                    try await projectLoader.loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+                    if forcesSnapshotExport {
+                        return try await projectLoader.refreshSnapshotAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+                    }
+                    return try await projectLoader.loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
                 }
                 let loadedProject = try await withTaskCancellationHandler {
                     try await snapshotTask.value
@@ -948,24 +967,150 @@ final class BeadStore {
         recordWorkspaceSnapshotIfNeeded()
     }
 
+    // MARK: Optimistic mutations
+
+    /// Built-in status `bd close` moves an issue to; used for optimistic close patches.
+    private static let closedStatusName = "closed"
+
+    /// The in-memory issues/dependencies captured before an optimistic mutation, so a
+    /// failed `bd` write can be rolled back to the last authoritative state.
+    private struct MutationSnapshot {
+        let issues: [BeadIssue]
+        let dependencies: [BeadDependency]
+    }
+
+    private func currentMutationSnapshot() -> MutationSnapshot {
+        MutationSnapshot(issues: index.issues, dependencies: index.dependencies)
+    }
+
+    /// Rebuilds the in-memory index from patched issues/dependencies and refreshes derived
+    /// state immediately — no disk access, no loading indicator. This is what makes edits
+    /// feel instant: the UI reflects the change before `bd` has even run. Correctness is
+    /// preserved by writing through `bd` afterward and reconciling silently.
+    private func applyOptimisticState(issues: [BeadIssue], dependencies: [BeadDependency]) {
+        index = BeadProjectIndex(
+            issues: issues,
+            dependencies: dependencies,
+            semantics: index.semantics,
+            staleCutoffDays: staleCutoffDays
+        )
+        self.issues = issues
+        contentRevision &+= 1
+        selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
+        pruneExpandedIssueIDs()
+        expandAncestorsForSelection(rebuildRows: false)
+        applyFilters()
+        loadDependenciesForSelection()
+        syncCommentsForSelectionFromCache()
+        pruneGateDetailsForCurrentSnapshot()
+    }
+
+    private func rollbackOptimisticState(to snapshot: MutationSnapshot) {
+        applyOptimisticState(issues: snapshot.issues, dependencies: snapshot.dependencies)
+    }
+
+    /// Debounce window after the last mutation settles before a single reconcile runs.
+    private static let reconcileDebounce: Duration = .milliseconds(600)
+
+    /// Marks the start of an optimistic mutation. Increments the in-flight count and
+    /// supersedes any queued or running reconcile: a fresh edit must not be clobbered by
+    /// a reload of pre-edit state (that was the rapid-edit flicker). The mutation's own
+    /// completion reschedules a reconcile.
+    private func beginMutation() {
+        activeMutationCount += 1
+        reconcileDebounceTask?.cancel()
+        reconcileDebounceTask = nil
+        if isReconcileInFlight {
+            refreshTask?.cancel()
+            isReconcileInFlight = false
+        }
+    }
+
+    private func endMutation() {
+        activeMutationCount = max(0, activeMutationCount - 1)
+        scheduleReconcileIfIdle()
+    }
+
+    /// Requests a coalesced reconcile without participating in the in-flight count —
+    /// used by non-optimistic mutations that have already awaited their `bd` write.
+    private func requestReconcile() {
+        pendingReconcile = true
+        scheduleReconcileIfIdle()
+    }
+
+    /// Coalesces reconciles: one silent reload fires ~`reconcileDebounce` after the last
+    /// mutation settles, instead of an export + reparse per mutation. Optimistic patches
+    /// already show the change; the reconcile only lets `bd`-computed fields (timestamps,
+    /// auto-cascades, ready state) converge. Skipped while any mutation is still in flight
+    /// — the last one to finish schedules it.
+    private func scheduleReconcileIfIdle() {
+        guard pendingReconcile, activeMutationCount == 0 else { return }
+        reconcileDebounceTask?.cancel()
+        reconcileDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.reconcileDebounce)
+            guard let self, !Task.isCancelled else { return }
+            guard self.activeMutationCount == 0, self.pendingReconcile else { return }
+            self.pendingReconcile = false
+            self.isReconcileInFlight = true
+            self.refresh(reason: .mutation, showsLoadingIndicator: false)
+        }
+    }
+
+    private func optimisticallyUpdatedIssue(_ issue: BeadIssue, from draft: IssueDraft) -> BeadIssue {
+        var copy = issue
+        copy.title = draft.title
+        copy.description = draft.description
+        copy.design = draft.design
+        copy.acceptanceCriteria = draft.acceptanceCriteria
+        copy.notes = draft.notes
+        copy.status = draft.status
+        copy.priority = draft.priority
+        copy.issueType = draft.issueType
+        copy.assignee = draft.assignee.nilIfBlank
+        copy.labels = draft.labels
+        copy.dueAt = draft.dueAt
+        copy.deferUntil = draft.deferUntil
+        copy.updatedAt = Date()
+        if index.semantics.category(forStatus: draft.status) == .done, copy.closedAt == nil {
+            copy.closedAt = Date()
+        }
+        return copy
+    }
+
     @discardableResult
     func save(_ draft: IssueDraft) async -> Bool {
         guard let projectURL else { return false }
-        do {
-            if draft.id == nil {
+
+        // Create can't be optimistic — the id is minted by `bd`. Await the write, then
+        // reconcile silently and reveal the new bead (no full-screen loading indicator).
+        guard let draftID = draft.id, let originalIssue = index.issue(with: draftID) else {
+            do {
                 let createdIssueID = try await commands.create(projectURL: projectURL, draft: draft)
                 guard self.projectURL == projectURL else { return false }
                 return try await reloadProjectAfterMutation(projectURL: projectURL, revealIssueID: createdIssueID)
-            } else {
-                let originalIssue = draft.id.flatMap { index.issue(with: $0) }
-                try await commands.update(projectURL: projectURL, draft: draft, originalIssue: originalIssue)
+            } catch {
+                guard self.projectURL == projectURL else { return false }
+                lastError = error.localizedDescription
+                return false
             }
+        }
+
+        let snapshot = currentMutationSnapshot()
+        let optimisticIssues = snapshot.issues.map { issue in
+            issue.id == draftID ? optimisticallyUpdatedIssue(issue, from: draft) : issue
+        }
+        beginMutation()
+        defer { endMutation() }
+        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+
+        do {
+            try await commands.update(projectURL: projectURL, draft: draft, originalIssue: originalIssue)
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
-            isLoading = false
+            rollbackOptimisticState(to: snapshot)
             lastError = error.localizedDescription
             return false
         }
@@ -973,7 +1118,6 @@ final class BeadStore {
 
     private func reloadProjectAfterMutation(projectURL: URL, revealIssueID: String) async throws -> Bool {
         refreshTask?.cancel()
-        isLoading = true
         lastError = nil
 
         let loadedProject = try await loadProjectRecoveringMissingDataSource(projectURL: projectURL)
@@ -992,7 +1136,7 @@ final class BeadStore {
 
     private func loadProjectRecoveringMissingDataSource(projectURL: URL) async throws -> LoadedProject {
         do {
-            return try await projectLoader.loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+            return try await projectLoader.refreshSnapshotAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
         } catch BeadError.projectMissingDataSource(let missingURL) {
             guard Self.beadsDirectoryExists(at: projectURL) else {
                 throw BeadError.projectMissingDataSource(missingURL)
@@ -1013,13 +1157,30 @@ final class BeadStore {
         guard let projectURL else { return false }
         let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
+
+        let snapshot = currentMutationSnapshot()
+        let idSet = Set(ids)
+        let now = Date()
+        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
+            guard idSet.contains(issue.id) else { return issue }
+            var copy = issue
+            copy.status = Self.closedStatusName
+            copy.closedAt = copy.closedAt ?? now
+            copy.updatedAt = now
+            return copy
+        }
+        beginMutation()
+        defer { endMutation() }
+        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+
         do {
             try await commands.close(projectURL: projectURL, ids: ids, reason: reason)
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
             lastError = error.localizedDescription
             return false
         }
@@ -1030,15 +1191,26 @@ final class BeadStore {
         guard let projectURL else { return false }
         let ids = Array(selectedIDs).sorted()
         guard !ids.isEmpty else { return false }
+
+        let snapshot = currentMutationSnapshot()
+        let idSet = Set(ids)
+        let optimisticIssues = snapshot.issues.filter { !idSet.contains($0.id) }
+        let optimisticDependencies = snapshot.dependencies.filter {
+            !idSet.contains($0.issueID) && !idSet.contains($0.dependsOnID)
+        }
+        beginMutation()
+        defer { endMutation() }
+        selectedIDs = []
+        applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
+
         do {
             try await commands.delete(projectURL: projectURL, ids: ids)
             guard self.projectURL == projectURL else { return false }
-            selectedIDs = []
-            selectionDidChange()
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
             lastError = error.localizedDescription
             return false
         }
@@ -1049,13 +1221,33 @@ final class BeadStore {
         guard let projectURL else { return false }
         let ids = Array(selectedIDs).sorted()
         guard !ids.isEmpty else { return false }
+
+        let snapshot = currentMutationSnapshot()
+        let idSet = Set(ids)
+        let now = Date()
+        let makesDone = status.map { index.semantics.category(forStatus: $0) == .done } ?? false
+        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
+            guard idSet.contains(issue.id) else { return issue }
+            var copy = issue
+            if let status { copy.status = status }
+            if let type { copy.issueType = type }
+            if let priority { copy.priority = priority }
+            if makesDone { copy.closedAt = copy.closedAt ?? now }
+            copy.updatedAt = now
+            return copy
+        }
+        beginMutation()
+        defer { endMutation() }
+        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+
         do {
             try await commands.bulkUpdate(projectURL: projectURL, ids: ids, status: status, type: type, priority: priority)
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
             lastError = error.localizedDescription
             return false
         }
@@ -1067,7 +1259,7 @@ final class BeadStore {
         do {
             try await commands.resolveGate(projectURL: projectURL, id: id, reason: reason?.nilIfBlank)
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1085,7 +1277,7 @@ final class BeadStore {
             let output = try await commands.checkGates(projectURL: projectURL, type: type, escalate: escalate, dryRun: dryRun)
             guard self.projectURL == projectURL else { return nil }
             if !dryRun {
-                refresh(reason: .mutation, showsLoadingIndicator: true)
+                requestReconcile()
             }
             return output
         } catch {
@@ -1108,7 +1300,7 @@ final class BeadStore {
                 awaitID: awaitID?.nilIfBlank
             )
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1126,7 +1318,7 @@ final class BeadStore {
             try await commands.addGateWaiter(projectURL: projectURL, id: id, waiter: trimmed)
             guard self.projectURL == projectURL else { return false }
             gatesByID[id] = nil
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1138,13 +1330,23 @@ final class BeadStore {
     @discardableResult
     func addDependency(issueID: String, dependsOnID: String, type: String) async -> Bool {
         guard let projectURL else { return false }
+
+        let snapshot = currentMutationSnapshot()
+        let newDependency = BeadDependency(issueID: issueID, dependsOnID: dependsOnID, type: type, createdAt: Date())
+        beginMutation()
+        defer { endMutation() }
+        if !snapshot.dependencies.contains(where: { $0.id == newDependency.id }) {
+            applyOptimisticState(issues: snapshot.issues, dependencies: snapshot.dependencies + [newDependency])
+        }
+
         do {
             try await commands.addDependency(projectURL: projectURL, issueID: issueID, dependsOnID: dependsOnID, type: type)
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
             lastError = error.localizedDescription
             return false
         }
@@ -1170,7 +1372,7 @@ final class BeadStore {
                     self.isLoadingComments = false
                 }
                 self.isAddingComment = false
-                self.refresh(reason: .mutation, showsLoadingIndicator: true)
+                self.requestReconcile()
             } catch {
                 guard self?.projectURL == projectURL else { return }
                 self?.isAddingComment = false
@@ -1191,7 +1393,7 @@ final class BeadStore {
             types.append(BeadTypeDefinition(name: name, description: nil, source: .custom))
             try await commands.saveCustomTypes(projectURL: projectURL, types: types.sorted { $0.name < $1.name })
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1211,7 +1413,7 @@ final class BeadStore {
             guard self.projectURL == projectURL else { return false }
             hiddenTypeNames.remove(name)
             persistProjectVisibility()
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1241,7 +1443,7 @@ final class BeadStore {
             )
             try await commands.saveCustomStatuses(projectURL: projectURL, statuses: statuses.sorted { $0.name < $1.name })
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1261,7 +1463,7 @@ final class BeadStore {
             guard self.projectURL == projectURL else { return false }
             hiddenStatusNames.remove(name)
             persistProjectVisibility()
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            requestReconcile()
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -1285,13 +1487,23 @@ final class BeadStore {
     @discardableResult
     func removeDependency(_ dependency: BeadDependency) async -> Bool {
         guard let projectURL else { return false }
+
+        let snapshot = currentMutationSnapshot()
+        let optimisticDependencies = snapshot.dependencies.filter {
+            !($0.issueID == dependency.issueID && $0.dependsOnID == dependency.dependsOnID)
+        }
+        beginMutation()
+        defer { endMutation() }
+        applyOptimisticState(issues: snapshot.issues, dependencies: optimisticDependencies)
+
         do {
             try await commands.removeDependency(projectURL: projectURL, issueID: dependency.issueID, dependsOnID: dependency.dependsOnID)
             guard self.projectURL == projectURL else { return false }
-            refresh(reason: .mutation, showsLoadingIndicator: true)
+            pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
             lastError = error.localizedDescription
             return false
         }
@@ -1651,6 +1863,7 @@ final class BeadStore {
     }
 
     private func applyLoadedProject(_ loadedProject: LoadedProject, projectURL: URL) {
+        isReconcileInFlight = false
         projectReadiness = .ready
         index = loadedProject.index
         issues = loadedProject.snapshot.issues

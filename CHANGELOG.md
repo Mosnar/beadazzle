@@ -13,6 +13,22 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Changed
+
+- Edits, closes, deletes, priority/type changes, and dependency changes now
+  apply **instantly** with no loading spinner. The change appears the moment you
+  make it while the write is saved in the background; if the write fails, the
+  change is rolled back and an error is shown. Previously changes could take up
+  to several minutes to appear (and manual Refresh didn't help) on repos backed
+  by an embedded database, because the app was reading a snapshot that database
+  only refreshed periodically.
+
+### Fixed
+
+- Manual Refresh and background reconciliation now re-read current state on
+  embedded-database repos, so the list always converges to what `bd` actually
+  recorded.
+
 ## [0.1.0-beta.2] - 2026-07-06
 
 ### Added

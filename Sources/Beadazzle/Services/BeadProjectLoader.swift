@@ -57,6 +57,26 @@ struct BeadProjectLoader: Sendable {
         return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
     }
 
+    /// Re-exports the readable JSONL snapshot before reading, then loads.
+    ///
+    /// Dolt-backed (embedded) projects only back up `issues.jsonl` on a periodic
+    /// timer (default: every 15 minutes), so `bd` writes are not reflected in the
+    /// snapshot Beadazzle reads until we force an export. Callers that must observe
+    /// recent writes — post-mutation reloads and explicit user refreshes — go
+    /// through here so the read reflects current state.
+    ///
+    /// The export is best-effort: if it fails (or `bd` is unavailable) we still
+    /// load the existing snapshot rather than surfacing an error.
+    func refreshSnapshotAndLoadProject(
+        projectURL: URL,
+        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays
+    ) async throws -> LoadedProject {
+        if Self.beadsDirectoryExists(at: projectURL) {
+            try? await commands.exportReadableSnapshot(projectURL: projectURL)
+        }
+        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+    }
+
     private func loadSemantics(projectURL: URL, issues: [BeadIssue]) async -> BeadProjectSemantics {
         let metadata = BeadsMetadataService()
         do {

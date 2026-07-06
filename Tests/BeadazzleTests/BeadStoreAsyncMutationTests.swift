@@ -21,6 +21,115 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
+    func testMutationAppliesOptimisticallyBeforeCommandCompletesWithoutLoadingIndicator() async throws {
+        // The change must be visible the instant the user makes it — before `bd` returns —
+        // and with no loading indicator.
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+
+        let task = Task { @MainActor in await store.bulkSet(status: "closed") }
+        // Optimistic status lands well before the 400ms command completes.
+        try await waitUntil { store.issue(with: "bd-1")?.status == "closed" }
+        XCTAssertFalse(store.isLoading)
+
+        let succeeded = await task.value
+        XCTAssertTrue(succeeded)
+    }
+
+    func testMutationRollsBackOptimisticStateOnCommandFailure() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+
+        let succeeded = await store.bulkSet(status: "closed")
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.status, "open")
+        XCTAssertEqual(store.lastError, StoreMutationTestError.commandFailed.localizedDescription)
+    }
+
+    func testSuccessfulMutationReconcilesByReExportingSnapshot() async throws {
+        // After the write succeeds, a silent reconcile re-exports the readable snapshot so
+        // `bd`-computed fields converge — this is what keeps Dolt-backed projects correct.
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+        let exportsBefore = await commands.exportCallCount
+
+        let succeeded = await store.bulkSet(status: "closed")
+        XCTAssertTrue(succeeded)
+
+        try await waitUntilAsync { await commands.exportCallCount > exportsBefore }
+    }
+
+    func testRapidMutationsCoalesceIntoASingleReconcile() async throws {
+        // Five quick edits must not trigger five export+reload cycles — just one, after
+        // the burst settles.
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+        let exportsBefore = await commands.exportCallCount
+
+        for priority in [0, 1, 2, 3, 4] {
+            _ = await store.bulkSet(priority: priority)
+        }
+
+        // Exactly one reconcile fires for the whole burst.
+        try await waitUntilAsync { await commands.exportCallCount == exportsBefore + 1 }
+        // ...and it stays at one after the debounce window has fully elapsed.
+        try await Task.sleep(for: .milliseconds(900))
+        let exportsAfter = await commands.exportCallCount
+        XCTAssertEqual(exportsAfter, exportsBefore + 1)
+    }
+
+    func testReconcileIsDeferredUntilInFlightMutationCompletes() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+        let exportsBefore = await commands.exportCallCount
+
+        let task = Task { @MainActor in await store.bulkSet(priority: 3) }
+        // While the write is in flight, no reconcile export should have run yet.
+        try await Task.sleep(for: .milliseconds(200))
+        let exportsMidFlight = await commands.exportCallCount
+        XCTAssertEqual(exportsMidFlight, exportsBefore)
+
+        _ = await task.value
+        try await waitUntilAsync { await commands.exportCallCount == exportsBefore + 1 }
+    }
+
+    func testManualRefreshReExportsReadableSnapshot() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let exportsBeforeRefresh = await commands.exportCallCount
+
+        store.refresh()
+
+        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+    }
+
     func testBulkSetReturnsFalseAndSetsLastErrorOnCommandFailure() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -349,6 +458,20 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
     }
+
+    private func waitUntilAsync(
+        timeout: TimeInterval = 3.0,
+        _ condition: @escaping () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while await !condition() {
+            if Date() > deadline {
+                XCTFail("Timed out waiting for condition")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
 }
 
 private actor RecordingBeadsCommands: BeadsCommanding {
@@ -361,6 +484,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         (projectURL: URL, blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?)
     ] = []
     private(set) var addGateWaiterCalls: [(projectURL: URL, id: String, waiter: String)] = []
+    private(set) var exportCallCount = 0
     private var createIssueID = "bd-created"
     private var createError: Error?
     private var bulkUpdateError: Error?
@@ -400,6 +524,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
     func exportReadableSnapshot(projectURL: URL) async throws {
+        exportCallCount += 1
         if let exportError {
             throw exportError
         }
