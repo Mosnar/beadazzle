@@ -1,0 +1,127 @@
+import SwiftUI
+
+struct CommentsView: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    let issue: BeadIssue
+    @State private var draftText = ""
+    @FocusState private var composerFocused: Bool
+
+    var body: some View {
+        let comments = store.comments(for: issue.id)
+        let isLoadingComments = store.isLoadingComments(for: issue.id)
+
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Activity")
+                    .font(.headline)
+                if isLoadingComments {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text(comments.count.formatted())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    store.loadCommentsForSelection(force: true)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh comments")
+                .disabled(isLoadingComments)
+            }
+
+            if isLoadingComments && comments.isEmpty {
+                Text("Loading comments...")
+                    .foregroundStyle(.secondary)
+            } else if comments.isEmpty {
+                Text("No comments.")
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(comments) { comment in
+                        CommentRow(comment: comment)
+                        if comment.id != comments.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+
+            Divider()
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 8) {
+                TextEditor(text: $draftText)
+                    .focused($composerFocused)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 64, maxHeight: 110)
+                    .padding(6)
+                    .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(.quaternary, lineWidth: 1)
+                    }
+
+                HStack {
+                    Spacer()
+                    Button {
+                        submitComment()
+                    } label: {
+                        Label("Comment", systemImage: "paperplane")
+                    }
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .disabled(normalizedDraft.isEmpty || store.isAddingComment)
+                }
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            store.loadCommentsForSelection()
+        }
+        .onChange(of: issue.id) {
+            draftText = ""
+            store.loadCommentsForSelection()
+        }
+    }
+
+    private var normalizedDraft: String {
+        draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func submitComment() {
+        let text = normalizedDraft
+        guard !text.isEmpty else { return }
+        store.addComment(issueID: issue.id, text: text)
+        draftText = ""
+        composerFocused = false
+    }
+}
+
+private struct CommentRow: View {
+    let comment: BeadComment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(comment.author?.nilIfBlank ?? "Unknown")
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                Text(BeadFormatters.displayDate(comment.createdAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            Text(comment.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 8)
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+}

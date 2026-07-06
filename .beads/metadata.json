@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "beadazzle",
+  "project_id": "e31f2ab6-4c91-4d52-bf4b-836b29ee0576"
+}

@@ -1,0 +1,19 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+profiles/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# AI bullshit
+.omc/
+.claude/settings.local.json
+
+# Local agent/tooling config (not for the public repo)
+.agents/
+.codex/
+skills-lock.json

@@ -1,0 +1,388 @@
+import Foundation
+
+protocol BeadsCommanding: Sendable {
+    func initialize(projectURL: URL, options: BeadsInitOptions) async throws
+    func exportReadableSnapshot(projectURL: URL) async throws
+    func create(projectURL: URL, draft: IssueDraft) async throws -> String
+    func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws
+    func close(projectURL: URL, ids: [String], reason: String?) async throws
+    func delete(projectURL: URL, ids: [String]) async throws
+    func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws
+    func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
+    func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws
+    func addComment(projectURL: URL, issueID: String, text: String) async throws
+    func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition]
+    func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition]
+    func loadCustomStatuses(projectURL: URL) async throws -> [BeadStatusDefinition]
+    func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition]
+    func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws
+    func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws
+}
+
+extension BeadsCommanding {
+    func loadCustomStatuses(projectURL: URL) async throws -> [BeadStatusDefinition] {
+        try await loadStatusDefinitions(projectURL: projectURL).filter(\.isCustom)
+    }
+
+    func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition] {
+        try await loadTypeDefinitions(projectURL: projectURL).filter(\.isCustom)
+    }
+}
+
+struct BeadsCommandService {
+    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.initialize(options: options))
+        try await exportReadableSnapshot(projectURL: projectURL)
+    }
+
+    func exportReadableSnapshot(projectURL: URL) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.exportJSONL())
+        try Self.ensureExportedIssuesJSONLExists(projectURL: projectURL)
+    }
+
+    func create(projectURL: URL, draft: IssueDraft) async throws -> String {
+        let output = try await runOutput(projectURL: projectURL, arguments: BeadsCommandArguments.create(draft: draft, silent: true))
+        return try Self.createdIssueID(from: output)
+    }
+
+    func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue? = nil) async throws {
+        guard let arguments = BeadsCommandArguments.update(draft: draft, originalLabels: originalIssue?.labels) else { return }
+        try await run(projectURL: projectURL, arguments: arguments)
+    }
+
+    func close(projectURL: URL, ids: [String], reason: String? = "Closed in Beadazzle") async throws {
+        guard !ids.isEmpty else { return }
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.close(ids: ids, reason: reason))
+    }
+
+    func delete(projectURL: URL, ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        try await run(projectURL: projectURL, arguments: ["delete"] + ids + ["--force"])
+    }
+
+    func bulkUpdate(projectURL: URL, ids: [String], status: String? = nil, type: String? = nil, priority: Int? = nil) async throws {
+        guard !ids.isEmpty else { return }
+        var arguments = ["update"] + ids
+        if let status {
+            arguments += ["--status", status]
+        }
+        if let type {
+            arguments += ["--type", type]
+        }
+        if let priority {
+            arguments += ["--priority", "P\(priority)"]
+        }
+        try await run(projectURL: projectURL, arguments: arguments)
+    }
+
+    func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {
+        try await run(projectURL: projectURL, arguments: ["dep", "add", issueID, dependsOnID, "--type", type])
+    }
+
+    func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws {
+        try await run(projectURL: projectURL, arguments: ["dep", "remove", issueID, dependsOnID])
+    }
+
+    func addComment(projectURL: URL, issueID: String, text: String) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.addComment(issueID: issueID), standardInput: text)
+    }
+
+    func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
+        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "statuses", "--json"])
+        return try BeadsMetadataService.decodeStatuses(from: Data(text.utf8))
+    }
+
+    func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
+        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "types", "--json"])
+        return try BeadsMetadataService.decodeTypes(from: Data(text.utf8))
+    }
+
+    func loadCustomStatuses(projectURL: URL) async throws -> [BeadStatusDefinition] {
+        guard let value = try await configValue(projectURL: projectURL, key: "status.custom") else { return [] }
+        return try Self.decodeCustomStatuses(from: value)
+    }
+
+    func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition] {
+        guard let value = try await configValue(projectURL: projectURL, key: "types.custom") else { return [] }
+        return try Self.decodeCustomTypes(from: value)
+    }
+
+    func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.saveCustomStatuses(statuses))
+    }
+
+    func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws {
+        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.saveCustomTypes(types))
+    }
+
+    private func run(projectURL: URL, arguments: [String], standardInput: String? = nil) async throws {
+        _ = try await runOutput(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
+    }
+
+    private func runOutput(projectURL: URL, arguments: [String], standardInput: String? = nil) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.runOutputSynchronously(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
+        }.value
+    }
+
+    private func configValue(projectURL: URL, key: String) async throws -> String? {
+        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "config", "get", key])
+        guard !text.hasSuffix(" (not set)") else { return nil }
+        return text.isEmpty ? nil : text
+    }
+
+    private static func runOutputSynchronously(projectURL: URL, arguments: [String], standardInput: String? = nil) throws -> String {
+        let process = Process()
+        let executable = BeadsCLI.executable()
+        process.executableURL = executable.url
+        process.arguments = executable.prefix + arguments
+        process.currentDirectoryURL = projectURL
+
+        let output = Pipe()
+        let input = standardInput.map { _ in Pipe() }
+        if let input {
+            process.standardInput = input
+        }
+        process.standardOutput = output
+        process.standardError = output
+
+        try process.run()
+        if let standardInput, let input {
+            input.fileHandleForWriting.write(Data(standardInput.utf8))
+            input.fileHandleForWriting.closeFile()
+        }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            throw BeadError.commandFailed(command: (["bd"] + arguments).joined(separator: " "), output: text)
+        }
+        return text
+    }
+
+    static func exportedIssuesJSONLURL(projectURL: URL) -> URL {
+        projectURL
+            .appendingPathComponent(".beads", isDirectory: true)
+            .appendingPathComponent("issues.jsonl")
+    }
+
+    static func ensureExportedIssuesJSONLExists(projectURL: URL, fileManager: FileManager = .default) throws {
+        let url = exportedIssuesJSONLURL(projectURL: projectURL)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            guard !isDirectory.boolValue else {
+                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path])
+            }
+            return
+        }
+
+        try Data().write(to: url, options: .atomic)
+    }
+
+    static func decodeCustomStatuses(from value: String) throws -> [BeadStatusDefinition] {
+        try commaSeparatedValues(value).map { entry in
+            let parts = entry.split(separator: ":", maxSplits: 1).map(String.init)
+            let name = try WorkflowValueValidator.normalizedIdentifier(parts[0])
+            let category: BeadStatusCategory
+            if parts.count == 2 {
+                guard let parsedCategory = BeadStatusCategory(rawValue: parts[1]) else {
+                    throw BeadError.commandFailed(
+                        command: "bd config get status.custom",
+                        output: "\(parts[1]) is not a valid status category."
+                    )
+                }
+                category = parsedCategory
+            } else {
+                category = .uncategorized
+            }
+            return BeadStatusDefinition(
+                name: name,
+                category: category,
+                icon: nil,
+                description: nil,
+                isBuiltIn: false,
+                source: .custom
+            )
+        }
+    }
+
+    static func decodeCustomTypes(from value: String) throws -> [BeadTypeDefinition] {
+        try commaSeparatedValues(value).map { entry in
+            BeadTypeDefinition(
+                name: try WorkflowValueValidator.normalizedIdentifier(entry),
+                description: nil,
+                source: .custom
+            )
+        }
+    }
+
+    private static func commaSeparatedValues(_ value: String) -> [String] {
+        value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    static func createdIssueID(from output: String) throws -> String {
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let issueID = lines.last else {
+            throw BeadError.commandFailed(command: "bd create --silent", output: "Expected created bead ID but bd returned no output.")
+        }
+        return issueID
+    }
+}
+
+extension BeadsCommandService: BeadsCommanding {}
+
+struct BeadsInitOptions: Equatable, Sendable {
+    var prefix = ""
+    var usesStealthMode = false
+    var skipsAgents = false
+    var skipsHooks = false
+
+    var commandPreview: String {
+        (["bd"] + BeadsCommandArguments.initialize(options: self))
+            .map(Self.shellEscaped)
+            .joined(separator: " ")
+    }
+
+    private static func shellEscaped(_ argument: String) -> String {
+        guard !argument.isEmpty else { return "''" }
+        let safeCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:-")
+        if argument.unicodeScalars.allSatisfy({ safeCharacters.contains($0) }) {
+            return argument
+        }
+        return "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+enum BeadsCommandArguments {
+    static let exportedIssuesJSONLPath = ".beads/issues.jsonl"
+
+    static func initialize(options: BeadsInitOptions) -> [String] {
+        var arguments = ["init", "--non-interactive", "--role", "maintainer"]
+        appendNonEmpty(&arguments, flag: "--prefix", value: options.prefix)
+        if options.usesStealthMode {
+            arguments.append("--stealth")
+        }
+        if options.skipsAgents {
+            arguments.append("--skip-agents")
+        }
+        if options.skipsHooks {
+            arguments.append("--skip-hooks")
+        }
+        return arguments
+    }
+
+    static func exportJSONL() -> [String] {
+        ["export", "--output", exportedIssuesJSONLPath]
+    }
+
+    static func close(ids: [String], reason: String?) -> [String] {
+        var arguments = ["close"] + ids
+        appendNonEmpty(&arguments, flag: "--reason", value: reason)
+        return arguments
+    }
+
+    static func addComment(issueID: String) -> [String] {
+        ["comment", issueID, "--stdin"]
+    }
+
+    static func create(draft: IssueDraft, silent: Bool = false) -> [String] {
+        var arguments = ["create", draft.title, "--type", draft.issueType, "--priority", "P\(draft.priority)"]
+        appendNonEmpty(&arguments, flag: "--description", value: draft.description)
+        appendNonEmpty(&arguments, flag: "--design", value: draft.design)
+        appendNonEmpty(&arguments, flag: "--acceptance", value: draft.acceptanceCriteria)
+        appendNonEmpty(&arguments, flag: "--notes", value: draft.notes)
+        appendNonEmpty(&arguments, flag: "--assignee", value: draft.assignee)
+        appendNonEmpty(&arguments, flag: "--due", value: BeadFormatters.commandDate(draft.dueAt))
+        appendNonEmpty(&arguments, flag: "--defer", value: BeadFormatters.commandDate(draft.deferUntil))
+        appendNonEmpty(&arguments, flag: "--labels", value: normalizedLabelArgument(draft.labelsText))
+        if silent {
+            arguments.append("--silent")
+        }
+        return arguments
+    }
+
+    static func update(draft: IssueDraft, originalLabels: [String]? = nil) -> [String]? {
+        guard let id = draft.id else { return nil }
+        var arguments = [
+            "update",
+            id,
+            "--title",
+            draft.title,
+            "--type",
+            draft.issueType,
+            "--priority",
+            "P\(draft.priority)",
+            "--status",
+            draft.status,
+            "--description",
+            draft.description,
+            "--allow-empty-description",
+            "--design",
+            draft.design,
+            "--acceptance",
+            draft.acceptanceCriteria,
+            "--notes",
+            draft.notes
+        ]
+        appendNonEmpty(&arguments, flag: "--assignee", value: draft.assignee)
+        arguments += ["--due", dateUpdateArgument(draft.dueAt)]
+        arguments += ["--defer", dateUpdateArgument(draft.deferUntil)]
+        appendLabelUpdate(&arguments, draftLabelsText: draft.labelsText, originalLabels: originalLabels)
+        return arguments
+    }
+
+    static func saveCustomStatuses(_ statuses: [BeadStatusDefinition]) -> [String] {
+        let value = statuses
+            .map { "\($0.name):\($0.category.rawValue)" }
+            .joined(separator: ",")
+        return configSetOrUnset(key: "status.custom", value: value)
+    }
+
+    static func saveCustomTypes(_ types: [BeadTypeDefinition]) -> [String] {
+        let value = types
+            .map(\.name)
+            .joined(separator: ",")
+        return configSetOrUnset(key: "types.custom", value: value)
+    }
+
+    private static func configSetOrUnset(key: String, value: String) -> [String] {
+        guard !value.isEmpty else {
+            return ["config", "unset", key]
+        }
+        return ["config", "set", key, value]
+    }
+
+    private static func appendNonEmpty(_ arguments: inout [String], flag: String, value: String?) {
+        guard let value = value?.nilIfBlank else { return }
+        arguments += [flag, value]
+    }
+
+    private static func dateUpdateArgument(_ date: Date?) -> String {
+        BeadFormatters.commandDate(date) ?? ""
+    }
+
+    private static func normalizedLabelArgument(_ labelsText: String) -> String? {
+        let labels = IssueDraft.normalizedLabels(labelsText)
+        return labels.isEmpty ? nil : labels.joined(separator: ",")
+    }
+
+    private static func appendLabelUpdate(_ arguments: inout [String], draftLabelsText: String, originalLabels: [String]?) {
+        if let labels = normalizedLabelArgument(draftLabelsText) {
+            arguments += ["--set-labels", labels]
+            return
+        }
+
+        guard let originalLabels else { return }
+        for label in IssueDraft.normalizedLabels(originalLabels.joined(separator: ",")) {
+            arguments += ["--remove-label", label]
+        }
+    }
+}
