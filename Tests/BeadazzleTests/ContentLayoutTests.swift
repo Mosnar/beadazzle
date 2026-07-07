@@ -66,6 +66,25 @@ final class ContentLayoutTests: XCTestCase {
         XCTAssertFalse(IssueDetailLayout.usesInspectorRail(for: IssueDetailLayout.railBreakpoint - 1))
     }
 
+    func testIssueDetailPaddingTracksInspectorRailMode() {
+        XCTAssertEqual(
+            IssueDetailLayout.horizontalPadding(usesInspectorRail: true),
+            IssueDetailLayout.wideHorizontalPadding
+        )
+        XCTAssertEqual(
+            IssueDetailLayout.horizontalPadding(usesInspectorRail: false),
+            IssueDetailLayout.compactHorizontalPadding
+        )
+        XCTAssertEqual(
+            IssueDetailLayout.verticalPadding(usesInspectorRail: true),
+            IssueDetailLayout.wideVerticalPadding
+        )
+        XCTAssertEqual(
+            IssueDetailLayout.verticalPadding(usesInspectorRail: false),
+            IssueDetailLayout.compactVerticalPadding
+        )
+    }
+
     func testWindowMinimumAllowsBothCollapseStates() {
         XCTAssertLessThan(WindowLayout.minWidth, ContentLayout.listOnlySidebarCollapseBreakpoint)
         XCTAssertLessThan(WindowLayout.minWidth, ContentLayout.detailSidebarCollapseBreakpoint)

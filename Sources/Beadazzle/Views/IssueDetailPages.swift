@@ -9,7 +9,7 @@ struct IssueDetailPage: View {
     let requestClose: (BeadIssue) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        IssueEditingPageShell {
             IssueBreadcrumbBar(
                 issue: issue,
                 isDirty: isDirty,
@@ -18,40 +18,15 @@ struct IssueDetailPage: View {
                 revertAction: revertAction,
                 requestClose: requestClose
             )
-
-            Divider()
-
-            GeometryReader { proxy in
-                let usesInspectorRail = IssueDetailLayout.usesInspectorRail(for: proxy.size.width)
-
-                VStack(spacing: 0) {
-                    if !usesInspectorRail {
-                        IssueMetadataRibbon(draft: $draft)
-                        Divider()
-                    }
-
-                    ScrollView {
-                        IssueDetailContent(
-                            issue: issue,
-                            draft: $draft,
-                            usesInspectorRail: usesInspectorRail
-                        )
-                        .padding(.horizontal, horizontalPadding(usesInspectorRail: usesInspectorRail))
-                        .padding(.vertical, verticalPadding(usesInspectorRail: usesInspectorRail))
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                }
-            }
+        } compactAccessory: {
+            IssueMetadataRibbon(draft: $draft)
+        } content: { usesInspectorRail in
+            IssueDetailContent(
+                issue: issue,
+                draft: $draft,
+                usesInspectorRail: usesInspectorRail
+            )
         }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-    }
-
-    private func horizontalPadding(usesInspectorRail: Bool) -> CGFloat {
-        usesInspectorRail ? IssueDetailLayout.wideHorizontalPadding : IssueDetailLayout.compactHorizontalPadding
-    }
-
-    private func verticalPadding(usesInspectorRail: Bool) -> CGFloat {
-        usesInspectorRail ? IssueDetailLayout.wideVerticalPadding : IssueDetailLayout.compactVerticalPadding
     }
 }
 
@@ -62,7 +37,7 @@ struct IssueCreationPage: View {
     let cancelAction: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        IssueEditingPageShell {
             IssueCreationToolbar(
                 draft: draft,
                 canCreate: canCreate,
@@ -70,36 +45,16 @@ struct IssueCreationPage: View {
                 createAction: createAction,
                 cancelAction: cancelAction
             )
-
-            Divider()
-
-            GeometryReader { proxy in
-                let usesInspectorRail = IssueDetailLayout.usesInspectorRail(for: proxy.size.width)
-
-                ScrollView {
-                    IssueCreationContent(
-                        draft: $draft,
-                        usesInspectorRail: usesInspectorRail
-                    )
-                    .padding(.horizontal, horizontalPadding(usesInspectorRail: usesInspectorRail))
-                    .padding(.vertical, verticalPadding(usesInspectorRail: usesInspectorRail))
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            }
+        } content: { usesInspectorRail in
+            IssueCreationContent(
+                draft: $draft,
+                usesInspectorRail: usesInspectorRail
+            )
         }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
     }
 
     private var canCreate: Bool {
         !isCreating && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func horizontalPadding(usesInspectorRail: Bool) -> CGFloat {
-        usesInspectorRail ? IssueDetailLayout.wideHorizontalPadding : IssueDetailLayout.compactHorizontalPadding
-    }
-
-    private func verticalPadding(usesInspectorRail: Bool) -> CGFloat {
-        usesInspectorRail ? IssueDetailLayout.wideVerticalPadding : IssueDetailLayout.compactVerticalPadding
     }
 }
 
@@ -119,6 +74,77 @@ enum IssueDetailLayout {
 
     static func usesInspectorRail(for width: CGFloat) -> Bool {
         width >= railBreakpoint
+    }
+
+    static func horizontalPadding(usesInspectorRail: Bool) -> CGFloat {
+        usesInspectorRail ? wideHorizontalPadding : compactHorizontalPadding
+    }
+
+    static func verticalPadding(usesInspectorRail: Bool) -> CGFloat {
+        usesInspectorRail ? wideVerticalPadding : compactVerticalPadding
+    }
+}
+
+private struct IssueEditingPageShell<Toolbar: View, CompactAccessory: View, Content: View>: View {
+    private let toolbar: Toolbar
+    private let compactAccessory: CompactAccessory
+    private let showsCompactAccessory: Bool
+    private let content: (Bool) -> Content
+
+    init(
+        @ViewBuilder toolbar: () -> Toolbar,
+        @ViewBuilder compactAccessory: () -> CompactAccessory,
+        @ViewBuilder content: @escaping (Bool) -> Content
+    ) {
+        self.toolbar = toolbar()
+        self.compactAccessory = compactAccessory()
+        self.showsCompactAccessory = true
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+
+            Divider()
+
+            GeometryReader { proxy in
+                let usesInspectorRail = IssueDetailLayout.usesInspectorRail(for: proxy.size.width)
+
+                VStack(spacing: 0) {
+                    if showsCompactAccessory && !usesInspectorRail {
+                        compactAccessory
+                        Divider()
+                    }
+
+                    ScrollView {
+                        content(usesInspectorRail)
+                            .padding(
+                                .horizontal,
+                                IssueDetailLayout.horizontalPadding(usesInspectorRail: usesInspectorRail)
+                            )
+                            .padding(
+                                .vertical,
+                                IssueDetailLayout.verticalPadding(usesInspectorRail: usesInspectorRail)
+                            )
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+    }
+}
+
+private extension IssueEditingPageShell where CompactAccessory == EmptyView {
+    init(
+        @ViewBuilder toolbar: () -> Toolbar,
+        @ViewBuilder content: @escaping (Bool) -> Content
+    ) {
+        self.toolbar = toolbar()
+        self.compactAccessory = EmptyView()
+        self.showsCompactAccessory = false
+        self.content = content
     }
 }
 

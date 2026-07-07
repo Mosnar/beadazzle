@@ -529,12 +529,8 @@ final class BeadStore {
         BeadIssueWorkflowPolicy.completionSystemImage(for: completionAction(for: issueIDs))
     }
 
-    func workflowActions(for issue: BeadIssue) -> BeadIssueWorkflowActions {
-        BeadIssueWorkflowPolicy.actions(for: issue, isDone: isDone(issue))
-    }
-
     func canCreateGate(blocking issue: BeadIssue) -> Bool {
-        workflowActions(for: issue).canCreateGate
+        BeadIssueWorkflowPolicy.canCreateGate(blocking: issue, isDone: isDone(issue))
     }
 
     private var reopenStatusName: String? {

@@ -65,9 +65,9 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.completionActionTitle(for: ["bd-closed", "bd-done"]), "Reopen Selected")
         XCTAssertEqual(store.completionActionTitle(for: ["bd-open", "bd-closed"]), "Close Open Selected...")
 
-        XCTAssertTrue(store.workflowActions(for: try XCTUnwrap(store.issue(with: "bd-open"))).canCreateGate)
-        XCTAssertTrue(store.workflowActions(for: try XCTUnwrap(store.issue(with: "bd-blocked"))).canCreateGate)
-        XCTAssertFalse(store.workflowActions(for: try XCTUnwrap(store.issue(with: "bd-closed"))).canCreateGate)
+        XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-open"))))
+        XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-blocked"))))
+        XCTAssertFalse(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-closed"))))
     }
 
     func testReopenClosedIssueUsesOpenStatusAndClearsClosedAtOptimistically() async throws {

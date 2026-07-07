@@ -81,7 +81,9 @@ struct IssueBreadcrumbBar: View {
     @State private var showingGateCreation = false
 
     var body: some View {
-        let workflowActions = store.workflowActions(for: issue)
+        let canCreateGate = store.canCreateGate(blocking: issue)
+        let completionTitle = store.completionActionTitle(for: [issue.id])
+        let completionSystemImage = store.completionActionSystemImage(for: [issue.id])
         HStack(spacing: 8) {
             BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
                 store.clearSelection()
@@ -133,7 +135,7 @@ struct IssueBreadcrumbBar: View {
                 .accessibilityLabel("Copy Bead ID")
 
                 Menu {
-                    if workflowActions.canCreateGate {
+                    if canCreateGate {
                         Button {
                             showingGateCreation = true
                         } label: {
@@ -144,8 +146,8 @@ struct IssueBreadcrumbBar: View {
                         requestClose(issue)
                     } label: {
                         Label(
-                            workflowActions.completionTitle,
-                            systemImage: workflowActions.completionSystemImage
+                            completionTitle,
+                            systemImage: completionSystemImage
                         )
                     }
                 } label: {
@@ -160,7 +162,7 @@ struct IssueBreadcrumbBar: View {
                         showingGateCreation = false
                     }
                 }
-                .onChange(of: workflowActions.canCreateGate) { _, canCreateGate in
+                .onChange(of: canCreateGate) { _, canCreateGate in
                     if !canCreateGate {
                         showingGateCreation = false
                     }
