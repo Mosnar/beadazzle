@@ -586,11 +586,11 @@ private struct RecentProjectRow: View {
                         .lineLimit(1)
                         .foregroundStyle(rowForeground)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
             .focusable()
             .focused(focusedItem, equals: focusID)
             .onKeyPress(.upArrow) {
@@ -670,6 +670,7 @@ private struct ProjectActionRow: View {
                 .padding(.horizontal, 7)
                 .frame(height: 25)
                 .background(rowBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .focusable()

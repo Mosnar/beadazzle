@@ -28,6 +28,8 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Project switcher rows now respond across the full highlighted row instead of
+  only on the project name text.
 - Right-clicking an unselected bead now focuses it for the context menu without
   opening its detail, so actions apply to the focused bead without navigating.
 - Fixed a runaway loop that pinned the CPU, hammered the disk, and slowly grew
