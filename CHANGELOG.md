@@ -15,6 +15,8 @@ for users, not for the commit log.
 
 ### Changed
 
+- Closing a bead that still has open child beads now asks whether to close the
+  children too and shows the child beads that will be closed.
 - Selecting a bead now opens its detail beside the list without auto-collapsing
   the list by window width; double-click a bead to open it full-page, with
   Back/Forward support for returning to the split view.
@@ -28,6 +30,11 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Project loading now recovers instead of spinning forever when a `bd` metadata
+  read or snapshot export gets stuck waiting on an embedded-database lock, and
+  snapshot exports now preserve the previous readable snapshot if they fail.
+- Closing parent beads with confirmed child beads now uses a single ordered
+  `bd` write where possible, reducing the chance of partially applied closes.
 - Project switcher rows now respond across the full highlighted row instead of
   only on the project name text.
 - Right-clicking an unselected bead now focuses it for the context menu without

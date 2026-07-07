@@ -119,9 +119,9 @@ struct BeadProjectLoader: Sendable {
     /// caller falls back to built-in definitions without caching the failure.
     private func loadDefinitions(projectURL: URL) async -> BeadSemanticDefinitions? {
         do {
-            async let statuses = commands.loadStatusDefinitions(projectURL: projectURL)
-            async let types = commands.loadTypeDefinitions(projectURL: projectURL)
-            return BeadSemanticDefinitions(statuses: try await statuses, types: try await types)
+            let statuses = try await commands.loadStatusDefinitions(projectURL: projectURL)
+            let types = try await commands.loadTypeDefinitions(projectURL: projectURL)
+            return BeadSemanticDefinitions(statuses: statuses, types: types)
         } catch {
             return nil
         }

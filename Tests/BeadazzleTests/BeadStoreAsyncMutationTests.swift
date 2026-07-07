@@ -83,6 +83,22 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.lastError, StoreMutationTestError.commandFailed.localizedDescription)
     }
 
+    func testFailedAttemptedMutationStillReconcilesInCaseCommandPartiallyWrote() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+        let exportsBefore = await commands.exportCallCount
+
+        let succeeded = await store.bulkSet(status: "closed")
+
+        XCTAssertFalse(succeeded)
+        try await waitUntilAsync { await commands.exportCallCount > exportsBefore }
+    }
+
     func testSuccessfulMutationReconcilesByReExportingSnapshot() async throws {
         // After the write succeeds, a silent reconcile re-exports the readable snapshot so
         // `bd`-computed fields converge — this is what keeps Dolt-backed projects correct.
@@ -192,6 +208,102 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertFalse(succeeded)
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.projectURL, secondProjectURL.standardizedFileURL)
+    }
+
+    func testCloseCanIncludeConfirmedOpenChildren() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", parentID: "bd-parent"))
+            \(issueLine(id: "bd-grandchild", title: "Grandchild", status: "review", parentID: "bd-child"))
+            \(issueLine(id: "bd-closed", title: "Closed", status: "closed", parentID: "bd-parent"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-grandchild") != nil }
+
+        let childIssues = store.openChildIssues(forClosing: ["bd-parent"])
+        let succeeded = await store.close(
+            issueIDs: ["bd-parent"] + childIssues.map(\.id),
+            reason: "Done together"
+        )
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(childIssues.map(\.id), ["bd-child", "bd-grandchild"])
+        XCTAssertEqual(store.issue(with: "bd-parent")?.status, "closed")
+        XCTAssertEqual(store.issue(with: "bd-child")?.status, "closed")
+        XCTAssertEqual(store.issue(with: "bd-grandchild")?.status, "closed")
+        let calls = await commands.closeCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-grandchild", "bd-child", "bd-parent"]])
+        XCTAssertEqual(calls.map(\.reason), ["Done together"])
+        let events = await commands.mutationEvents
+        XCTAssertEqual(events, ["close:bd-grandchild,bd-child,bd-parent"])
+    }
+
+    func testBulkSetClosedStatusClosesConfirmedOpenChildrenBeforeParent() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", parentID: "bd-parent"))
+            \(issueLine(id: "bd-grandchild", title: "Grandchild", status: "review", parentID: "bd-child"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-grandchild") != nil }
+
+        let childIssues = store.openChildIssues(forClosing: ["bd-parent"])
+        let succeeded = await store.bulkSet(
+            issueIDs: ["bd-parent"] + childIssues.map(\.id),
+            status: "closed"
+        )
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-parent")?.status, "closed")
+        XCTAssertEqual(store.issue(with: "bd-child")?.status, "closed")
+        XCTAssertEqual(store.issue(with: "bd-grandchild")?.status, "closed")
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-grandchild", "bd-child", "bd-parent"]])
+        XCTAssertEqual(calls.map(\.status), ["closed"])
+        let events = await commands.mutationEvents
+        XCTAssertEqual(events, ["bulk:bd-grandchild,bd-child,bd-parent"])
+    }
+
+    func testSavingClosedStatusCanCloseConfirmedOpenChildren() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", parentID: "bd-parent"))
+            \(issueLine(id: "bd-grandchild", title: "Grandchild", status: "review", parentID: "bd-child"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-grandchild") != nil }
+        let parent = try XCTUnwrap(store.issue(with: "bd-parent"))
+        var draft = IssueDraft(issue: parent)
+        draft.title = "Parent done"
+        draft.status = "closed"
+
+        let childIssues = store.openChildIssues(forClosing: ["bd-parent"])
+        let succeeded = await store.save(draft, closingChildIssueIDs: childIssues.map(\.id))
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-parent")?.title, "Parent done")
+        XCTAssertEqual(store.issue(with: "bd-parent")?.status, "closed")
+        XCTAssertEqual(store.issue(with: "bd-child")?.status, "closed")
+        XCTAssertEqual(store.issue(with: "bd-grandchild")?.status, "closed")
+        let updateCalls = await commands.updateCalls
+        let bulkCalls = await commands.bulkUpdateCalls
+        XCTAssertEqual(updateCalls.first?.draft.status, "closed")
+        XCTAssertEqual(bulkCalls.map(\.ids), [["bd-grandchild", "bd-child"]])
+        XCTAssertEqual(bulkCalls.map(\.status), ["closed"])
+        let events = await commands.mutationEvents
+        XCTAssertEqual(events, ["bulk:bd-grandchild,bd-child", "update:bd-parent"])
     }
 
     func testCreateSelectsCreatedIssueAfterReloadAndRevealsThroughFilters() async throws {
@@ -416,9 +528,10 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         return projectURL
     }
 
-    private func issueLine(id: String, title: String) -> String {
-        """
-        {"_type":"issue","id":"\(id)","title":"\(title)","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+    private func issueLine(id: String, title: String, status: String = "open", parentID: String? = nil) -> String {
+        let parentFragment = parentID.map { ",\"parent_id\":\"\($0)\"" } ?? ""
+        return """
+        {"_type":"issue","id":"\(id)","title":"\(title)","status":"\(status)","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"\(parentFragment)}
         """
     }
 
@@ -502,7 +615,10 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
 private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var createCalls: [(projectURL: URL, draft: IssueDraft)] = []
+    private(set) var updateCalls: [(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?)] = []
+    private(set) var closeCalls: [(projectURL: URL, ids: [String], reason: String?)] = []
     private(set) var bulkUpdateCalls: [(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?)] = []
+    private(set) var mutationEvents: [String] = []
     private(set) var loadGateDetailCalls: [(projectURL: URL, id: String)] = []
     private(set) var resolveGateCalls: [(projectURL: URL, id: String, reason: String?)] = []
     private(set) var checkGatesCalls: [(projectURL: URL, type: String?, escalate: Bool, dryRun: Bool)] = []
@@ -566,9 +682,15 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         return createIssueID
     }
 
-    func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {}
+    func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {
+        updateCalls.append((projectURL: projectURL, draft: draft, originalIssue: originalIssue))
+        mutationEvents.append("update:\(draft.id ?? "new")")
+    }
 
-    func close(projectURL: URL, ids: [String], reason: String?) async throws {}
+    func close(projectURL: URL, ids: [String], reason: String?) async throws {
+        closeCalls.append((projectURL: projectURL, ids: ids, reason: reason))
+        mutationEvents.append("close:\(ids.joined(separator: ","))")
+    }
 
     func delete(projectURL: URL, ids: [String]) async throws {}
 
@@ -580,6 +702,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
             throw bulkUpdateError
         }
         bulkUpdateCalls.append((projectURL: projectURL, ids: ids, status: status, type: type, priority: priority))
+        mutationEvents.append("bulk:\(ids.joined(separator: ","))")
     }
 
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {}

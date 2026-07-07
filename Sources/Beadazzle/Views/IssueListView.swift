@@ -3,6 +3,7 @@ import SwiftUI
 struct IssueListView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let requestClose: (BeadIssue) -> Void
+    let requestSetStatus: (Set<String>, String) -> Void
     let openDetail: (String) -> Void
 
     var body: some View {
@@ -34,6 +35,7 @@ struct IssueListView: View {
                         contentRevision: store.contentRevision,
                         store: store,
                         requestClose: requestClose,
+                        requestSetStatus: requestSetStatus,
                         openDetail: openDetail
                     )
                 }

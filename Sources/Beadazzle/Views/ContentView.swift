@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var workspaceWidth: CGFloat = 0
     @State private var showingDeleteConfirmation = false
     @State private var closeBeadRequest: CloseBeadRequest?
+    @State private var closeChildStatusRequest: CloseChildBeadsStatusRequest?
     @State private var searchPresented = false
 
     var body: some View {
@@ -46,7 +47,8 @@ struct ContentView: View {
 
                 BulkActionsMenu(
                     showingDeleteConfirmation: $showingDeleteConfirmation,
-                    requestCloseSelected: requestCloseSelected
+                    requestCloseSelected: requestCloseSelected,
+                    requestSetStatus: requestSetSelectedStatus
                 )
                 .disabled(!store.hasReadableProject)
             }
@@ -67,6 +69,20 @@ struct ContentView: View {
         }
         .sheet(item: $closeBeadRequest) { request in
             CloseBeadReasonSheet(request: request)
+        }
+        .sheet(item: $closeChildStatusRequest) { request in
+            CloseChildBeadsConfirmationSheet(
+                title: "Close child beads too?",
+                message: "Setting \(request.targetDescription) to \(request.status) will close it while child beads are still open. Close the child beads as well?",
+                confirmTitle: "Set Status and Close Children",
+                childIssues: request.childIssues,
+                secondaryTitle: "Set Status Only",
+                secondaryAction: {
+                    await store.bulkSet(issueIDs: request.issueIDs, status: request.status)
+                }
+            ) {
+                await store.bulkSet(issueIDs: request.allIssueIDs, status: request.status)
+            }
         }
         .alert("Beadazzle", isPresented: errorBinding) {
             Button("OK") {
@@ -96,6 +112,7 @@ struct ContentView: View {
         }
         .onChange(of: store.projectURL) {
             closeBeadRequest = nil
+            closeChildStatusRequest = nil
         }
     }
 
@@ -147,6 +164,7 @@ struct ContentView: View {
             if showsIssueListPane {
                 IssueListView(
                     requestClose: requestClose,
+                    requestSetStatus: requestSetStatus,
                     openDetail: openDetail
                 )
                     .frame(
@@ -207,6 +225,33 @@ struct ContentView: View {
             .compactMap { store.issue(with: $0) }
         guard !selectedIssues.isEmpty else { return }
         closeBeadRequest = CloseBeadRequest(issues: selectedIssues)
+    }
+
+    private func requestSetSelectedStatus(_ status: String) {
+        requestSetStatus(store.selectedIDs, status)
+    }
+
+    private func requestSetStatus(_ issueIDs: Set<String>, _ status: String) {
+        let issues = issueIDs
+            .sorted()
+            .compactMap { store.issue(with: $0) }
+        guard !issues.isEmpty else { return }
+
+        if store.statusClosesBeads(status) {
+            let childIssues = store.openChildIssues(forClosing: issues.map(\.id))
+            if !childIssues.isEmpty {
+                closeChildStatusRequest = CloseChildBeadsStatusRequest(
+                    issues: issues,
+                    status: status,
+                    childIssues: childIssues
+                )
+                return
+            }
+        }
+
+        Task {
+            await store.bulkSet(issueIDs: issues.map(\.id), status: status)
+        }
     }
 
     private func updateColumnVisibility(showsSidebar nextShowsSidebar: Bool) {

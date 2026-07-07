@@ -7,6 +7,7 @@ struct DetailView: View {
     @State private var draftIssueID: String?
     @State private var suppressesCreationDraftUpdates = false
     @State private var isCreatingDraft = false
+    @State private var closeChildSaveRequest: CloseChildBeadsSaveRequest?
 
     var body: some View {
         @Bindable var store = store
@@ -38,6 +39,28 @@ struct DetailView: View {
             }
         }
         .focusedValue(\.beadSaveAction, activeSaveAction)
+        .sheet(item: $closeChildSaveRequest) { request in
+            CloseChildBeadsConfirmationSheet(
+                title: "Close child beads too?",
+                message: "Saving \(request.targetDescription) as \(request.draft.status) will close it while child beads are still open. Close the child beads as well?",
+                confirmTitle: "Save and Close Children",
+                childIssues: request.childIssues,
+                secondaryTitle: "Save Only",
+                secondaryAction: {
+                    let didSave = await store.save(request.draft)
+                    if didSave {
+                        resetDraft()
+                    }
+                    return didSave
+                }
+            ) {
+                let didSave = await store.save(request.draft, closingChildIssueIDs: request.childIssueIDs)
+                if didSave {
+                    resetDraft()
+                }
+                return didSave
+            }
+        }
     }
 
     private var creationDraftBinding: Binding<IssueDraft> {
@@ -107,6 +130,19 @@ struct DetailView: View {
 
     private func save(_ issue: BeadIssue) {
         let draft = activeDraft(for: issue)
+        if !store.isDone(issue), store.statusClosesBeads(draft.status) {
+            let childIssues = store.openChildIssues(forClosing: [issue.id])
+            if !childIssues.isEmpty {
+                closeChildSaveRequest = CloseChildBeadsSaveRequest(
+                    issueID: issue.id,
+                    title: draft.title,
+                    draft: draft,
+                    childIssues: childIssues
+                )
+                return
+            }
+        }
+
         Task {
             if await store.save(draft) {
                 resetDraft()

@@ -63,6 +63,24 @@ final class BeadProjectLoaderTests: XCTestCase {
         XCTAssertEqual(loaded.definitions, cached)
     }
 
+    func testLoadProjectReadsCommandMetadataSequentially() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "qa", type: "incident")
+        )
+        let counter = CommandCallCounter()
+        let commands = MetadataTestCommands(
+            statusDefinitions: .success([BeadStatusDefinition(name: "qa", category: .wip, icon: nil, description: nil)]),
+            typeDefinitions: .success([BeadTypeDefinition(name: "incident", description: nil)]),
+            callCounter: counter,
+            definitionReadDelay: .milliseconds(20)
+        )
+
+        _ = try await BeadProjectLoader(commands: commands).loadProject(projectURL: projectURL)
+
+        XCTAssertEqual(counter.definitionReadNames, ["statuses", "types"])
+        XCTAssertEqual(counter.maxConcurrentDefinitionReads, 1)
+    }
+
     func testLoadProjectDoesNotCacheDefinitionsWhenCommandsFail() async throws {
         let projectURL = try makeProject(
             issueLine(id: "bd-open", title: "Open", status: "open", type: "task")
@@ -118,15 +136,41 @@ final class BeadProjectLoaderTests: XCTestCase {
 private final class CommandCallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var _definitionReads = 0
-    func recordDefinitionRead() {
+    private var _definitionReadNames: [String] = []
+    private var activeDefinitionReads = 0
+    private var _maxConcurrentDefinitionReads = 0
+
+    func beginDefinitionRead(_ name: String) {
         lock.lock()
         _definitionReads += 1
+        _definitionReadNames.append(name)
+        activeDefinitionReads += 1
+        _maxConcurrentDefinitionReads = max(_maxConcurrentDefinitionReads, activeDefinitionReads)
         lock.unlock()
     }
+
+    func endDefinitionRead() {
+        lock.lock()
+        activeDefinitionReads -= 1
+        lock.unlock()
+    }
+
     var definitionReads: Int {
         lock.lock()
         defer { lock.unlock() }
         return _definitionReads
+    }
+
+    var definitionReadNames: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _definitionReadNames
+    }
+
+    var maxConcurrentDefinitionReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _maxConcurrentDefinitionReads
     }
 }
 
@@ -134,6 +178,7 @@ private struct MetadataTestCommands: BeadsCommanding {
     var statusDefinitions: Result<[BeadStatusDefinition], Error> = .success([])
     var typeDefinitions: Result<[BeadTypeDefinition], Error> = .success([])
     var callCounter: CommandCallCounter? = nil
+    var definitionReadDelay: Duration? = nil
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
@@ -156,12 +201,20 @@ private struct MetadataTestCommands: BeadsCommanding {
     func addComment(projectURL: URL, issueID: String, text: String) async throws {}
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
-        callCounter?.recordDefinitionRead()
+        callCounter?.beginDefinitionRead("statuses")
+        defer { callCounter?.endDefinitionRead() }
+        if let definitionReadDelay {
+            try await Task.sleep(for: definitionReadDelay)
+        }
         return try statusDefinitions.get()
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
-        callCounter?.recordDefinitionRead()
+        callCounter?.beginDefinitionRead("types")
+        defer { callCounter?.endDefinitionRead() }
+        if let definitionReadDelay {
+            try await Task.sleep(for: definitionReadDelay)
+        }
         return try typeDefinitions.get()
     }
 

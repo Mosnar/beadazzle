@@ -44,14 +44,40 @@ extension BeadsCommanding {
 }
 
 struct BeadsCommandService {
+    typealias CommandExecutable = (url: URL, prefix: [String])
+
+    private let readOnlyCommandTimeout: Duration
+    private let snapshotExportTimeout: Duration
+    private let executable: @Sendable () -> CommandExecutable
+
+    init(
+        readOnlyCommandTimeout: Duration = .seconds(10),
+        snapshotExportTimeout: Duration = .seconds(60),
+        executable: @escaping @Sendable () -> CommandExecutable = { BeadsCLI.executable() }
+    ) {
+        self.readOnlyCommandTimeout = readOnlyCommandTimeout
+        self.snapshotExportTimeout = snapshotExportTimeout
+        self.executable = executable
+    }
+
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {
         try await run(projectURL: projectURL, arguments: BeadsCommandArguments.initialize(options: options))
         try await exportReadableSnapshot(projectURL: projectURL)
     }
 
     func exportReadableSnapshot(projectURL: URL) async throws {
-        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.exportJSONL())
-        try Self.ensureExportedIssuesJSONLExists(projectURL: projectURL)
+        let tempPath = Self.temporaryExportedIssuesJSONLPath()
+        let tempURL = projectURL.appendingPathComponent(tempPath)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        _ = try await runOutput(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.exportJSONL(outputPath: tempPath),
+            terminatesOnCancel: true,
+            timeout: snapshotExportTimeout
+        )
+        try Self.validateExportedIssuesJSONL(at: tempURL)
+        try Self.installExportedIssuesJSONL(tempURL: tempURL, projectURL: projectURL)
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {
@@ -124,12 +150,22 @@ struct BeadsCommandService {
     }
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
-        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "statuses", "--json"], terminatesOnCancel: true)
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "statuses", "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
         return try BeadsMetadataService.decodeStatuses(from: Data(text.utf8))
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
-        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "types", "--json"], terminatesOnCancel: true)
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "types", "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
         return try BeadsMetadataService.decodeTypes(from: Data(text.utf8))
     }
 
@@ -159,24 +195,55 @@ struct BeadsCommandService {
     ///   the `bd` subprocess instead of letting `readDataToEndOfFile` block until it exits
     ///   on its own. Only safe for read-only reads — never for writes, which must not be
     ///   interrupted mid-flight. Defaults to `false`.
-    private func runOutput(projectURL: URL, arguments: [String], standardInput: String? = nil, terminatesOnCancel: Bool = false) async throws -> String {
+    private func runOutput(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String? = nil,
+        terminatesOnCancel: Bool = false,
+        timeout: Duration? = nil
+    ) async throws -> String {
+        precondition(timeout == nil || terminatesOnCancel, "Timed commands must be cancellable.")
+        let executable = executable()
         if terminatesOnCancel {
-            return try await Self.runOutputTerminatingOnCancel(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
+            guard let timeout else {
+                return try await Self.runOutputTerminatingOnCancel(
+                    projectURL: projectURL,
+                    arguments: arguments,
+                    standardInput: standardInput,
+                    executable: executable
+                )
+            }
+            return try await Self.runOutputTerminatingOnCancel(
+                projectURL: projectURL,
+                arguments: arguments,
+                standardInput: standardInput,
+                executable: executable,
+                timeout: timeout
+            )
         }
         return try await Task.detached(priority: .userInitiated) {
-            try Self.runOutputSynchronously(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
+            try Self.runOutputSynchronously(projectURL: projectURL, arguments: arguments, standardInput: standardInput, executable: executable)
         }.value
     }
 
     private func configValue(projectURL: URL, key: String) async throws -> String? {
-        let text = try await runOutput(projectURL: projectURL, arguments: ["--readonly", "config", "get", key], terminatesOnCancel: true)
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "config", "get", key],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
         guard !text.hasSuffix(" (not set)") else { return nil }
         return text.isEmpty ? nil : text
     }
 
-    private static func runOutputSynchronously(projectURL: URL, arguments: [String], standardInput: String? = nil) throws -> String {
+    private static func runOutputSynchronously(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String? = nil,
+        executable: CommandExecutable
+    ) throws -> String {
         let process = Process()
-        let executable = BeadsCLI.executable()
         process.executableURL = executable.url
         process.arguments = executable.prefix + arguments
         process.currentDirectoryURL = projectURL
@@ -200,7 +267,7 @@ struct BeadsCommandService {
         let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         guard process.terminationStatus == 0 else {
-            throw BeadError.commandFailed(command: (["bd"] + arguments).joined(separator: " "), output: text)
+            throw BeadError.commandFailed(command: commandDescription(arguments), output: text)
         }
         return text
     }
@@ -209,9 +276,47 @@ struct BeadsCommandService {
     /// task is cancelled. `readDataToEndOfFile` is not cancellation-aware, so without this
     /// a superseded read would keep an entire `bd`/Dolt process running to completion —
     /// overlapping reads would pile up instead of the newest winning.
-    private static func runOutputTerminatingOnCancel(projectURL: URL, arguments: [String], standardInput: String?) async throws -> String {
+    private static func runOutputTerminatingOnCancel(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String?,
+        executable: CommandExecutable,
+        timeout: Duration
+    ) async throws -> String {
+        try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                try await runOutputTerminatingOnCancel(
+                    projectURL: projectURL,
+                    arguments: arguments,
+                    standardInput: standardInput,
+                    executable: executable
+                )
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw BeadError.commandFailed(
+                    command: commandDescription(arguments),
+                    output: "Timed out waiting for `bd` to finish."
+                )
+            }
+            do {
+                guard let result = try await group.next() else { throw CancellationError() }
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
+    }
+
+    private static func runOutputTerminatingOnCancel(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String?,
+        executable: CommandExecutable
+    ) async throws -> String {
         let process = Process()
-        let executable = BeadsCLI.executable()
         process.executableURL = executable.url
         process.arguments = executable.prefix + arguments
         process.currentDirectoryURL = projectURL
@@ -239,7 +344,14 @@ struct BeadsCommandService {
                             return
                         }
                         try process.run()
-                        state.markLaunched()
+                        if state.markLaunchedAndShouldTerminate() {
+                            process.terminate()
+                        }
+                        if state.isCancelled {
+                            process.waitUntilExit()
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
                         if let standardInput, let input {
                             input.fileHandleForWriting.write(Data(standardInput.utf8))
                             input.fileHandleForWriting.closeFile()
@@ -252,7 +364,7 @@ struct BeadsCommandService {
                         }
                         let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                         guard process.terminationStatus == 0 else {
-                            continuation.resume(throwing: BeadError.commandFailed(command: (["bd"] + arguments).joined(separator: " "), output: text))
+                            continuation.resume(throwing: BeadError.commandFailed(command: commandDescription(arguments), output: text))
                             return
                         }
                         continuation.resume(returning: text)
@@ -268,10 +380,78 @@ struct BeadsCommandService {
         }
     }
 
+    private static func commandDescription(_ arguments: [String]) -> String {
+        (["bd"] + arguments).joined(separator: " ")
+    }
+
     static func exportedIssuesJSONLURL(projectURL: URL) -> URL {
         projectURL
             .appendingPathComponent(".beads", isDirectory: true)
             .appendingPathComponent("issues.jsonl")
+    }
+
+    private static func temporaryExportedIssuesJSONLPath() -> String {
+        ".beads/issues.jsonl.tmp.\(UUID().uuidString)"
+    }
+
+    static func installExportedIssuesJSONL(tempURL: URL, projectURL: URL, fileManager: FileManager = .default) throws {
+        let destinationURL = exportedIssuesJSONLURL(projectURL: projectURL)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory) {
+            guard !isDirectory.boolValue else {
+                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destinationURL.path])
+            }
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: tempURL, backupItemName: nil, options: [])
+        } else {
+            try fileManager.moveItem(at: tempURL, to: destinationURL)
+        }
+    }
+
+    static func validateExportedIssuesJSONL(at url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var lineNumber = 0
+        var lineBuffer = Data()
+        lineBuffer.reserveCapacity(64 * 1024)
+
+        while true {
+            guard let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
+                break
+            }
+
+            var start = chunk.startIndex
+            while let newlineIndex = chunk[start...].firstIndex(of: 10) {
+                lineBuffer.append(contentsOf: chunk[start..<newlineIndex])
+                lineNumber += 1
+                try validateJSONLRecord(lineBuffer, lineNumber: lineNumber)
+                lineBuffer.removeAll(keepingCapacity: true)
+                start = chunk.index(after: newlineIndex)
+            }
+
+            if start < chunk.endIndex {
+                lineBuffer.append(contentsOf: chunk[start..<chunk.endIndex])
+            }
+        }
+
+        if !lineBuffer.isEmpty {
+            lineNumber += 1
+            try validateJSONLRecord(lineBuffer, lineNumber: lineNumber)
+        }
+    }
+
+    private static func validateJSONLRecord(_ rawLineData: Data, lineNumber: Int) throws {
+        var lineData = rawLineData
+        if lineData.last == 13 {
+            lineData.removeLast()
+        }
+        guard !lineData.isEmpty else { return }
+        guard (try? JSONSerialization.jsonObject(with: lineData)) is [String: Any] else {
+            throw BeadError.commandFailed(
+                command: "bd export --output \(BeadsCommandArguments.exportedIssuesJSONLPath)",
+                output: "Export produced invalid JSONL at line \(lineNumber)."
+            )
+        }
     }
 
     static func ensureExportedIssuesJSONLExists(projectURL: URL, fileManager: FileManager = .default) throws {
@@ -385,8 +565,8 @@ enum BeadsCommandArguments {
         return arguments
     }
 
-    static func exportJSONL() -> [String] {
-        ["export", "--output", exportedIssuesJSONLPath]
+    static func exportJSONL(outputPath: String = exportedIssuesJSONLPath) -> [String] {
+        ["export", "--output", outputPath]
     }
 
     static func close(ids: [String], reason: String?) -> [String] {
@@ -536,10 +716,13 @@ private final class SubprocessRunState: @unchecked Sendable {
     private var launched = false
     private var cancelled = false
 
-    func markLaunched() {
+    /// Records launch and reports whether cancellation already happened before the launch
+    /// was visible to the cancellation handler.
+    func markLaunchedAndShouldTerminate() -> Bool {
         lock.lock()
+        defer { lock.unlock() }
         launched = true
-        lock.unlock()
+        return cancelled
     }
 
     var isCancelled: Bool {

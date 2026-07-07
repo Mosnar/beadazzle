@@ -456,6 +456,19 @@ final class BeadStore {
         index.semantics.category(forStatus: status)
     }
 
+    func statusClosesBeads(_ status: String) -> Bool {
+        let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedStatus == Self.closedStatusName || index.semantics.category(forStatus: status) == .done
+    }
+
+    func isDone(_ issue: BeadIssue) -> Bool {
+        index.semantics.isDone(issue) || statusClosesBeads(issue.status)
+    }
+
+    func openChildIssues(forClosing issueIDs: [String]) -> [BeadIssue] {
+        index.openChildIssues(forClosing: issueIDs)
+    }
+
     func openDefaultProjectIfAvailable() {
         guard projectURL == nil else { return }
         guard let url = recentProjects.first(where: { projectDirectoryExists(at: $0.url) })?.url else { return }
@@ -1020,6 +1033,21 @@ final class BeadStore {
         MutationSnapshot(issues: index.issues, dependencies: index.dependencies)
     }
 
+    private func issueIDsDeepestFirst(_ ids: [String]) -> [String] {
+        let uniqueIDs = Array(Set(ids)).sorted()
+        let depthByID = Dictionary(uniqueKeysWithValues: uniqueIDs.map { issueID in
+            (issueID, index.ancestorIDs(for: issueID).count)
+        })
+        return uniqueIDs.sorted { lhs, rhs in
+            let lhsDepth = depthByID[lhs, default: 0]
+            let rhsDepth = depthByID[rhs, default: 0]
+            if lhsDepth != rhsDepth {
+                return lhsDepth > rhsDepth
+            }
+            return lhs < rhs
+        }
+    }
+
     /// Rebuilds the in-memory index from patched issues/dependencies and refreshes derived
     /// state immediately — no disk access, no loading indicator. This is what makes edits
     /// feel instant: the UI reflects the change before `bd` has even run. Correctness is
@@ -1117,6 +1145,11 @@ final class BeadStore {
 
     @discardableResult
     func save(_ draft: IssueDraft) async -> Bool {
+        await save(draft, closingChildIssueIDs: [])
+    }
+
+    @discardableResult
+    func save(_ draft: IssueDraft, closingChildIssueIDs childIssueIDs: [String]) async -> Bool {
         guard let projectURL else { return false }
 
         // Create can't be optimistic — the id is minted by `bd`. Await the write, then
@@ -1133,15 +1166,33 @@ final class BeadStore {
             }
         }
 
+        let childIDs = Array(Set(childIssueIDs).subtracting([draftID])).sorted()
+        let childIDSet = Set(childIDs)
         let snapshot = currentMutationSnapshot()
-        let optimisticIssues = snapshot.issues.map { issue in
-            issue.id == draftID ? optimisticallyUpdatedIssue(issue, from: draft) : issue
+        let now = Date()
+        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
+            if issue.id == draftID {
+                return optimisticallyUpdatedIssue(issue, from: draft)
+            }
+            guard childIDSet.contains(issue.id) else { return issue }
+            var copy = issue
+            copy.status = draft.status
+            copy.closedAt = copy.closedAt ?? now
+            copy.updatedAt = now
+            return copy
         }
         beginMutation()
         defer { endMutation() }
         applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
 
+        var attemptedWrite = false
         do {
+            if !childIDs.isEmpty {
+                attemptedWrite = true
+                try await commands.bulkUpdate(projectURL: projectURL, ids: issueIDsDeepestFirst(childIDs), status: draft.status, type: nil, priority: nil)
+                guard self.projectURL == projectURL else { return false }
+            }
+            attemptedWrite = true
             try await commands.update(projectURL: projectURL, draft: draft, originalIssue: originalIssue)
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
@@ -1149,6 +1200,9 @@ final class BeadStore {
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
+            if attemptedWrite {
+                pendingReconcile = true
+            }
             lastError = error.localizedDescription
             return false
         }
@@ -1211,14 +1265,19 @@ final class BeadStore {
         defer { endMutation() }
         applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
 
+        var attemptedWrite = false
         do {
-            try await commands.close(projectURL: projectURL, ids: ids, reason: reason)
+            attemptedWrite = true
+            try await commands.close(projectURL: projectURL, ids: issueIDsDeepestFirst(ids), reason: reason)
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
+            if attemptedWrite {
+                pendingReconcile = true
+            }
             lastError = error.localizedDescription
             return false
         }
@@ -1274,7 +1333,7 @@ final class BeadStore {
         let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
         let now = Date()
-        let makesDone = status.map { index.semantics.category(forStatus: $0) == .done } ?? false
+        let makesDone = status.map(statusClosesBeads) ?? false
         let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
             guard idSet.contains(issue.id) else { return issue }
             var copy = issue
@@ -1289,14 +1348,20 @@ final class BeadStore {
         defer { endMutation() }
         applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
 
+        let idsForWrite = makesDone ? issueIDsDeepestFirst(ids) : ids
+        var attemptedWrite = false
         do {
-            try await commands.bulkUpdate(projectURL: projectURL, ids: ids, status: status, type: type, priority: priority)
+            attemptedWrite = true
+            try await commands.bulkUpdate(projectURL: projectURL, ids: idsForWrite, status: status, type: type, priority: priority)
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
+            if attemptedWrite {
+                pendingReconcile = true
+            }
             lastError = error.localizedDescription
             return false
         }

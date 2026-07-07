@@ -4,6 +4,7 @@ struct BulkActionsMenu: View {
     @Environment(BeadStore.self) private var store: BeadStore
     @Binding var showingDeleteConfirmation: Bool
     let requestCloseSelected: () -> Void
+    let requestSetStatus: (String) -> Void
 
     var body: some View {
         Menu {
@@ -15,9 +16,7 @@ struct BulkActionsMenu: View {
             Menu("Set Status") {
                 ForEach(store.availableStatuses, id: \.self) { status in
                     Button(status) {
-                        Task {
-                            await store.bulkSet(status: status)
-                        }
+                        requestSetStatus(status)
                     }
                 }
             }

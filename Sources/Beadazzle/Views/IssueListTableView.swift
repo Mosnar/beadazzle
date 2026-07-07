@@ -16,6 +16,7 @@ struct IssueListTableView: NSViewRepresentable {
     let contentRevision: Int
     let store: BeadStore
     let requestClose: (BeadIssue) -> Void
+    let requestSetStatus: (Set<String>, String) -> Void
     let openDetail: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -355,7 +356,7 @@ struct IssueListTableView: NSViewRepresentable {
                 Menu("Set Status") {
                     ForEach(store.availableStatuses, id: \.self) { status in
                         Button(status) {
-                            Task { await store.bulkSet(issueIDs: Array(ids), status: status) }
+                            self.parent.requestSetStatus(ids, status)
                         }
                     }
                 }

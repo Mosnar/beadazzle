@@ -439,6 +439,25 @@ final class BeadProjectIndexTests: XCTestCase {
         )
     }
 
+    func testOpenChildIssuesForClosingIncludesOpenDescendantsAndSkipsAlreadyClosingIDs() {
+        let index = BeadProjectIndex(
+            issues: [
+                issue("bd-parent", title: "Parent", status: "open", type: "epic"),
+                issue("bd-child", title: "Child", status: "open", type: "task", parentID: "bd-parent"),
+                issue("bd-grandchild", title: "Grandchild", status: "review", type: "task", parentID: "bd-child"),
+                issue("bd-closed", title: "Closed", status: "closed", type: "task", closedAt: Date(), parentID: "bd-parent")
+            ],
+            dependencies: [],
+            semantics: semanticsWithReview()
+        )
+
+        let childrenForParent = index.openChildIssues(forClosing: ["bd-parent"])
+        let childrenForParentAndChild = index.openChildIssues(forClosing: ["bd-parent", "bd-child"])
+
+        XCTAssertEqual(childrenForParent.map(\.id), ["bd-child", "bd-grandchild"])
+        XCTAssertEqual(childrenForParentAndChild.map(\.id), ["bd-grandchild"])
+    }
+
     func testFilteredChildStaysUnderAncestorContext() {
         let index = BeadProjectIndex(
             issues: [
