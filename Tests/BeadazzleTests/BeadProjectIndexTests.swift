@@ -176,6 +176,19 @@ final class BeadProjectIndexTests: XCTestCase {
         ])
     }
 
+    func testReadyBookmarkExcludesOpenGates() {
+        let issues = [
+            issue("bd-ready", status: "open", type: "task"),
+            issue("bd-gate", status: "open", type: "gate"),
+            issue("bd-closed-gate", status: "closed", type: "gate", closedAt: Date())
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.issueIDs(for: .ready), ["bd-ready"])
+        XCTAssertEqual(index.issueIDs(for: .gates), ["bd-gate"])
+    }
+
     func testStatusAndTypeFiltersIntersectWithinAllIssues() {
         let semantics = BeadProjectSemantics(
             statuses: [

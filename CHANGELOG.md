@@ -34,6 +34,7 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Gate beads now stay out of the Ready list and remain in the Gates section.
 - Project loading now recovers instead of spinning forever when a `bd` metadata
   read or snapshot export gets stuck waiting on an embedded-database lock, and
   snapshot exports now preserve the previous readable snapshot if they fail.

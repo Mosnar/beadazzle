@@ -734,6 +734,7 @@ struct BeadProjectIndex: Sendable {
         let now = Date()
         return candidateIDs.filter { issueID in
             guard let issue = issueByID[issueID] else { return false }
+            guard !issue.isGate else { return false }
             guard !isDeferred(issue, relativeTo: now) else { return false }
             return !hasActiveBlocker(
                 issueID: issueID,
