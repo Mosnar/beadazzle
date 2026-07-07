@@ -158,6 +158,8 @@ final class BeadStore {
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var reconcileDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var activeMutationCount = 0
+    @ObservationIgnored private var mutationWriteChain: Task<Void, Never>?
+    @ObservationIgnored private var mutationWriteGeneration = 0
     @ObservationIgnored private var pendingReconcile = false
     @ObservationIgnored private var isReconcileInFlight = false
     @ObservationIgnored private var filterTask: Task<Void, Never>?
@@ -1289,6 +1291,40 @@ final class BeadStore {
         scheduleReconcileIfIdle()
     }
 
+    /// Serializes the `bd` writes behind optimistic mutations. The optimistic patch still
+    /// happens immediately, but the subprocesses commit in the same order the user made
+    /// changes so a slow earlier write cannot overwrite a newer live metadata edit.
+    private func enqueueMutationWrite(_ operation: @escaping @Sendable () async throws -> Void) async throws {
+        let previousWrite = mutationWriteChain
+        mutationWriteGeneration += 1
+        let generation = mutationWriteGeneration
+        let resultTask = Task { () -> Result<Void, any Error> in
+            await previousWrite?.value
+            do {
+                try await operation()
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        mutationWriteChain = Task {
+            _ = await resultTask.value
+        }
+
+        defer {
+            if mutationWriteGeneration == generation {
+                mutationWriteChain = nil
+            }
+        }
+
+        switch await resultTask.value {
+        case .success:
+            return
+        case .failure(let error):
+            throw error
+        }
+    }
+
     /// Requests a coalesced reconcile without participating in the in-flight count —
     /// used by non-optimistic mutations that have already awaited their `bd` write.
     private func requestReconcile() {
@@ -1437,32 +1473,33 @@ final class BeadStore {
         defer { endMutation() }
         applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
 
+        let ancestorIDsForWrite = hierarchyReopenWriteOrder(ancestorIDs)
+        let childIDsForWrite = hierarchyCompletionWriteOrder(childIDs)
+        let commands = commands
         var attemptedWrite = false
         do {
-            if !ancestorIDs.isEmpty, let ancestorReopenStatus {
-                attemptedWrite = true
-                try await commands.bulkUpdate(
-                    projectURL: projectURL,
-                    ids: hierarchyReopenWriteOrder(ancestorIDs),
-                    status: ancestorReopenStatus,
-                    type: nil,
-                    priority: nil
-                )
-                guard self.projectURL == projectURL else { return false }
-            }
-            if !childIDs.isEmpty {
-                attemptedWrite = true
-                try await commands.bulkUpdate(
-                    projectURL: projectURL,
-                    ids: hierarchyCompletionWriteOrder(childIDs),
-                    status: draft.status,
-                    type: nil,
-                    priority: nil
-                )
-                guard self.projectURL == projectURL else { return false }
-            }
             attemptedWrite = true
-            try await commands.update(projectURL: projectURL, draft: draft, originalIssue: originalIssue)
+            try await enqueueMutationWrite {
+                if !ancestorIDsForWrite.isEmpty, let ancestorReopenStatus {
+                    try await commands.bulkUpdate(
+                        projectURL: projectURL,
+                        ids: ancestorIDsForWrite,
+                        status: ancestorReopenStatus,
+                        type: nil,
+                        priority: nil
+                    )
+                }
+                if !childIDsForWrite.isEmpty {
+                    try await commands.bulkUpdate(
+                        projectURL: projectURL,
+                        ids: childIDsForWrite,
+                        status: draft.status,
+                        type: nil,
+                        priority: nil
+                    )
+                }
+                try await commands.update(projectURL: projectURL, draft: draft, originalIssue: originalIssue)
+            }
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
@@ -1535,10 +1572,14 @@ final class BeadStore {
         defer { endMutation() }
         applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
 
+        let idsForWrite = hierarchyCompletionWriteOrder(ids)
+        let commands = commands
         var attemptedWrite = false
         do {
             attemptedWrite = true
-            try await commands.close(projectURL: projectURL, ids: hierarchyCompletionWriteOrder(ids), reason: reason)
+            try await enqueueMutationWrite {
+                try await commands.close(projectURL: projectURL, ids: idsForWrite, reason: reason)
+            }
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
@@ -1591,8 +1632,11 @@ final class BeadStore {
         syncFullPageDetailWithSelection()
         applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
 
+        let commands = commands
         do {
-            try await commands.delete(projectURL: projectURL, ids: ids)
+            try await enqueueMutationWrite {
+                try await commands.delete(projectURL: projectURL, ids: ids)
+            }
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
@@ -1689,21 +1733,88 @@ final class BeadStore {
         } else {
             idsForWrite = ids
         }
+        let ancestorIDsForWrite = hierarchyReopenWriteOrder(ancestorIDs)
+        let commands = commands
         var attemptedWrite = false
         do {
-            if !ancestorIDs.isEmpty, let ancestorReopenStatus {
-                attemptedWrite = true
-                try await commands.bulkUpdate(
-                    projectURL: projectURL,
-                    ids: hierarchyReopenWriteOrder(ancestorIDs),
-                    status: ancestorReopenStatus,
-                    type: nil,
-                    priority: nil
-                )
-                guard self.projectURL == projectURL else { return false }
-            }
             attemptedWrite = true
-            try await commands.bulkUpdate(projectURL: projectURL, ids: idsForWrite, status: status, type: type, priority: priority)
+            try await enqueueMutationWrite {
+                if !ancestorIDsForWrite.isEmpty, let ancestorReopenStatus {
+                    try await commands.bulkUpdate(
+                        projectURL: projectURL,
+                        ids: ancestorIDsForWrite,
+                        status: ancestorReopenStatus,
+                        type: nil,
+                        priority: nil
+                    )
+                }
+                try await commands.bulkUpdate(projectURL: projectURL, ids: idsForWrite, status: status, type: type, priority: priority)
+            }
+            guard self.projectURL == projectURL else { return false }
+            pendingReconcile = true
+            return true
+        } catch {
+            guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
+            if attemptedWrite {
+                pendingReconcile = true
+            }
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateMetadata(
+        issueID: String,
+        labels: [String]? = nil,
+        dueAt: IssueMetadataDateUpdate = .unchanged,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) async -> Bool {
+        guard let projectURL, let originalIssue = index.issue(with: issueID) else { return false }
+
+        var draft = IssueDraft(issue: originalIssue)
+        if let labels {
+            draft.labels = labels
+        }
+        switch dueAt {
+        case .unchanged:
+            break
+        case .set(let date):
+            draft.dueAt = date
+        }
+        switch deferUntil {
+        case .unchanged:
+            break
+        case .set(let date):
+            draft.deferUntil = date
+        }
+
+        guard draft != IssueDraft(issue: originalIssue) else { return true }
+
+        let snapshot = currentMutationSnapshot()
+        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
+            guard issue.id == issueID else { return issue }
+            return optimisticallyUpdatedIssue(issue, from: draft)
+        }
+        beginMutation()
+        defer { endMutation() }
+        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+
+        let commands = commands
+        var attemptedWrite = false
+        do {
+            attemptedWrite = true
+            try await enqueueMutationWrite {
+                try await commands.updateMetadata(
+                    projectURL: projectURL,
+                    issueID: issueID,
+                    labels: labels,
+                    originalLabels: originalIssue.labels,
+                    dueAt: dueAt,
+                    deferUntil: deferUntil
+                )
+            }
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
@@ -1861,8 +1972,11 @@ final class BeadStore {
             applyOptimisticState(issues: snapshot.issues, dependencies: snapshot.dependencies + [newDependency])
         }
 
+        let commands = commands
         do {
-            try await commands.addDependency(projectURL: projectURL, issueID: issueID, dependsOnID: dependsOnID, type: type)
+            try await enqueueMutationWrite {
+                try await commands.addDependency(projectURL: projectURL, issueID: issueID, dependsOnID: dependsOnID, type: type)
+            }
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true

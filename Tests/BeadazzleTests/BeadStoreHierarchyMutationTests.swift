@@ -349,6 +349,15 @@ private actor RecordingHierarchyBeadsCommands: BeadsCommanding {
         updateCalls.append((projectURL, draft, originalIssue))
     }
 
+    func updateMetadata(
+        projectURL: URL,
+        issueID: String,
+        labels: [String]?,
+        originalLabels: [String]?,
+        dueAt: IssueMetadataDateUpdate,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {}
+
     func close(projectURL: URL, ids: [String], reason: String?) async throws {
         closeCalls.append((projectURL, ids, reason))
     }

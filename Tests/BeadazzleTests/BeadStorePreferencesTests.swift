@@ -275,6 +275,15 @@ private actor PreferenceTestCommands: BeadsCommanding {
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {}
 
+    func updateMetadata(
+        projectURL: URL,
+        issueID: String,
+        labels: [String]?,
+        originalLabels: [String]?,
+        dueAt: IssueMetadataDateUpdate,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {}
+
     func close(projectURL: URL, ids: [String], reason: String?) async throws {}
 
     func delete(projectURL: URL, ids: [String]) async throws {}

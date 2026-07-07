@@ -175,7 +175,7 @@ struct ResolvedGateStatusRepairRow: View {
 
     private var helpText: String {
         let gateIDs = gates.map(\.id).joined(separator: ", ")
-        return "Gate \(gateIDs) is closed; choose a status, then save the bead."
+        return "Gate \(gateIDs) is closed; choose a status to update the bead."
     }
 }
 

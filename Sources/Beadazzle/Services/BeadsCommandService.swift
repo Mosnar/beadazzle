@@ -5,6 +5,14 @@ protocol BeadsCommanding: Sendable {
     func exportReadableSnapshot(projectURL: URL) async throws
     func create(projectURL: URL, draft: IssueDraft) async throws -> String
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws
+    func updateMetadata(
+        projectURL: URL,
+        issueID: String,
+        labels: [String]?,
+        originalLabels: [String]?,
+        dueAt: IssueMetadataDateUpdate,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws
     func close(projectURL: URL, ids: [String], reason: String?) async throws
     func delete(projectURL: URL, ids: [String]) async throws
     func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws
@@ -87,6 +95,24 @@ struct BeadsCommandService {
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue? = nil) async throws {
         guard let arguments = BeadsCommandArguments.update(draft: draft, originalLabels: originalIssue?.labels) else { return }
+        try await run(projectURL: projectURL, arguments: arguments)
+    }
+
+    func updateMetadata(
+        projectURL: URL,
+        issueID: String,
+        labels: [String]? = nil,
+        originalLabels: [String]? = nil,
+        dueAt: IssueMetadataDateUpdate = .unchanged,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) async throws {
+        guard let arguments = BeadsCommandArguments.updateMetadata(
+            issueID: issueID,
+            labels: labels,
+            originalLabels: originalLabels,
+            dueAt: dueAt,
+            deferUntil: deferUntil
+        ) else { return }
         try await run(projectURL: projectURL, arguments: arguments)
     }
 
@@ -624,6 +650,45 @@ enum BeadsCommandArguments {
         arguments += ["--defer", dateUpdateArgument(draft.deferUntil)]
         appendLabelUpdate(&arguments, draftLabelsText: draft.labelsText, originalLabels: originalLabels)
         return arguments
+    }
+
+    static func updateMetadata(
+        issueID: String,
+        labels: [String]? = nil,
+        originalLabels: [String]? = nil,
+        dueAt: IssueMetadataDateUpdate = .unchanged,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) -> [String]? {
+        var arguments = ["update", issueID]
+        var didAppendUpdate = false
+
+        switch dueAt {
+        case .unchanged:
+            break
+        case .set(let date):
+            arguments += ["--due", dateUpdateArgument(date)]
+            didAppendUpdate = true
+        }
+
+        switch deferUntil {
+        case .unchanged:
+            break
+        case .set(let date):
+            arguments += ["--defer", dateUpdateArgument(date)]
+            didAppendUpdate = true
+        }
+
+        if let labels {
+            let countBeforeLabels = arguments.count
+            appendLabelUpdate(
+                &arguments,
+                draftLabelsText: IssueDraft.normalizedLabelText(labels),
+                originalLabels: originalLabels
+            )
+            didAppendUpdate = didAppendUpdate || arguments.count > countBeforeLabels
+        }
+
+        return didAppendUpdate ? arguments : nil
     }
 
     static func saveCustomStatuses(_ statuses: [BeadStatusDefinition]) -> [String] {

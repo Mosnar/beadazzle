@@ -104,8 +104,10 @@ struct HierarchyRelatedBeadsSheet: View {
     let message: String
     let confirmTitle: String
     let relatedIssues: [BeadIssue]
+    var cancelAction: () -> Void = {}
     let action: () async -> Bool
     @State private var isWorking = false
+    @State private var didFinish = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -123,9 +125,7 @@ struct HierarchyRelatedBeadsSheet: View {
             HStack(spacing: 8) {
                 Spacer()
 
-                Button("Cancel") {
-                    dismiss()
-                }
+                Button("Cancel", action: cancel)
                 .keyboardShortcut(.cancelAction)
                 .disabled(isWorking)
 
@@ -147,6 +147,18 @@ struct HierarchyRelatedBeadsSheet: View {
         .padding(20)
         .frame(width: 460, alignment: .leading)
         .interactiveDismissDisabled(isWorking)
+        .onDisappear {
+            guard !didFinish else { return }
+            didFinish = true
+            cancelAction()
+        }
+    }
+
+    private func cancel() {
+        guard !didFinish else { return }
+        didFinish = true
+        cancelAction()
+        dismiss()
     }
 
     private func confirm() {
@@ -156,6 +168,7 @@ struct HierarchyRelatedBeadsSheet: View {
             let didComplete = await action()
             isWorking = false
             if didComplete {
+                didFinish = true
                 dismiss()
             }
         }

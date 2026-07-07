@@ -13,6 +13,12 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Fixed
+
+- Changing bead metadata from the detail pane now updates the app immediately
+  while the write runs in the background; only title and body text remain
+  draft-until-save.
+
 ## [0.1.0-beta.3] - 2026-07-07
 
 ### Changed

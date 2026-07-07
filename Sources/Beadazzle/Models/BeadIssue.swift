@@ -295,6 +295,11 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
     }
 }
 
+enum IssueMetadataDateUpdate: Equatable, Sendable {
+    case unchanged
+    case set(Date?)
+}
+
 enum IssueSort: String, CaseIterable, Identifiable, Sendable {
     case priority = "Priority"
     case updated = "Updated"

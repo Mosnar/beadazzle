@@ -152,6 +152,40 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(value(after: "--set-labels", in: arguments), "area:ui,source:user-report")
     }
 
+    func testMetadataUpdateArgumentsOnlyIncludeMetadataFields() throws {
+        let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(
+            issueID: "bd-1",
+            labels: ["area:ui", "source:user-report"],
+            originalLabels: ["old"],
+            dueAt: .set(date(year: 2026, month: 7, day: 15)),
+            deferUntil: .set(nil)
+        ))
+
+        XCTAssertEqual(Array(arguments.prefix(2)), ["update", "bd-1"])
+        XCTAssertFalse(arguments.contains("--title"))
+        XCTAssertFalse(arguments.contains("--description"))
+        XCTAssertFalse(arguments.contains("--design"))
+        XCTAssertFalse(arguments.contains("--acceptance"))
+        XCTAssertFalse(arguments.contains("--notes"))
+        XCTAssertFalse(arguments.contains("--status"))
+        XCTAssertFalse(arguments.contains("--type"))
+        XCTAssertFalse(arguments.contains("--priority"))
+        XCTAssertEqual(value(after: "--set-labels", in: arguments), "area:ui,source:user-report")
+        XCTAssertEqual(value(after: "--due", in: arguments), "2026-07-15")
+        XCTAssertEqual(value(after: "--defer", in: arguments), "")
+    }
+
+    func testMetadataUpdateArgumentsClearLabelsFromOriginalIssue() throws {
+        let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(
+            issueID: "bd-1",
+            labels: [],
+            originalLabels: ["area:ui", "source:user-report"]
+        ))
+
+        XCTAssertEqual(values(after: "--remove-label", in: arguments), ["area:ui", "source:user-report"])
+        XCTAssertNil(value(after: "--set-labels", in: arguments))
+    }
+
     func testIssueDraftInitializesDatesAndLabelsFromIssue() {
         let dueAt = date(year: 2026, month: 7, day: 15)
         let deferUntil = date(year: 2026, month: 8, day: 1)
