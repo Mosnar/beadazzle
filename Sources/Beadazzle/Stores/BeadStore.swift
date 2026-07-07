@@ -376,6 +376,10 @@ final class BeadStore {
         optionTypeDefinitions.map(\.name)
     }
 
+    var availableMutableTypes: [String] {
+        BeadIssueWorkflowPolicy.normalMutableIssueTypes(optionTypeDefinitions.map(\.name))
+    }
+
     var availableDependencyTypes: [String] {
         index.dependencyTypeNames
     }
@@ -406,6 +410,14 @@ final class BeadStore {
 
     var hasActiveFilters: Bool {
         activeFilterCount > 0
+    }
+
+    var canSetTypeForSelection: Bool {
+        !selectedIDs.isEmpty
+            && selectedIDs.allSatisfy { id in
+                guard let issue = index.issue(with: id) else { return false }
+                return !issue.isGate
+            }
     }
 
     var beadListDisplayOptions: BeadListDisplayOptions {
@@ -468,8 +480,9 @@ final class BeadStore {
     }
 
     func blankDraft() -> IssueDraft {
-        IssueDraft.blank(
-            defaultType: availableTypes.first ?? index.semantics.typeNames.first ?? "",
+        let fallbackType = BeadIssueWorkflowPolicy.normalMutableIssueTypes(index.semantics.typeNames).first ?? ""
+        return IssueDraft.blank(
+            defaultType: availableMutableTypes.first ?? fallbackType,
             defaultStatus: availableStatuses.first ?? index.semantics.statusNames.first ?? ""
         )
     }
@@ -480,6 +493,17 @@ final class BeadStore {
 
     func typeOptions(including currentType: String?) -> [String] {
         options(availableTypes, including: currentType, fallback: index.semantics.typeNames)
+    }
+
+    func mutableTypeOptions(including currentType: String?) -> [String] {
+        let currentType = currentType.flatMap {
+            BeadIssueWorkflowPolicy.isReservedIssueType($0) ? nil : $0
+        }
+        return options(
+            availableMutableTypes,
+            including: currentType,
+            fallback: BeadIssueWorkflowPolicy.normalMutableIssueTypes(index.semantics.typeNames)
+        )
     }
 
     private func options(_ choices: [String], including currentValue: String?, fallback: [String]) -> [String] {
@@ -1263,6 +1287,11 @@ final class BeadStore {
         // Create can't be optimistic — the id is minted by `bd`. Await the write, then
         // reconcile silently and reveal the new bead (no full-screen loading indicator).
         guard let draftID = draft.id, let originalIssue = index.issue(with: draftID) else {
+            guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(draft.issueType) else {
+                lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+                return false
+            }
+
             do {
                 let createdIssueID = try await commands.create(projectURL: projectURL, draft: draft)
                 guard self.projectURL == projectURL else { return false }
@@ -1272,6 +1301,14 @@ final class BeadStore {
                 lastError = error.localizedDescription
                 return false
             }
+        }
+
+        guard BeadIssueWorkflowPolicy.canChangeIssueTypeThroughNormalMutation(
+            originalIssue,
+            to: draft.issueType
+        ) else {
+            lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+            return false
         }
 
         let childIDs = Array(Set(childIssueIDs).subtracting([draftID])).sorted()
@@ -1452,6 +1489,16 @@ final class BeadStore {
         guard let projectURL else { return false }
         let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
+        if let type {
+            guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(type),
+                  ids.allSatisfy({ id in
+                      guard let issue = index.issue(with: id) else { return false }
+                      return !issue.isGate
+                  }) else {
+                lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+                return false
+            }
+        }
 
         let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
@@ -1674,6 +1721,10 @@ final class BeadStore {
         guard let projectURL else { return false }
         do {
             let name = try WorkflowValueValidator.normalizedIdentifier(rawName)
+            guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(name) else {
+                lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+                return false
+            }
             let allTypes = try await commands.loadTypeDefinitions(projectURL: projectURL)
             try ensureTypeNameIsAvailable(name, in: allTypes)
             var types = try await commands.loadCustomTypes(projectURL: projectURL)

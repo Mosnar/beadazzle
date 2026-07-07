@@ -23,7 +23,7 @@ struct BulkActionsMenu: View {
             .disabled(store.selectedIDs.isEmpty)
 
             Menu("Set Type") {
-                ForEach(store.availableTypes, id: \.self) { type in
+                ForEach(store.availableMutableTypes, id: \.self) { type in
                     Button(type) {
                         Task {
                             await store.bulkSet(type: type)
@@ -31,7 +31,7 @@ struct BulkActionsMenu: View {
                     }
                 }
             }
-            .disabled(store.selectedIDs.isEmpty)
+            .disabled(!store.canSetTypeForSelection)
 
             Menu("Set Priority") {
                 ForEach(0...4, id: \.self) { priority in

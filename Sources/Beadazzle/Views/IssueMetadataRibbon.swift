@@ -20,7 +20,7 @@ struct IssueMetadataRibbon: View {
                 IssueMetadataOptionControl(
                     title: "Type",
                     systemImage: "tag",
-                    options: store.typeOptions(including: draft.issueType),
+                    options: store.mutableTypeOptions(including: draft.issueType),
                     selected: $draft.issueType,
                     presentation: .ribbonChip,
                     displayValue: { $0 }

@@ -405,6 +405,66 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.count, 1)
     }
 
+    func testCreateRejectsGateDraftWithoutInvokingNormalCreate() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var gateDraft = draft(title: "Gate from normal create")
+        gateDraft.issueType = " gate "
+
+        let succeeded = await store.save(gateDraft)
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.reservedIssueTypeError)
+        let calls = await commands.createCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testUpdateRejectsChangingNormalBeadToGate() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let issue = try XCTUnwrap(store.issue(with: "bd-1"))
+        var gateDraft = IssueDraft(issue: issue)
+        gateDraft.issueType = " gate "
+
+        let succeeded = await store.save(gateDraft)
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.issueType, "task")
+        XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.reservedIssueTypeError)
+        let calls = await commands.updateCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testBulkTypeChangeRejectsGateTypeAndGateSelections() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(gateUpdatedAt: "2026-07-03T21:58:35Z"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+        store.select(["bd-task"])
+        XCTAssertTrue(store.canSetTypeForSelection)
+        store.select(["bd-gate"])
+        XCTAssertFalse(store.canSetTypeForSelection)
+
+        let didSetTaskToGate = await store.bulkSet(issueIDs: ["bd-task"], type: "gate")
+        let didSetGateToTask = await store.bulkSet(issueIDs: ["bd-gate"], type: "task")
+
+        XCTAssertFalse(didSetTaskToGate)
+        XCTAssertFalse(didSetGateToTask)
+        XCTAssertEqual(store.issue(with: "bd-task")?.issueType, "task")
+        XCTAssertEqual(store.issue(with: "bd-gate")?.issueType, "gate")
+        XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.reservedIssueTypeError)
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
     func testForcedCommentRefreshSetsAndClearsLoadingStateOnSuccess() async throws {
         let projectURL = try makeProject(
             """

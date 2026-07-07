@@ -34,6 +34,8 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Normal bead creation and type-changing controls no longer offer or accept
+  the Gate type; gates are created from an existing bead instead.
 - Gate beads now stay out of the Ready list and remain in the Gates section.
 - Project loading now recovers instead of spinning forever when a `bd` metadata
   read or snapshot export gets stuck waiting on an embedded-database lock, and

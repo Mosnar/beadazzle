@@ -66,6 +66,39 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(reloadedStore.typeOptions(including: "task"), ["task"])
     }
 
+    func testMutableTypeOptionsExcludeGateWithoutHidingExistingGateType() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-task", status: "open", type: "task"))
+            \(issueLine(id: "bd-gate", status: "open", type: "gate"))
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-gate") != nil }
+
+        XCTAssertTrue(store.typeOptions(including: "gate").contains("gate"))
+        XCTAssertFalse(store.availableMutableTypes.contains("gate"))
+        XCTAssertFalse(store.mutableTypeOptions(including: nil).contains("gate"))
+        XCTAssertFalse(store.mutableTypeOptions(including: "gate").contains("gate"))
+        XCTAssertNotEqual(store.blankDraft().issueType, "gate")
+    }
+
+    func testCustomTypeCannotUseReservedGateType() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let commands = PreferenceTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let didAddType = await store.addCustomType(named: " gate ")
+
+        XCTAssertFalse(didAddType)
+        XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.reservedIssueTypeError)
+        let savedTypeSnapshots = await commands.savedTypeSnapshots
+        XCTAssertTrue(savedTypeSnapshots.isEmpty)
+    }
+
     func testCustomTypeAndStatusMutationsUseCommandConfigAPIs() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
         let commands = PreferenceTestCommands(

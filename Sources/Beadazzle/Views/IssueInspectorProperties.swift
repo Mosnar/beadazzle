@@ -4,6 +4,7 @@ struct IssueInspectorProperties: View {
     @Environment(BeadStore.self) private var store: BeadStore
     @Binding var draft: IssueDraft
     let includesStatus: Bool
+    var typeOptions: [String]? = nil
 
     var body: some View {
         if includesStatus {
@@ -21,7 +22,7 @@ struct IssueInspectorProperties: View {
         InspectorOptionRow(
             title: "Type",
             systemImage: "tag",
-            options: store.typeOptions(including: draft.issueType),
+            options: typeOptions ?? store.mutableTypeOptions(including: draft.issueType),
             selected: $draft.issueType,
             displayValue: { $0 }
         )

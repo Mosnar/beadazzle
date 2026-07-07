@@ -138,7 +138,8 @@ private struct ProjectTypesSettingsPane: View {
 
     private var canAddType: Bool {
         guard let normalizedName = try? WorkflowValueValidator.normalizedIdentifier(newTypeName) else { return false }
-        return store.allTypeDefinitions.allSatisfy { $0.name != normalizedName }
+        return BeadIssueWorkflowPolicy.isNormalMutableIssueType(normalizedName)
+            && store.allTypeDefinitions.allSatisfy { $0.name != normalizedName }
     }
 
     private var deleteBinding: Binding<Bool> {

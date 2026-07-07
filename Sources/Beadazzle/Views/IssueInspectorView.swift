@@ -172,7 +172,11 @@ struct IssueCreationInspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             InspectorGroup("Properties") {
-                IssueInspectorProperties(draft: $draft, includesStatus: false)
+                IssueInspectorProperties(
+                    draft: $draft,
+                    includesStatus: false,
+                    typeOptions: store.mutableTypeOptions(including: draft.issueType)
+                )
                 InspectorRowDivider()
                 InspectorLabelsRow(
                     draft: $draft,

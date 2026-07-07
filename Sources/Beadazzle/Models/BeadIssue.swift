@@ -46,7 +46,7 @@ struct BeadIssue: Identifiable, Hashable, Sendable {
     }
 
     var isGate: Bool {
-        issueType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == BeadProjectIndex.gateIssueType
+        BeadIssueWorkflowPolicy.isReservedIssueType(issueType)
     }
 }
 
@@ -56,8 +56,30 @@ enum BeadCompletionAction: Equatable, Sendable {
 }
 
 enum BeadIssueWorkflowPolicy {
+    static let reservedIssueTypeError = "The gate type is reserved for gate actions."
+
+    static func isReservedIssueType(_ type: String) -> Bool {
+        normalizedIssueType(type) == BeadProjectIndex.gateIssueType
+    }
+
+    static func isNormalMutableIssueType(_ type: String) -> Bool {
+        !isReservedIssueType(type)
+    }
+
+    static func normalMutableIssueTypes(_ types: [String]) -> [String] {
+        types.filter(isNormalMutableIssueType)
+    }
+
+    static func canChangeIssueTypeThroughNormalMutation(_ issue: BeadIssue, to type: String) -> Bool {
+        issue.issueType == type || (!issue.isGate && isNormalMutableIssueType(type))
+    }
+
     static func canCreateGate(blocking issue: BeadIssue, isDone: Bool) -> Bool {
         !isDone && !issue.isGate
+    }
+
+    private static func normalizedIssueType(_ type: String) -> String {
+        type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     static func completionAction(for issues: [BeadIssue], isDone: (BeadIssue) -> Bool) -> BeadCompletionAction {
