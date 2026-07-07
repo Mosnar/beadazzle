@@ -15,6 +15,8 @@ for users, not for the commit log.
 
 ### Changed
 
+- Child bead detail pages now show a clickable parent bead ID in breadcrumbs,
+  Properties, and compact metadata when a parent exists.
 - Closed beads now show Reopen instead of Close in action menus.
 - Closed beads no longer show Create Gate until they are reopened.
 - Human gates now use Approve and Reject actions, and approving a gate moves

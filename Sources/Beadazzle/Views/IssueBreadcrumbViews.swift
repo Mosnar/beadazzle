@@ -94,6 +94,21 @@ struct IssueBreadcrumbBar: View {
                 BreadcrumbSeparator()
                 BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
             }
+
+            if let parentIssue = store.parentIssue(for: issue.id) {
+                let parentPresentation = ParentBeadPresentation(issue: parentIssue)
+                BreadcrumbSeparator()
+                BreadcrumbButton(
+                    parentPresentation.id,
+                    systemImage: store.statusSymbol(for: parentIssue.status),
+                    iconTint: store.statusColor(for: parentIssue.status),
+                    help: parentPresentation.helpText,
+                    accessibilityLabel: parentPresentation.accessibilityLabel,
+                    accessibilityValue: parentPresentation.accessibilityValue
+                ) {
+                    store.openIssueFromDetail(issueID: parentIssue.id)
+                }
+            }
             BreadcrumbSeparator()
 
             BreadcrumbIssueLabel(
@@ -237,15 +252,29 @@ struct BreadcrumbLabel: View {
 struct BreadcrumbButton: View {
     let text: String
     let systemImage: String
+    var iconTint: Color?
     let help: String
+    var accessibilityLabel: String?
+    var accessibilityValue: String?
     let action: () -> Void
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
-    init(_ text: String, systemImage: String, help: String, action: @escaping () -> Void) {
+    init(
+        _ text: String,
+        systemImage: String,
+        iconTint: Color? = nil,
+        help: String,
+        accessibilityLabel: String? = nil,
+        accessibilityValue: String? = nil,
+        action: @escaping () -> Void
+    ) {
         self.text = text
         self.systemImage = systemImage
+        self.iconTint = iconTint
         self.help = help
+        self.accessibilityLabel = accessibilityLabel
+        self.accessibilityValue = accessibilityValue
         self.action = action
     }
 
@@ -257,12 +286,13 @@ struct BreadcrumbButton: View {
                 Text(text)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .foregroundStyle(isHighlighted ? .primary : .secondary)
             } icon: {
                 Image(systemName: systemImage)
                     .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(iconTint ?? (isHighlighted ? .primary : .secondary))
             }
             .font(.callout)
-            .foregroundStyle(isHighlighted ? .primary : .secondary)
             .padding(.horizontal, BreadcrumbChrome.horizontalPadding)
             .padding(.vertical, BreadcrumbChrome.verticalPadding)
             .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
@@ -283,6 +313,8 @@ struct BreadcrumbButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .help(help)
+        .accessibilityLabel(accessibilityLabel ?? text)
+        .accessibilityValue(accessibilityValue ?? "")
         .accessibilityHint(help)
     }
 }

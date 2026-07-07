@@ -36,6 +36,12 @@ struct IssueMetadataRibbon: View {
                     displayValue: { "P\($0)" }
                 )
 
+                if let issueID = draft.id, let parentIssue = store.parentIssue(for: issueID) {
+                    ParentBeadRibbonButton(parent: parentIssue) { parentID in
+                        store.openIssueFromDetail(issueID: parentID)
+                    }
+                }
+
                 IssueMetadataLabelsControl(
                     draft: $draft,
                     availableLabels: store.availableLabels,
@@ -83,5 +89,32 @@ struct IssueMetadataRibbon: View {
         .background(InspectorChrome.ribbonFill)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Bead metadata")
+    }
+}
+
+struct ParentBeadRibbonButton: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    let parent: BeadIssue
+    let onSelect: (String) -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        let presentation = ParentBeadPresentation(issue: parent)
+        Button {
+            onSelect(parent.id)
+        } label: {
+            IssueMetadataRibbonChipLabel(
+                systemImage: store.statusSymbol(for: parent.status),
+                tint: store.statusColor(for: parent.status),
+                value: presentation.id,
+                showsChevron: false,
+                isHighlighted: isHovered
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(presentation.helpText)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
     }
 }

@@ -9,6 +9,13 @@ struct IssueInspector: View {
         VStack(alignment: .leading, spacing: 12) {
             InspectorGroup("Properties") {
                 IssueInspectorProperties(draft: $draft, includesStatus: true)
+
+                if let parentIssue = store.parentIssue(for: issue.id) {
+                    InspectorRowDivider()
+                    InspectorParentRow(parent: parentIssue) { parentID in
+                        store.openIssueFromDetail(issueID: parentID)
+                    }
+                }
                 InspectorRowDivider()
 
                 InspectorValueRow(title: "Assignee", systemImage: "person.crop.circle", value: issue.assignee ?? "None")
@@ -75,6 +82,35 @@ struct IssueInspector: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+struct InspectorParentRow: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    let parent: BeadIssue
+    let onSelect: (String) -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        let presentation = ParentBeadPresentation(issue: parent)
+        Button {
+            onSelect(parent.id)
+        } label: {
+            InspectorRowLabel(
+                title: "Parent",
+                systemImage: store.statusSymbol(for: parent.status),
+                tint: store.statusColor(for: parent.status),
+                value: presentation.id,
+                showsChevron: true,
+                isHighlighted: isHovered,
+                chevronSymbol: "arrow.up.right"
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(presentation.helpText)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
     }
 }
 

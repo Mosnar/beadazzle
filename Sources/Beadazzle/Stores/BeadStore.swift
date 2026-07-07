@@ -283,6 +283,11 @@ final class BeadStore {
         return index.issue(with: id)
     }
 
+    func parentIssue(for issueID: String) -> BeadIssue? {
+        guard let parentID = index.parentID(for: issueID) else { return nil }
+        return index.issue(with: parentID)
+    }
+
     /// The gate metadata for an issue, if that issue is a gate bead.
     func gate(for id: String) -> BeadGate? {
         guard let issue = index.issue(with: id),
@@ -840,6 +845,15 @@ final class BeadStore {
 
     func clearSelection() {
         select([])
+    }
+
+    func openIssueFromDetail(issueID: String) {
+        guard index.issue(with: issueID) != nil else { return }
+        if fullPageDetailIssueID != nil {
+            openFullPageDetail(issueID: issueID)
+        } else {
+            select([issueID])
+        }
     }
 
     func openFullPageDetail(issueID: String) {

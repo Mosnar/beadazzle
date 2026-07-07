@@ -119,13 +119,62 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertFalse(store.navigateIssueOutlineLeft())
     }
 
+    func testParentIssueUsesParentIDField() async throws {
+        let store = try await makeLoadedStore()
+
+        let childParent = store.parentIssue(for: "bd-child")
+        let rootParent = store.parentIssue(for: "bd-parent")
+        let presentation = ParentBeadPresentation(issue: try XCTUnwrap(childParent))
+
+        XCTAssertEqual(childParent?.id, "bd-parent")
+        XCTAssertNil(rootParent)
+        XCTAssertEqual(presentation.id, "bd-parent")
+        XCTAssertEqual(presentation.helpText, "Open parent bead bd-parent: Parent")
+        XCTAssertEqual(presentation.accessibilityValue, "bd-parent: Parent")
+    }
+
+    func testParentIssueUsesParentChildDependencyWhenParentIDIsMissing() async throws {
+        let store = try await makeLoadedStore(
+            issuesJSONL: """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic"}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","dependencies":[{"issue_id":"bd-child","depends_on_id":"bd-parent","type":"parent-child"}]}
+            """
+        )
+
+        XCTAssertEqual(store.parentIssue(for: "bd-child")?.id, "bd-parent")
+    }
+
+    func testOpenIssueFromDetailPreservesSplitDetailMode() async throws {
+        let store = try await makeLoadedStore()
+
+        store.select(["bd-child"])
+        store.openIssueFromDetail(issueID: "bd-parent")
+
+        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
+        XCTAssertNil(store.fullPageDetailIssueID)
+    }
+
+    func testOpenIssueFromDetailPreservesFullPageDetailMode() async throws {
+        let store = try await makeLoadedStore()
+
+        store.openFullPageDetail(issueID: "bd-child")
+        store.openIssueFromDetail(issueID: "bd-parent")
+
+        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
+        XCTAssertEqual(store.fullPageDetailIssueID, "bd-parent")
+    }
+
     private func makeLoadedStore() async throws -> BeadStore {
-        let projectURL = try makeProject(
+        return try await makeLoadedStore(
             issuesJSONL: """
             {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic"}
             {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent"}
             """
         )
+    }
+
+    private func makeLoadedStore(issuesJSONL: String) async throws -> BeadStore {
+        let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         addTeardownBlock {
             try? FileManager.default.removeItem(at: projectURL)
         }
