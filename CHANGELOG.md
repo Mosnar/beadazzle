@@ -46,6 +46,8 @@ for users, not for the commit log.
   only on the project name text.
 - Right-clicking an unselected bead now focuses it for the context menu without
   opening its detail, so actions apply to the focused bead without navigating.
+- Right-clicked beads now show a subtle gray focus outline while their context
+  menu is targeted.
 - Fixed a runaway loop that pinned the CPU, hammered the disk, and slowly grew
   memory the entire time a project was open — even while the app sat idle. The
   app's own background reads were tripping its file-change watcher, which kicked
