@@ -209,29 +209,8 @@ struct BeadProjectIndex: Sendable {
     }
 
     func openChildIssues(forClosing issueIDs: [String]) -> [BeadIssue] {
-        let initiallyClosingIDs = Set(issueIDs)
-        var visitedIDs = initiallyClosingIDs
-        var parentIDsToVisit = issueIDs.sorted()
-        var parentIndex = 0
-        var openChildren: [BeadIssue] = []
-
-        while parentIndex < parentIDsToVisit.count {
-            let parentID = parentIDsToVisit[parentIndex]
-            parentIndex += 1
-
-            for childID in (childIDsByParentID[parentID] ?? []).sorted() {
-                guard visitedIDs.insert(childID).inserted,
-                      let child = issueByID[childID]
-                else { continue }
-
-                parentIDsToVisit.append(childID)
-                if !initiallyClosingIDs.contains(childID), !semantics.isDone(child) {
-                    openChildren.append(child)
-                }
-            }
-        }
-
-        return openChildren
+        BeadHierarchyMutationPolicy(index: self)
+            .unresolvedDescendantsPreventingCompletion(of: issueIDs, includedIssueIDs: issueIDs)
     }
 
     func dependenciesTouching(issueID: String) -> [BeadDependency] {

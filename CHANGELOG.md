@@ -44,6 +44,10 @@ for users, not for the commit log.
   snapshot exports now preserve the previous readable snapshot if they fail.
 - Closing parent beads with confirmed child beads now uses a single ordered
   `bd` write where possible, reducing the chance of partially applied closes.
+- Parent beads can no longer be closed while child beads remain unresolved
+  through status changes, detail saves, gate rejection, or relationship edits.
+- Parent-child links now also reject attaching an unresolved child tree under a
+  done parent.
 - Project switcher rows now respond across the full highlighted row instead of
   only on the project name text.
 - Right-clicking an unselected bead now focuses it for the context menu without

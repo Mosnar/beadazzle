@@ -182,6 +182,10 @@ final class BeadStore {
 
     private var index = BeadProjectIndex.empty
 
+    var hierarchyMutationPolicy: BeadHierarchyMutationPolicy {
+        BeadHierarchyMutationPolicy(index: index)
+    }
+
     private static let lastProjectPathKey = "LastProjectPath"
     private static let recentProjectPathsKey = "RecentProjectPaths"
     private static let maxRecentProjectCount = 8
@@ -535,8 +539,7 @@ final class BeadStore {
     }
 
     func statusClosesBeads(_ status: String) -> Bool {
-        let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalizedStatus == Self.closedStatusName || index.semantics.category(forStatus: status) == .done
+        hierarchyMutationPolicy.statusClosesBeads(status)
     }
 
     func isDone(_ issue: BeadIssue) -> Bool {
@@ -562,7 +565,7 @@ final class BeadStore {
         BeadIssueWorkflowPolicy.canCreateGate(blocking: issue, isDone: isDone(issue))
     }
 
-    private var reopenStatusName: String? {
+    var reopenStatusName: String? {
         if index.semantics.statuses.contains(where: { $0.name == "open" && $0.category == .active }) {
             return "open"
         }
@@ -598,10 +601,6 @@ final class BeadStore {
             }
         }
         return false
-    }
-
-    func openChildIssues(forClosing issueIDs: [String]) -> [BeadIssue] {
-        index.openChildIssues(forClosing: issueIDs)
     }
 
     func openDefaultProjectIfAvailable() {
@@ -1177,21 +1176,6 @@ final class BeadStore {
         MutationSnapshot(issues: index.issues, dependencies: index.dependencies)
     }
 
-    private func issueIDsDeepestFirst(_ ids: [String]) -> [String] {
-        let uniqueIDs = Array(Set(ids)).sorted()
-        let depthByID = Dictionary(uniqueKeysWithValues: uniqueIDs.map { issueID in
-            (issueID, index.ancestorIDs(for: issueID).count)
-        })
-        return uniqueIDs.sorted { lhs, rhs in
-            let lhsDepth = depthByID[lhs, default: 0]
-            let rhsDepth = depthByID[rhs, default: 0]
-            if lhsDepth != rhsDepth {
-                return lhsDepth > rhsDepth
-            }
-            return lhs < rhs
-        }
-    }
-
     /// Rebuilds the in-memory index from patched issues/dependencies and refreshes derived
     /// state immediately — no disk access, no loading indicator. This is what makes edits
     /// feel instant: the UI reflects the change before `bd` has even run. Correctness is
@@ -1291,11 +1275,25 @@ final class BeadStore {
 
     @discardableResult
     func save(_ draft: IssueDraft) async -> Bool {
-        await save(draft, closingChildIssueIDs: [])
+        await save(draft, closingChildIssueIDs: [], reopeningAncestorIssueIDs: [])
     }
 
     @discardableResult
     func save(_ draft: IssueDraft, closingChildIssueIDs childIssueIDs: [String]) async -> Bool {
+        await save(draft, closingChildIssueIDs: childIssueIDs, reopeningAncestorIssueIDs: [])
+    }
+
+    @discardableResult
+    func save(_ draft: IssueDraft, reopeningAncestorIssueIDs ancestorIssueIDs: [String]) async -> Bool {
+        await save(draft, closingChildIssueIDs: [], reopeningAncestorIssueIDs: ancestorIssueIDs)
+    }
+
+    @discardableResult
+    func save(
+        _ draft: IssueDraft,
+        closingChildIssueIDs childIssueIDs: [String],
+        reopeningAncestorIssueIDs ancestorIssueIDs: [String]
+    ) async -> Bool {
         guard let projectURL else { return false }
 
         // Create can't be optimistic — the id is minted by `bd`. Await the write, then
@@ -1326,12 +1324,43 @@ final class BeadStore {
         }
 
         let childIDs = Array(Set(childIssueIDs).subtracting([draftID])).sorted()
+        let ancestorIDs = Array(Set(ancestorIssueIDs).subtracting([draftID]).subtracting(childIDs)).sorted()
+        let makesDone = statusClosesBeads(draft.status)
+        let originalIsDone = isDone(originalIssue)
+        if makesDone && !originalIsDone {
+            guard guardHierarchyAllowsCompletion(
+                issueIDs: [draftID],
+                includedIssueIDs: [draftID] + childIDs
+            ) else { return false }
+        } else if !makesDone && originalIsDone {
+            guard guardHierarchyAllowsUncompletion(
+                issueIDs: [draftID],
+                includedIssueIDs: [draftID] + ancestorIDs
+            ) else { return false }
+        }
+        let ancestorReopenStatus: String?
+        if ancestorIDs.isEmpty {
+            ancestorReopenStatus = nil
+        } else if let status = reopenStatusName {
+            ancestorReopenStatus = status
+        } else {
+            lastError = "No active status is configured for reopened beads."
+            return false
+        }
         let childIDSet = Set(childIDs)
+        let ancestorIDSet = Set(ancestorIDs)
         let snapshot = currentMutationSnapshot()
         let now = Date()
         let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
             if issue.id == draftID {
                 return optimisticallyUpdatedIssue(issue, from: draft)
+            }
+            if ancestorIDSet.contains(issue.id), let ancestorReopenStatus {
+                var copy = issue
+                copy.status = ancestorReopenStatus
+                copy.closedAt = nil
+                copy.updatedAt = now
+                return copy
             }
             guard childIDSet.contains(issue.id) else { return issue }
             var copy = issue
@@ -1346,9 +1375,26 @@ final class BeadStore {
 
         var attemptedWrite = false
         do {
+            if !ancestorIDs.isEmpty, let ancestorReopenStatus {
+                attemptedWrite = true
+                try await commands.bulkUpdate(
+                    projectURL: projectURL,
+                    ids: hierarchyReopenWriteOrder(ancestorIDs),
+                    status: ancestorReopenStatus,
+                    type: nil,
+                    priority: nil
+                )
+                guard self.projectURL == projectURL else { return false }
+            }
             if !childIDs.isEmpty {
                 attemptedWrite = true
-                try await commands.bulkUpdate(projectURL: projectURL, ids: issueIDsDeepestFirst(childIDs), status: draft.status, type: nil, priority: nil)
+                try await commands.bulkUpdate(
+                    projectURL: projectURL,
+                    ids: hierarchyCompletionWriteOrder(childIDs),
+                    status: draft.status,
+                    type: nil,
+                    priority: nil
+                )
                 guard self.projectURL == projectURL else { return false }
             }
             attemptedWrite = true
@@ -1408,6 +1454,7 @@ final class BeadStore {
         guard let projectURL else { return false }
         let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
+        guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else { return false }
 
         let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
@@ -1427,7 +1474,7 @@ final class BeadStore {
         var attemptedWrite = false
         do {
             attemptedWrite = true
-            try await commands.close(projectURL: projectURL, ids: issueIDsDeepestFirst(ids), reason: reason)
+            try await commands.close(projectURL: projectURL, ids: hierarchyCompletionWriteOrder(ids), reason: reason)
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
             return true
@@ -1443,7 +1490,7 @@ final class BeadStore {
     }
 
     @discardableResult
-    func reopen(issueIDs: [String]) async -> Bool {
+    func reopen(issueIDs: [String], reopeningAncestorIssueIDs ancestorIssueIDs: [String] = []) async -> Bool {
         guard let status = reopenStatusName else {
             lastError = "No active status is configured for reopened beads."
             return false
@@ -1454,7 +1501,7 @@ final class BeadStore {
             .map(\.id)
             .sorted()
         guard !ids.isEmpty else { return false }
-        return await bulkSet(issueIDs: ids, status: status)
+        return await bulkSet(issueIDs: ids, status: status, reopeningAncestorIssueIDs: ancestorIssueIDs)
     }
 
     @discardableResult
@@ -1499,7 +1546,13 @@ final class BeadStore {
     }
 
     @discardableResult
-    func bulkSet(issueIDs: [String], status: String? = nil, type: String? = nil, priority: Int? = nil) async -> Bool {
+    func bulkSet(
+        issueIDs: [String],
+        status: String? = nil,
+        type: String? = nil,
+        priority: Int? = nil,
+        reopeningAncestorIssueIDs ancestorIssueIDs: [String] = []
+    ) async -> Bool {
         guard let projectURL else { return false }
         let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
@@ -1514,11 +1567,41 @@ final class BeadStore {
             }
         }
 
+        let makesDone = status.map(statusClosesBeads) ?? false
+        let ancestorIDs = Array(Set(ancestorIssueIDs).subtracting(ids)).sorted()
+        let ancestorReopenStatus: String?
+        if let status, statusClosesBeads(status) {
+            guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else { return false }
+            ancestorReopenStatus = nil
+        } else if status != nil {
+            guard guardHierarchyAllowsUncompletion(
+                issueIDs: ids,
+                includedIssueIDs: ids + ancestorIDs
+            ) else { return false }
+            if ancestorIDs.isEmpty {
+                ancestorReopenStatus = nil
+            } else if let reopenStatusName {
+                ancestorReopenStatus = reopenStatusName
+            } else {
+                lastError = "No active status is configured for reopened beads."
+                return false
+            }
+        } else {
+            ancestorReopenStatus = nil
+        }
+
         let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
+        let ancestorIDSet = Set(ancestorIDs)
         let now = Date()
-        let makesDone = status.map(statusClosesBeads) ?? false
         let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
+            if ancestorIDSet.contains(issue.id), let ancestorReopenStatus {
+                var copy = issue
+                copy.status = ancestorReopenStatus
+                copy.closedAt = nil
+                copy.updatedAt = now
+                return copy
+            }
             guard idSet.contains(issue.id) else { return issue }
             var copy = issue
             if let status { copy.status = status }
@@ -1534,9 +1617,27 @@ final class BeadStore {
         defer { endMutation() }
         applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
 
-        let idsForWrite = makesDone ? issueIDsDeepestFirst(ids) : ids
+        let idsForWrite: [String]
+        if makesDone {
+            idsForWrite = hierarchyCompletionWriteOrder(ids)
+        } else if status != nil {
+            idsForWrite = hierarchyReopenWriteOrder(ids)
+        } else {
+            idsForWrite = ids
+        }
         var attemptedWrite = false
         do {
+            if !ancestorIDs.isEmpty, let ancestorReopenStatus {
+                attemptedWrite = true
+                try await commands.bulkUpdate(
+                    projectURL: projectURL,
+                    ids: hierarchyReopenWriteOrder(ancestorIDs),
+                    status: ancestorReopenStatus,
+                    type: nil,
+                    priority: nil
+                )
+                guard self.projectURL == projectURL else { return false }
+            }
             attemptedWrite = true
             try await commands.bulkUpdate(projectURL: projectURL, ids: idsForWrite, status: status, type: type, priority: priority)
             guard self.projectURL == projectURL else { return false }
@@ -1585,6 +1686,9 @@ final class BeadStore {
 
         let affectedIDs = gateDecisionAffectedBeads(for: id).map(\.id)
         let rejectionReason = "Rejected: \(trimmedReason)"
+        if statusClosesBeads(status) {
+            guard guardHierarchyAllowsCompletion(issueIDs: affectedIDs, includedIssueIDs: affectedIDs) else { return false }
+        }
         guard await resolveGate(id: id, reason: rejectionReason) else { return false }
         guard !affectedIDs.isEmpty else { return true }
 
@@ -1679,6 +1783,11 @@ final class BeadStore {
     @discardableResult
     func addDependency(issueID: String, dependsOnID: String, type: String) async -> Bool {
         guard let projectURL else { return false }
+        guard guardHierarchyAllowsParentChildDependency(
+            issueID: issueID,
+            dependsOnID: dependsOnID,
+            type: type
+        ) else { return false }
 
         let snapshot = currentMutationSnapshot()
         let newDependency = BeadDependency(issueID: issueID, dependsOnID: dependsOnID, type: type, createdAt: Date())

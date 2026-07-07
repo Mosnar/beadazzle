@@ -6,8 +6,7 @@ struct ContentView: View {
     @State private var showsSidebar = true
     @State private var workspaceWidth: CGFloat = 0
     @State private var showingDeleteConfirmation = false
-    @State private var closeBeadRequest: CloseBeadRequest?
-    @State private var closeChildStatusRequest: CloseChildBeadsStatusRequest?
+    @State private var hierarchySheetRequest: ContentHierarchySheetRequest?
     @State private var searchPresented = false
 
     var body: some View {
@@ -67,22 +66,8 @@ struct ContentView: View {
         } message: {
             Text("Beads deletes are destructive. Dependencies involving the selected beads will be cleaned up by bd.")
         }
-        .sheet(item: $closeBeadRequest) { request in
-            CloseBeadReasonSheet(request: request)
-        }
-        .sheet(item: $closeChildStatusRequest) { request in
-            CloseChildBeadsConfirmationSheet(
-                title: "Close child beads too?",
-                message: "Setting \(request.targetDescription) to \(request.status) will close it while child beads are still open. Close the child beads as well?",
-                confirmTitle: "Set Status and Close Children",
-                childIssues: request.childIssues,
-                secondaryTitle: "Set Status Only",
-                secondaryAction: {
-                    await store.bulkSet(issueIDs: request.issueIDs, status: request.status)
-                }
-            ) {
-                await store.bulkSet(issueIDs: request.allIssueIDs, status: request.status)
-            }
+        .sheet(item: $hierarchySheetRequest) { request in
+            hierarchySheet(for: request)
         }
         .alert("Beadazzle", isPresented: errorBinding) {
             Button("OK") {
@@ -111,8 +96,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: store.projectURL) {
-            closeBeadRequest = nil
-            closeChildStatusRequest = nil
+            hierarchySheetRequest = nil
         }
     }
 
@@ -207,18 +191,16 @@ struct ContentView: View {
 
     private func openProject() {
         guard let url = PanelService.chooseProjectFolder() else { return }
-        closeBeadRequest = nil
+        hierarchySheetRequest = nil
         store.openProject(url)
     }
 
     private func requestClose(_ issue: BeadIssue) {
         guard store.completionAction(for: [issue.id]) == .close else {
-            Task {
-                await store.reopen(issueIDs: [issue.id])
-            }
+            requestReopen(issues: [issue])
             return
         }
-        closeBeadRequest = CloseBeadRequest(issue: issue)
+        hierarchySheetRequest = .close(CloseBeadRequest(issue: issue))
     }
 
     private func openDetail(issueID: String) {
@@ -232,14 +214,12 @@ struct ContentView: View {
         guard !selectedIssues.isEmpty else { return }
         let issueIDs = selectedIssues.map(\.id)
         guard store.completionAction(for: issueIDs) == .close else {
-            Task {
-                await store.reopen(issueIDs: issueIDs)
-            }
+            requestReopen(issues: selectedIssues)
             return
         }
         let closeableIssues = selectedIssues.filter { !store.isDone($0) }
         guard !closeableIssues.isEmpty else { return }
-        closeBeadRequest = CloseBeadRequest(issues: closeableIssues)
+        hierarchySheetRequest = .close(CloseBeadRequest(issues: closeableIssues))
     }
 
     private func requestSetSelectedStatus(_ status: String) {
@@ -255,10 +235,24 @@ struct ContentView: View {
         if store.statusClosesBeads(status) {
             let childIssues = store.openChildIssues(forClosing: issues.map(\.id))
             if !childIssues.isEmpty {
-                closeChildStatusRequest = CloseChildBeadsStatusRequest(
-                    issues: issues,
-                    status: status,
-                    childIssues: childIssues
+                hierarchySheetRequest = .closeChildrenForStatus(
+                    CloseChildBeadsStatusRequest(
+                        issues: issues,
+                        status: status,
+                        childIssues: childIssues
+                    )
+                )
+                return
+            }
+        } else {
+            let ancestorIssues = store.doneAncestorIssues(forReopening: issues.map(\.id))
+            if !ancestorIssues.isEmpty {
+                hierarchySheetRequest = .reopenAncestorsForStatus(
+                    ReopenAncestorBeadsStatusRequest(
+                        issues: issues,
+                        status: status,
+                        ancestorIssues: ancestorIssues
+                    )
                 )
                 return
             }
@@ -266,6 +260,58 @@ struct ContentView: View {
 
         Task {
             await store.bulkSet(issueIDs: issues.map(\.id), status: status)
+        }
+    }
+
+    private func requestReopen(issues: [BeadIssue]) {
+        let issueIDs = issues.map(\.id)
+        let ancestorIssues = store.doneAncestorIssues(forReopening: issueIDs)
+        if !ancestorIssues.isEmpty {
+            guard let reopenStatus = store.reopenStatusName else {
+                store.lastError = "No active status is configured for reopened beads."
+                return
+            }
+            hierarchySheetRequest = .reopenAncestorsForStatus(
+                ReopenAncestorBeadsStatusRequest(
+                    issues: issues,
+                    status: reopenStatus,
+                    ancestorIssues: ancestorIssues
+                )
+            )
+        } else {
+            Task {
+                await store.reopen(issueIDs: issueIDs)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func hierarchySheet(for request: ContentHierarchySheetRequest) -> some View {
+        switch request {
+        case .close(let request):
+            CloseBeadReasonSheet(request: request)
+        case .closeChildrenForStatus(let request):
+            HierarchyRelatedBeadsSheet(
+                title: "Close child beads too?",
+                message: "Setting \(request.targetDescription) to \(request.status) will close it while child beads are still open. Close the child beads as well?",
+                confirmTitle: "Set Status and Close Children",
+                relatedIssues: request.childIssues
+            ) {
+                await store.bulkSet(issueIDs: request.allIssueIDs, status: request.status)
+            }
+        case .reopenAncestorsForStatus(let request):
+            HierarchyRelatedBeadsSheet(
+                title: "Reopen parent beads too?",
+                message: "Setting \(request.targetDescription) to \(request.status) will reopen it while parent beads are still closed. Reopen the parent beads as well?",
+                confirmTitle: "Set Status and Reopen Parents",
+                relatedIssues: request.ancestorIssues
+            ) {
+                await store.bulkSet(
+                    issueIDs: request.issueIDs,
+                    status: request.status,
+                    reopeningAncestorIssueIDs: request.ancestorIssueIDs
+                )
+            }
         }
     }
 
@@ -280,6 +326,23 @@ struct ContentView: View {
         }
     }
 
+}
+
+private enum ContentHierarchySheetRequest: Identifiable, Equatable {
+    case close(CloseBeadRequest)
+    case closeChildrenForStatus(CloseChildBeadsStatusRequest)
+    case reopenAncestorsForStatus(ReopenAncestorBeadsStatusRequest)
+
+    var id: String {
+        switch self {
+        case .close(let request):
+            "close|\(request.id)"
+        case .closeChildrenForStatus(let request):
+            "close-children-status|\(request.id)"
+        case .reopenAncestorsForStatus(let request):
+            "reopen-ancestors-status|\(request.id)"
+        }
+    }
 }
 
 enum ContentLayout {

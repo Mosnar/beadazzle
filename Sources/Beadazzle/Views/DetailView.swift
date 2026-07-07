@@ -7,7 +7,7 @@ struct DetailView: View {
     @State private var draftIssueID: String?
     @State private var suppressesCreationDraftUpdates = false
     @State private var isCreatingDraft = false
-    @State private var closeChildSaveRequest: CloseChildBeadsSaveRequest?
+    @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
 
     var body: some View {
         @Bindable var store = store
@@ -39,22 +39,38 @@ struct DetailView: View {
             }
         }
         .focusedValue(\.beadSaveAction, activeSaveAction)
-        .sheet(item: $closeChildSaveRequest) { request in
-            CloseChildBeadsConfirmationSheet(
+        .sheet(item: $hierarchySheetRequest) { request in
+            hierarchySheet(for: request)
+        }
+    }
+
+    @ViewBuilder
+    private func hierarchySheet(for request: DetailHierarchySheetRequest) -> some View {
+        switch request {
+        case .closeChildrenForSave(let request):
+            HierarchyRelatedBeadsSheet(
                 title: "Close child beads too?",
                 message: "Saving \(request.targetDescription) as \(request.draft.status) will close it while child beads are still open. Close the child beads as well?",
                 confirmTitle: "Save and Close Children",
-                childIssues: request.childIssues,
-                secondaryTitle: "Save Only",
-                secondaryAction: {
-                    let didSave = await store.save(request.draft)
-                    if didSave {
-                        resetDraft()
-                    }
-                    return didSave
-                }
+                relatedIssues: request.childIssues
             ) {
                 let didSave = await store.save(request.draft, closingChildIssueIDs: request.childIssueIDs)
+                if didSave {
+                    resetDraft()
+                }
+                return didSave
+            }
+        case .reopenAncestorsForSave(let request):
+            HierarchyRelatedBeadsSheet(
+                title: "Reopen parent beads too?",
+                message: "Saving \(request.targetDescription) as \(request.draft.status) will reopen it while parent beads are still closed. Reopen the parent beads as well?",
+                confirmTitle: "Save and Reopen Parents",
+                relatedIssues: request.ancestorIssues
+            ) {
+                let didSave = await store.save(
+                    request.draft,
+                    reopeningAncestorIssueIDs: request.ancestorIssueIDs
+                )
                 if didSave {
                     resetDraft()
                 }
@@ -133,11 +149,26 @@ struct DetailView: View {
         if !store.isDone(issue), store.statusClosesBeads(draft.status) {
             let childIssues = store.openChildIssues(forClosing: [issue.id])
             if !childIssues.isEmpty {
-                closeChildSaveRequest = CloseChildBeadsSaveRequest(
-                    issueID: issue.id,
-                    title: draft.title,
-                    draft: draft,
-                    childIssues: childIssues
+                hierarchySheetRequest = .closeChildrenForSave(
+                    CloseChildBeadsSaveRequest(
+                        issueID: issue.id,
+                        title: draft.title,
+                        draft: draft,
+                        childIssues: childIssues
+                    )
+                )
+                return
+            }
+        } else if store.isDone(issue), !store.statusClosesBeads(draft.status) {
+            let ancestorIssues = store.doneAncestorIssues(forReopening: [issue.id])
+            if !ancestorIssues.isEmpty {
+                hierarchySheetRequest = .reopenAncestorsForSave(
+                    ReopenAncestorBeadsSaveRequest(
+                        issueID: issue.id,
+                        title: draft.title,
+                        draft: draft,
+                        ancestorIssues: ancestorIssues
+                    )
                 )
                 return
             }
@@ -157,5 +188,19 @@ struct DetailView: View {
 
     private func canSave(_ draft: IssueDraft) -> Bool {
         !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private enum DetailHierarchySheetRequest: Identifiable, Equatable {
+    case closeChildrenForSave(CloseChildBeadsSaveRequest)
+    case reopenAncestorsForSave(ReopenAncestorBeadsSaveRequest)
+
+    var id: String {
+        switch self {
+        case .closeChildrenForSave(let request):
+            "close-children-save|\(request.id)"
+        case .reopenAncestorsForSave(let request):
+            "reopen-ancestors-save|\(request.id)"
+        }
     }
 }
