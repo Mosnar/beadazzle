@@ -34,6 +34,7 @@ final class BeadStore {
     private(set) var commentsIssueID: String?
     private(set) var commentRefreshIssueID: String?
     private(set) var selectedIDs: Set<String> = []
+    private(set) var fullPageDetailIssueID: String?
     private(set) var selectedBookmark: BeadBookmark = .ready
     var creationDraft: IssueDraft? {
         didSet {
@@ -253,6 +254,7 @@ final class BeadStore {
         guard canCreateBead, creationDraft == nil else { return }
         suppressesHistoryRecording = true
         clearSelection()
+        fullPageDetailIssueID = nil
         creationDraft = blankDraft()
         suppressesHistoryRecording = false
         recordWorkspaceSnapshotIfNeeded()
@@ -671,6 +673,7 @@ final class BeadStore {
         currentDataSource = nil
         cachedDefinitions = nil
         selectedIDs.removeAll()
+        fullPageDetailIssueID = nil
         creationDraft = nil
         outlineState.clear()
         filterCounts = .empty
@@ -680,18 +683,37 @@ final class BeadStore {
     }
 
     func select(_ ids: Set<String>) {
-        guard selectedIDs != ids else { return }
+        let nextFullPageDetailIssueID = fullPageDetailIssueID.flatMap { ids == [$0] ? $0 : nil }
+        guard selectedIDs != ids || fullPageDetailIssueID != nextFullPageDetailIssueID else { return }
         if !ids.isEmpty, creationDraft != nil {
             suppressesHistoryRecording = true
             creationDraft = nil
             suppressesHistoryRecording = false
         }
         selectedIDs = ids
+        fullPageDetailIssueID = nextFullPageDetailIssueID
         selectionDidChange()
     }
 
     func clearSelection() {
         select([])
+    }
+
+    func openFullPageDetail(issueID: String) {
+        guard index.issue(with: issueID) != nil else { return }
+        let targetSelection: Set<String> = [issueID]
+        guard selectedIDs != targetSelection || fullPageDetailIssueID != issueID else { return }
+
+        let wasSuppressingHistory = suppressesHistoryRecording
+        suppressesHistoryRecording = true
+        if creationDraft != nil {
+            creationDraft = nil
+        }
+        selectedIDs = targetSelection
+        fullPageDetailIssueID = issueID
+        selectionDidChange()
+        suppressesHistoryRecording = wasSuppressingHistory
+        recordWorkspaceSnapshotIfNeeded()
     }
 
     func refresh() {
@@ -935,6 +957,7 @@ final class BeadStore {
     func revealIssue(id: String) {
         guard index.issue(with: id) != nil else { return }
         selectedIDs = [id]
+        fullPageDetailIssueID = nil
         expandAncestors(of: id, rebuildRows: false)
 
         if !index.issueIDs(for: selectedBookmark).contains(id) {
@@ -974,6 +997,7 @@ final class BeadStore {
         // canceled by the selection change's generation guard, dropping the filter-counts pass.
         if !selectedIDs.isEmpty {
             selectedIDs = []
+            fullPageDetailIssueID = nil
             scheduleSelectionSideDataRefresh()
         }
         applyFilters()
@@ -1010,6 +1034,7 @@ final class BeadStore {
         self.issues = issues
         contentRevision &+= 1
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
+        syncFullPageDetailWithSelection()
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
         applyFilters()
@@ -1201,8 +1226,13 @@ final class BeadStore {
 
     @discardableResult
     func deleteSelected() async -> Bool {
+        await delete(issueIDs: Array(selectedIDs))
+    }
+
+    @discardableResult
+    func delete(issueIDs: [String]) async -> Bool {
         guard let projectURL else { return false }
-        let ids = Array(selectedIDs).sorted()
+        let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
 
         let snapshot = currentMutationSnapshot()
@@ -1213,7 +1243,8 @@ final class BeadStore {
         }
         beginMutation()
         defer { endMutation() }
-        selectedIDs = []
+        selectedIDs.subtract(idSet)
+        syncFullPageDetailWithSelection()
         applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
 
         do {
@@ -1231,8 +1262,13 @@ final class BeadStore {
 
     @discardableResult
     func bulkSet(status: String? = nil, type: String? = nil, priority: Int? = nil) async -> Bool {
+        await bulkSet(issueIDs: Array(selectedIDs), status: status, type: type, priority: priority)
+    }
+
+    @discardableResult
+    func bulkSet(issueIDs: [String], status: String? = nil, type: String? = nil, priority: Int? = nil) async -> Bool {
         guard let projectURL else { return false }
-        let ids = Array(selectedIDs).sorted()
+        let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
 
         let snapshot = currentMutationSnapshot()
@@ -1587,6 +1623,7 @@ final class BeadStore {
         BeadWorkspaceSnapshot(
             bookmark: selectedBookmark,
             selectedIDs: selectedIDs,
+            fullPageDetailIssueID: fullPageDetailIssueID,
             searchText: searchText,
             statusFilters: statusFilters,
             typeFilters: typeFilters,
@@ -1624,6 +1661,7 @@ final class BeadStore {
         suppressesFilterUpdates = true
         selectedBookmark = snapshot.bookmark
         selectedIDs = snapshot.selectedIDs.intersection(index.allIssueIDs)
+        fullPageDetailIssueID = snapshot.fullPageDetailIssueID
         creationDraft = snapshot.creationDraft
         searchText = snapshot.searchText
         statusFilters = snapshot.statusFilters
@@ -1637,6 +1675,7 @@ final class BeadStore {
         suppressesFilterUpdates = false
         isRestoringWorkspace = false
 
+        syncFullPageDetailWithSelection()
         expandAncestorsForSelection()
         applyFilters()
         scheduleSelectionSideDataRefresh()
@@ -1646,6 +1685,13 @@ final class BeadStore {
     private func syncWorkspaceHistoryAvailability() {
         canGoBack = workspaceHistory.canGoBack
         canGoForward = workspaceHistory.canGoForward
+    }
+
+    private func syncFullPageDetailWithSelection() {
+        guard let fullPageDetailIssueID else { return }
+        if selectedIDs != [fullPageDetailIssueID] || index.issue(with: fullPageDetailIssueID) == nil {
+            self.fullPageDetailIssueID = nil
+        }
     }
 
     private func scheduleSelectionSideDataRefresh() {

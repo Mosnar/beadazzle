@@ -164,37 +164,6 @@ struct IssueBreadcrumbBar: View {
     }
 }
 
-struct BulkSelectionBreadcrumbBar: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-
-    var body: some View {
-        HStack(spacing: 8) {
-            BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
-                store.clearSelection()
-            }
-            BreadcrumbSeparator()
-            BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
-            BreadcrumbSeparator()
-
-            Label(selectionTitle, systemImage: "checkmark.circle")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .layoutPriority(-1)
-                .accessibilityLabel(selectionTitle)
-
-            Spacer(minLength: 12)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var selectionTitle: String {
-        "\(store.selectedIDs.count.formatted()) Beads Selected"
-    }
-}
-
 struct BreadcrumbIssueLabel: View {
     let issueID: String
     let title: String

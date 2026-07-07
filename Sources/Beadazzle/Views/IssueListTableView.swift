@@ -16,6 +16,7 @@ struct IssueListTableView: NSViewRepresentable {
     let contentRevision: Int
     let store: BeadStore
     let requestClose: (BeadIssue) -> Void
+    let openDetail: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -37,6 +38,8 @@ struct IssueListTableView: NSViewRepresentable {
         tableView.style = .inset
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.delegate = coordinator
+        tableView.target = coordinator
+        tableView.doubleAction = #selector(Coordinator.openClickedRow(_:))
         tableView.onNavigateOutline = { [weak coordinator] direction in
             coordinator?.navigateOutline(direction) ?? false
         }
@@ -73,6 +76,7 @@ struct IssueListTableView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDelegate {
         static let columnID = NSUserInterfaceItemIdentifier("bead")
         private static let cellID = NSUserInterfaceItemIdentifier("IssueRowCell")
+        private static let rowViewID = NSUserInterfaceItemIdentifier("IssueListRowView")
 
         var parent: IssueListTableView
         weak var tableView: NSTableView?
@@ -82,6 +86,8 @@ struct IssueListTableView: NSViewRepresentable {
         private var indexByID: [String: Int] = [:]
         private var rowByID: [String: IssueListRow] = [:]
         private var isSyncingSelection = false
+        private var isHandlingContextClick = false
+        private var contextFocusedIssueID: String?
 
         // Last-applied inputs, so an update that only changed the selection skips the
         // (expensive) SwiftUI relayout of every visible row.
@@ -107,6 +113,9 @@ struct IssueListTableView: NSViewRepresentable {
             orderedIDs = ids
             indexByID = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
             rowByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.issueID, $0) })
+            if let contextFocusedIssueID, indexByID[contextFocusedIssueID] == nil {
+                self.contextFocusedIssueID = nil
+            }
 
             var rebuiltAllVisible = false
             if force || ids != previousIDs {
@@ -140,6 +149,7 @@ struct IssueListTableView: NSViewRepresentable {
             lastContentRevision = parent.contentRevision
 
             syncSelection(parent.selectedIDs)
+            updateVisibleFocusOutlines()
         }
 
         /// True when the old and new row sets overlap little (bookmark/filter change) or are
@@ -160,6 +170,13 @@ struct IssueListTableView: NSViewRepresentable {
             } else {
                 host = RowHostingView()
                 host.identifier = Self.cellID
+            }
+            host.representedIssueID = itemID
+            host.onContextFocusChange = { [weak self] issueID in
+                self?.setContextFocusedIssueID(issueID)
+            }
+            host.onContextClickChange = { [weak self] isActive in
+                self?.isHandlingContextClick = isActive
             }
             host.rootView = rowView(for: itemID)
             return host
@@ -240,11 +257,39 @@ struct IssueListTableView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isSyncingSelection, let tableView else { return }
+            if isHandlingContextClick {
+                syncSelection(parent.selectedIDs)
+                return
+            }
             let ids = Set(tableView.selectedRowIndexes.compactMap { index -> String? in
                 index >= 0 && index < orderedIDs.count ? orderedIDs[index] : nil
             })
             guard ids != parent.selectedIDs else { return }
+            setContextFocusedIssueID(nil)
             parent.store.select(ids)
+        }
+
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            let rowView: IssueListTableRowView
+            if let reused = tableView.makeView(withIdentifier: Self.rowViewID, owner: self) as? IssueListTableRowView {
+                rowView = reused
+            } else {
+                rowView = IssueListTableRowView()
+                rowView.identifier = Self.rowViewID
+            }
+            rowView.showsFocusOutline = shouldShowFocusOutline(forRow: row)
+            return rowView
+        }
+
+        @objc func openClickedRow(_ sender: NSTableView) {
+            let row = sender.clickedRow >= 0 ? sender.clickedRow : sender.selectedRow
+            guard row >= 0, row < orderedIDs.count else { return }
+            let issueID = orderedIDs[row]
+            setContextFocusedIssueID(nil)
+            if parent.selectedIDs != [issueID] {
+                parent.store.select([issueID])
+            }
+            parent.openDetail(issueID)
         }
 
         func navigateOutline(_ direction: OutlineNavigationDirection) -> Bool {
@@ -252,6 +297,43 @@ struct IssueListTableView: NSViewRepresentable {
             case .left: return parent.store.navigateIssueOutlineLeft()
             case .right: return parent.store.navigateIssueOutlineRight()
             }
+        }
+
+        private func setContextFocusedIssueID(_ issueID: String?) {
+            guard contextFocusedIssueID != issueID else { return }
+            let previousID = contextFocusedIssueID
+            contextFocusedIssueID = issueID
+            updateFocusOutline(for: previousID)
+            updateFocusOutline(for: issueID)
+        }
+
+        private func updateVisibleFocusOutlines() {
+            guard let tableView else { return }
+            let visible = tableView.rows(in: tableView.visibleRect)
+            guard visible.length > 0 else { return }
+            for row in visible.location..<(visible.location + visible.length) {
+                guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? IssueListTableRowView else {
+                    continue
+                }
+                rowView.showsFocusOutline = shouldShowFocusOutline(forRow: row)
+            }
+        }
+
+        private func updateFocusOutline(for issueID: String?) {
+            guard let issueID,
+                  let row = indexByID[issueID],
+                  let tableView,
+                  let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? IssueListTableRowView
+            else { return }
+            rowView.showsFocusOutline = shouldShowFocusOutline(forRow: row)
+        }
+
+        private func shouldShowFocusOutline(forRow row: Int) -> Bool {
+            guard row >= 0,
+                  row < orderedIDs.count,
+                  contextFocusedIssueID == orderedIDs[row]
+            else { return false }
+            return !parent.selectedIDs.contains(orderedIDs[row])
         }
 
         // MARK: Context menu
@@ -273,15 +355,13 @@ struct IssueListTableView: NSViewRepresentable {
                 Menu("Set Status") {
                     ForEach(store.availableStatuses, id: \.self) { status in
                         Button(status) {
-                            store.select(ids)
-                            Task { await store.bulkSet(status: status) }
+                            Task { await store.bulkSet(issueIDs: Array(ids), status: status) }
                         }
                     }
                 }
 
                 if ids.count == 1, let id = ids.first, let issue = store.issue(with: id) {
                     Button("Close Bead...") {
-                        store.select(ids)
                         requestClose(issue)
                     }
                 }
@@ -289,8 +369,7 @@ struct IssueListTableView: NSViewRepresentable {
                 Divider()
 
                 Button(ids.count == 1 ? "Delete" : "Delete \(ids.count) Beads", role: .destructive) {
-                    store.select(ids)
-                    Task { await store.deleteSelected() }
+                    Task { await store.delete(issueIDs: Array(ids)) }
                 }
             }
         }
@@ -300,6 +379,30 @@ struct IssueListTableView: NSViewRepresentable {
 enum OutlineNavigationDirection {
     case left
     case right
+}
+
+private final class IssueListTableRowView: NSTableRowView {
+    var showsFocusOutline = false {
+        didSet {
+            guard oldValue != showsFocusOutline else { return }
+            needsDisplay = true
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard showsFocusOutline, !isSelected else { return }
+
+        let outlineRect = bounds.insetBy(dx: 4, dy: 3)
+        let path = NSBezierPath(
+            roundedRect: outlineRect,
+            xRadius: IssueListMetrics.focusOutlineCornerRadius,
+            yRadius: IssueListMetrics.focusOutlineCornerRadius
+        )
+        path.lineWidth = IssueListMetrics.focusOutlineLineWidth
+        NSColor.keyboardFocusIndicatorColor.setStroke()
+        path.stroke()
+    }
 }
 
 /// `NSTableView` that routes left/right arrows to outline expand/collapse (matching the
@@ -324,6 +427,10 @@ private final class IssueKeyboardTableView: NSTableView {
 /// from installing intrinsic-content-size constraints, so it never triggers the automatic
 /// row-height Auto Layout pass — the row's frame comes from the table's fixed `rowHeight`.
 private final class RowHostingView: NSHostingView<AnyView> {
+    var representedIssueID: String?
+    var onContextFocusChange: ((String?) -> Void)?
+    var onContextClickChange: ((Bool) -> Void)?
+
     required init(rootView: AnyView) {
         super.init(rootView: rootView)
         sizingOptions = []
@@ -338,5 +445,50 @@ private final class RowHostingView: NSHostingView<AnyView> {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onContextClickChange?(true)
+        focusContextTarget()
+        super.rightMouseDown(with: event)
+        onContextClickChange?(false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            onContextClickChange?(true)
+            focusContextTarget()
+            super.mouseDown(with: event)
+            onContextClickChange?(false)
+        } else {
+            clearContextTarget()
+            super.mouseDown(with: event)
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        focusContextTarget()
+        return super.menu(for: event)
+    }
+
+    private func focusContextTarget() {
+        guard let representedIssueID else { return }
+        enclosingTableView?.window?.makeFirstResponder(enclosingTableView)
+        onContextFocusChange?(representedIssueID)
+    }
+
+    private func clearContextTarget() {
+        onContextFocusChange?(nil)
+    }
+
+    private var enclosingTableView: NSTableView? {
+        var view: NSView? = self
+        while let current = view {
+            if let tableView = current as? NSTableView {
+                return tableView
+            }
+            view = current.superview
+        }
+        return nil
     }
 }

@@ -3,6 +3,7 @@ import Foundation
 struct BeadWorkspaceSnapshot: Equatable, Sendable {
     var bookmark: BeadBookmark
     var selectedIDs: Set<String>
+    var fullPageDetailIssueID: String?
     var searchText: String
     var statusFilters: Set<String>
     var typeFilters: Set<String>

@@ -21,6 +21,32 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
+    func testBulkSetCanTargetIssueIDsWithoutChangingSelection() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            \(issueLine(id: "bd-2", title: "Two"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading
+                && store.issue(with: "bd-1") != nil
+                && store.issue(with: "bd-2") != nil
+        }
+        store.select(["bd-1"])
+
+        let succeeded = await store.bulkSet(issueIDs: ["bd-2"], status: "closed")
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.selectedIDs, Set(["bd-1"]))
+        XCTAssertEqual(store.issue(with: "bd-2")?.status, "closed")
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.first?.ids, ["bd-2"])
+    }
+
     func testMutationAppliesOptimisticallyBeforeCommandCompletesWithoutLoadingIndicator() async throws {
         // The change must be visible the instant the user makes it — before `bd` returns —
         // and with no loading indicator.

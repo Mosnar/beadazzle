@@ -145,7 +145,10 @@ struct ContentView: View {
     private var workspaceContent: some View {
         HSplitView {
             if showsIssueListPane {
-                IssueListView(requestClose: requestClose)
+                IssueListView(
+                    requestClose: requestClose,
+                    openDetail: openDetail
+                )
                     .frame(
                         minWidth: showsWorkspaceDetail ? ContentLayout.listMinWidth : 0,
                         idealWidth: showsWorkspaceDetail ? ContentLayout.listIdealWidth : nil,
@@ -163,11 +166,18 @@ struct ContentView: View {
     }
 
     private var showsWorkspaceDetail: Bool {
-        !store.selectedIDs.isEmpty || store.creationDraft != nil
+        ContentLayout.showsWorkspaceDetail(
+            selectionCount: store.selectedIDs.count,
+            isFullPageDetailPresented: store.fullPageDetailIssueID != nil,
+            hasCreationDraft: store.creationDraft != nil
+        )
     }
 
     private var showsIssueListPane: Bool {
-        ContentLayout.showsIssueList(for: workspaceWidth, showsDetail: showsWorkspaceDetail)
+        ContentLayout.showsIssueList(
+            isFullPageDetailPresented: store.fullPageDetailIssueID != nil,
+            hasCreationDraft: store.creationDraft != nil
+        )
     }
 
     private var errorBinding: Binding<Bool> {
@@ -185,6 +195,10 @@ struct ContentView: View {
 
     private func requestClose(_ issue: BeadIssue) {
         closeBeadRequest = CloseBeadRequest(issue: issue)
+    }
+
+    private func openDetail(issueID: String) {
+        store.openFullPageDetail(issueID: issueID)
     }
 
     private func requestCloseSelected() {
@@ -205,6 +219,7 @@ struct ContentView: View {
             columnVisibility = nextShowsSidebar ? .all : .detailOnly
         }
     }
+
 }
 
 enum ContentLayout {
@@ -217,15 +232,22 @@ enum ContentLayout {
     static let sidebarCollapseBuffer: CGFloat = 24
     static let detailListReservedWidth = listMaxWidth
     static let listOnlySidebarCollapseBreakpoint = sidebarIdealWidth + listMinWidth + sidebarCollapseBuffer
-    static let issueListCollapseBreakpoint = detailListReservedWidth + IssueDetailLayout.railBreakpoint + sidebarCollapseBuffer
     static let detailSidebarCollapseBreakpoint = IssueDetailLayout.railBreakpoint + sidebarIdealWidth + detailListReservedWidth + sidebarCollapseBuffer
+
+    static func showsWorkspaceDetail(
+        selectionCount: Int,
+        isFullPageDetailPresented: Bool,
+        hasCreationDraft: Bool
+    ) -> Bool {
+        hasCreationDraft || isFullPageDetailPresented || selectionCount == 1
+    }
 
     static func showsSidebar(for width: CGFloat, showsDetail: Bool) -> Bool {
         let breakpoint = showsDetail ? detailSidebarCollapseBreakpoint : listOnlySidebarCollapseBreakpoint
         return width >= breakpoint
     }
 
-    static func showsIssueList(for width: CGFloat, showsDetail: Bool) -> Bool {
-        !showsDetail || width >= issueListCollapseBreakpoint
+    static func showsIssueList(isFullPageDetailPresented: Bool, hasCreationDraft: Bool) -> Bool {
+        !isFullPageDetailPresented && !hasCreationDraft
     }
 }

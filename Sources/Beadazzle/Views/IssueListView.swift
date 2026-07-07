@@ -3,6 +3,7 @@ import SwiftUI
 struct IssueListView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let requestClose: (BeadIssue) -> Void
+    let openDetail: (String) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,7 +33,8 @@ struct IssueListView: View {
                         displayOptions: store.beadListDisplayOptions,
                         contentRevision: store.contentRevision,
                         store: store,
-                        requestClose: requestClose
+                        requestClose: requestClose,
+                        openDetail: openDetail
                     )
                 }
             }
@@ -48,6 +50,8 @@ enum IssueListMetrics {
     static let disclosureWidth: CGFloat = 16
     static let issueIDWidth: CGFloat = 82
     static let headerControlHeight: CGFloat = 26
+    static let focusOutlineCornerRadius: CGFloat = 6
+    static let focusOutlineLineWidth: CGFloat = 2
 }
 
 private struct IssueListHeader: View {

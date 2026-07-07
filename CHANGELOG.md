@@ -15,6 +15,9 @@ for users, not for the commit log.
 
 ### Changed
 
+- Selecting a bead now opens its detail beside the list without auto-collapsing
+  the list by window width; double-click a bead to open it full-page, with
+  Back/Forward support for returning to the split view.
 - Edits, closes, deletes, priority/type changes, and dependency changes now
   apply **instantly** with no loading spinner. The change appears the moment you
   make it while the write is saved in the background; if the write fails, the
@@ -25,6 +28,8 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Right-clicking an unselected bead now focuses it for the context menu without
+  opening its detail, so actions apply to the focused bead without navigating.
 - Fixed a runaway loop that pinned the CPU, hammered the disk, and slowly grew
   memory the entire time a project was open — even while the app sat idle. The
   app's own background reads were tripping its file-change watcher, which kicked

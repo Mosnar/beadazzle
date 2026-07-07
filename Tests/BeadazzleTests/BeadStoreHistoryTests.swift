@@ -237,6 +237,45 @@ final class BeadStoreHistoryTests: XCTestCase {
         XCTAssertTrue(store.selectedIDs.isEmpty)
     }
 
+    func testFullPageDetailRecordsReversibleHistoryStep() async throws {
+        let store = try await makeLoadedStore()
+
+        store.openFullPageDetail(issueID: "bd-parent")
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
+        XCTAssertEqual(store.fullPageDetailIssueID, "bd-parent")
+        XCTAssertTrue(store.canGoBack)
+        XCTAssertFalse(store.canGoForward)
+
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        XCTAssertNil(store.fullPageDetailIssueID)
+        XCTAssertFalse(store.canGoBack)
+        XCTAssertTrue(store.canGoForward)
+
+        store.goForward()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
+        XCTAssertEqual(store.fullPageDetailIssueID, "bd-parent")
+    }
+
+    func testSelectionClearsFullPageDetailMode() async throws {
+        let store = try await makeLoadedStore()
+
+        store.openFullPageDetail(issueID: "bd-parent")
+        await store.waitForPendingQueryRecompute()
+
+        store.select(["bd-child"])
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedIDs, Set(["bd-child"]))
+        XCTAssertNil(store.fullPageDetailIssueID)
+    }
+
     private func makeLoadedStore() async throws -> BeadStore {
         let projectURL = try makeProject(
             issuesJSONL: """
