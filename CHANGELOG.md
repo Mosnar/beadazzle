@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [0.1.0-beta.3] - 2026-07-07
+
 ### Changed
 
 - Bead detail pages now separate blocking relationships into the Properties
@@ -90,6 +92,7 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v0.1.0-beta.2...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v0.1.0-beta.3...HEAD
 [0.1.0-beta.1]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.1
 [0.1.0-beta.2]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.2
+[0.1.0-beta.3]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.3
