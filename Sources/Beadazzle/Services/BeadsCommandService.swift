@@ -589,6 +589,7 @@ enum BeadsCommandArguments {
         appendNonEmpty(&arguments, flag: "--due", value: BeadFormatters.commandDate(draft.dueAt))
         appendNonEmpty(&arguments, flag: "--defer", value: BeadFormatters.commandDate(draft.deferUntil))
         appendNonEmpty(&arguments, flag: "--labels", value: normalizedLabelArgument(draft.labelsText))
+        appendNonEmpty(&arguments, flag: "--parent", value: draft.parentID)
         if silent {
             arguments.append("--silent")
         }

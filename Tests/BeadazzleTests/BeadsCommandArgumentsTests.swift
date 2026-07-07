@@ -57,6 +57,12 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertTrue(arguments.contains("--silent"))
     }
 
+    func testCreateArgumentsIncludeParentWhenPresent() {
+        let arguments = BeadsCommandArguments.create(draft: draft(id: nil, status: "open", parentID: "bd-parent"))
+
+        XCTAssertEqual(value(after: "--parent", in: arguments), "bd-parent")
+    }
+
     func testGateShowArgumentsAreReadOnlyJSON() {
         let arguments = BeadsCommandArguments.gateShow(id: "g-1")
         XCTAssertEqual(arguments, ["--readonly", "gate", "show", "g-1", "--json"])
@@ -184,6 +190,40 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(draft.labels, ["area:ui", "source:user-report"])
     }
 
+    func testIssueDraftPreservesParentFromIssue() {
+        let issue = BeadIssue(
+            id: "bd-child",
+            title: "Child",
+            description: "",
+            design: "",
+            acceptanceCriteria: "",
+            notes: "",
+            status: "open",
+            priority: 2,
+            issueType: "task",
+            assignee: nil,
+            owner: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            closedAt: nil,
+            dueAt: nil,
+            deferUntil: nil,
+            externalRef: nil,
+            parentID: "bd-parent",
+            labels: [],
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
+        )
+
+        let draft = IssueDraft(issue: issue)
+
+        XCTAssertEqual(draft.parentID, "bd-parent")
+    }
+
     func testAddCommentArgumentsUseStdinForCommentBody() {
         XCTAssertEqual(BeadsCommandArguments.addComment(issueID: "bd-1"), ["comment", "bd-1", "--stdin"])
     }
@@ -309,6 +349,7 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         description: String = "Description",
         assignee: String = "riley",
         labelsText: String = "area:ui",
+        parentID: String? = nil,
         dueAt: Date? = nil,
         deferUntil: Date? = nil
     ) -> IssueDraft {
@@ -324,6 +365,7 @@ final class BeadsCommandArgumentsTests: XCTestCase {
             issueType: "task",
             assignee: assignee,
             labelsText: labelsText,
+            parentID: parentID,
             dueAt: dueAt,
             deferUntil: deferUntil
         )

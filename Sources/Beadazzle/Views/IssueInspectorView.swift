@@ -8,14 +8,12 @@ struct IssueInspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             InspectorGroup("Properties") {
-                IssueInspectorProperties(draft: $draft, includesStatus: true)
-
                 if let parentIssue = store.parentIssue(for: issue.id) {
+                    SidebarBeadLink(issue: parentIssue, label: "Parent")
                     InspectorRowDivider()
-                    InspectorParentRow(parent: parentIssue) { parentID in
-                        store.openIssueFromDetail(issueID: parentID)
-                    }
                 }
+
+                IssueInspectorProperties(draft: $draft, includesStatus: true)
                 InspectorRowDivider()
 
                 InspectorValueRow(title: "Assignee", systemImage: "person.crop.circle", value: issue.assignee ?? "None")
@@ -27,11 +25,6 @@ struct IssueInspector: View {
                     availableLabels: store.availableLabels
                 )
 
-                let blockingGates = store.gatesBlocking(issueID: issue.id)
-                if !blockingGates.isEmpty {
-                    InspectorRowDivider()
-                    InspectorGatesRow(gates: blockingGates) { store.select([$0]) }
-                }
                 let resolvedGates = store.resolvedGatesForStaleBlockedIssue(issueID: issue.id)
                 if !resolvedGates.isEmpty {
                     InspectorRowDivider()
@@ -73,75 +66,60 @@ struct IssueInspector: View {
                 )
             }
 
-            InspectorGroup("Relationships") {
-                InspectorValueRow(title: "Dependencies", systemImage: "arrow.down.right", value: "\(issue.dependencyCount)")
-                InspectorRowDivider()
-                InspectorValueRow(title: "Dependents", systemImage: "arrow.up.forward", value: "\(issue.dependentCount)")
-                InspectorRowDivider()
-                InspectorValueRow(title: "Comments", systemImage: "text.bubble", value: "\(max(issue.commentCount, store.comments(for: issue.id).count))")
+            let blockedByIssues = store.activeBlockingIssues(for: issue.id)
+            let blockingIssues = store.activelyBlockedIssues(by: issue.id)
+            if !blockedByIssues.isEmpty || !blockingIssues.isEmpty {
+                InspectorGroup("Relations") {
+                    InspectorRelationRows(title: "Blocked by", issues: blockedByIssues)
+                    if !blockedByIssues.isEmpty && !blockingIssues.isEmpty {
+                        InspectorRowDivider()
+                    }
+                    InspectorRelationRows(title: "Blocking", issues: blockingIssues)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
-struct InspectorParentRow: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    let parent: BeadIssue
-    let onSelect: (String) -> Void
-    @State private var isHovered = false
+private struct InspectorRelationRows: View {
+    let title: String
+    let issues: [BeadIssue]
 
     var body: some View {
-        let presentation = ParentBeadPresentation(issue: parent)
-        Button {
-            onSelect(parent.id)
-        } label: {
-            InspectorRowLabel(
-                title: "Parent",
-                systemImage: store.statusSymbol(for: parent.status),
-                tint: store.statusColor(for: parent.status),
-                value: presentation.id,
-                showsChevron: true,
-                isHighlighted: isHovered,
-                chevronSymbol: "arrow.up.right"
-            )
+        if !issues.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+
+                    Rectangle()
+                        .fill(InspectorChrome.dividerFill.opacity(0.75))
+                        .frame(height: 1)
+                }
+                    .padding(.horizontal, InspectorChrome.rowHorizontalPadding)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+
+                ForEach(issues) { issue in
+                    InspectorRelationRow(issue: issue)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .help(presentation.helpText)
-        .accessibilityLabel(presentation.accessibilityLabel)
-        .accessibilityValue(presentation.accessibilityValue)
     }
 }
 
-/// Lists the gate(s) blocking a bead as clickable rows that jump to the gate.
-struct InspectorGatesRow: View {
-    let gates: [BeadGate]
-    let onSelect: (String) -> Void
-    @State private var hoveredID: String?
+private struct InspectorRelationRow: View {
+    let issue: BeadIssue
 
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(gates.enumerated()), id: \.element.id) { index, gate in
-                Button {
-                    onSelect(gate.id)
-                } label: {
-                    InspectorRowLabel(
-                        title: index == 0 ? "Gates" : "",
-                        systemImage: gate.awaitType.systemImage,
-                        tint: GatePresentation.tint(isOpen: gate.isOpen),
-                        value: gate.id,
-                        showsChevron: true,
-                        isHighlighted: hoveredID == gate.id,
-                        chevronSymbol: "arrow.up.right"
-                    )
-                }
-                .buttonStyle(.plain)
-                .onHover { isHovering in
-                    hoveredID = isHovering ? gate.id : (hoveredID == gate.id ? nil : hoveredID)
-                }
-                .help("Blocked by \(gate.awaitType.title) gate \(gate.id) — open it")
-            }
+        if let gate = BeadGate(issue: issue) {
+            SidebarGateLink(issue: issue, gate: gate)
+        } else {
+            SidebarBeadLink(issue: issue)
         }
     }
 }
@@ -208,6 +186,12 @@ struct IssueCreationInspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             InspectorGroup("Properties") {
+                if let parentID = draft.parentID,
+                   let parentIssue = store.issue(with: parentID) {
+                    SidebarBeadLink(issue: parentIssue, label: "Parent")
+                    InspectorRowDivider()
+                }
+
                 IssueInspectorProperties(
                     draft: $draft,
                     includesStatus: false,

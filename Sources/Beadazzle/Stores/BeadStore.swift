@@ -264,6 +264,25 @@ final class BeadStore {
         recordWorkspaceSnapshotIfNeeded()
     }
 
+    func canCreateChildBead(parentID: String) -> Bool {
+        guard hasReadableProject,
+              let parent = index.issue(with: parentID) else {
+            return false
+        }
+        return !parent.isGate
+    }
+
+    func beginCreatingChildBead(parentID: String) {
+        guard canCreateChildBead(parentID: parentID), creationDraft == nil else { return }
+        suppressesHistoryRecording = true
+        selectedIDs.removeAll()
+        fullPageDetailIssueID = nil
+        clearSelectionSideData()
+        creationDraft = blankDraft(parentID: parentID)
+        suppressesHistoryRecording = false
+        recordWorkspaceSnapshotIfNeeded()
+    }
+
     func cancelCreation() {
         guard creationDraft != nil else { return }
         creationDraft = nil
@@ -290,6 +309,31 @@ final class BeadStore {
     func parentIssue(for issueID: String) -> BeadIssue? {
         guard let parentID = index.parentID(for: issueID) else { return nil }
         return index.issue(with: parentID)
+    }
+
+    func subIssueRows(parentID: String) -> [IssueListRow] {
+        index.immediateChildRows(
+            parentID: parentID,
+            sortOrder: BeadIssueSortOrder(sort: sort, direction: sortDirection)
+        )
+    }
+
+    func childProgress(parentID: String) -> IssueChildProgress? {
+        index.childProgress(for: parentID)
+    }
+
+    func activeBlockingIssues(for issueID: String) -> [BeadIssue] {
+        index.activeBlockingIssues(
+            for: issueID,
+            sortOrder: BeadIssueSortOrder(sort: sort, direction: sortDirection)
+        )
+    }
+
+    func activelyBlockedIssues(by issueID: String) -> [BeadIssue] {
+        index.activelyBlockedIssues(
+            by: issueID,
+            sortOrder: BeadIssueSortOrder(sort: sort, direction: sortDirection)
+        )
     }
 
     /// The gate metadata for an issue, if that issue is a gate bead.
@@ -488,11 +532,12 @@ final class BeadStore {
         index.count(for: bookmark)
     }
 
-    func blankDraft() -> IssueDraft {
+    func blankDraft(parentID: String? = nil) -> IssueDraft {
         let fallbackType = BeadIssueWorkflowPolicy.normalMutableIssueTypes(index.semantics.typeNames).first ?? ""
         return IssueDraft.blank(
             defaultType: availableMutableTypes.first ?? fallbackType,
-            defaultStatus: availableStatuses.first ?? index.semantics.statusNames.first ?? ""
+            defaultStatus: availableStatuses.first ?? index.semantics.statusNames.first ?? "",
+            parentID: parentID
         )
     }
 
@@ -1028,6 +1073,25 @@ final class BeadStore {
             return comments
         }
         return commentCache[issueID] ?? []
+    }
+
+    private func clearSelectionSideData() {
+        selectionSideDataTask?.cancel()
+        selectionSideDataTask = nil
+        if dependencyIssueID != nil {
+            dependencyIssueID = nil
+        }
+        if !dependencies.isEmpty {
+            dependencies = []
+        }
+        if commentsIssueID != nil {
+            commentsIssueID = nil
+        }
+        if !comments.isEmpty {
+            comments = []
+        }
+        commentRefreshIssueID = nil
+        isLoadingComments = false
     }
 
     func isLoadingComments(for issueID: String) -> Bool {

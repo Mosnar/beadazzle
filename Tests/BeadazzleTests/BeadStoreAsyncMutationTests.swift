@@ -386,6 +386,31 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.map(\.draft.title), ["Created from inline"])
     }
 
+    func testBeginCreatingChildBeadPresetsParentAndSavesWithSingleCreate() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-parent", title: "Parent"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateResult(issueID: "bd-child")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-parent") != nil }
+
+        store.select(["bd-parent"])
+        store.beginCreatingChildBead(parentID: "bd-parent")
+
+        var draft = try XCTUnwrap(store.creationDraft)
+        XCTAssertEqual(draft.parentID, "bd-parent")
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        draft.title = "New child"
+
+        let succeeded = await store.save(draft)
+
+        XCTAssertTrue(succeeded)
+        let calls = await commands.createCalls
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.draft.parentID, "bd-parent")
+        XCTAssertEqual(store.issue(with: "bd-child")?.parentID, "bd-parent")
+    }
+
     func testCreateReturnsFalseAndSetsLastErrorOnCommandFailure() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -999,7 +1024,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws {}
 
     private func appendCreatedIssue(projectURL: URL, issueID: String, draft: IssueDraft) throws {
-        let record: [String: Any] = [
+        var record: [String: Any] = [
             "_type": "issue",
             "id": issueID,
             "title": draft.title,
@@ -1008,6 +1033,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
             "issue_type": draft.issueType,
             "updated_at": "2026-07-03T20:58:35Z"
         ]
+        if let parentID = draft.parentID {
+            record["parent_id"] = parentID
+        }
         let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
         guard let line = String(data: data, encoding: .utf8) else { return }
 

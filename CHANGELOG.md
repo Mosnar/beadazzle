@@ -15,6 +15,12 @@ for users, not for the commit log.
 
 ### Changed
 
+- Bead detail pages now separate blocking relationships into the Properties
+  sidebar and show child beads in a dedicated Sub-issues list with instant
+  parent-aware creation. Gate blockers get dedicated rows with gate type,
+  timer remaining, and gate-specific hover details. Sidebar relationships now
+  show only active blockers, and hover previews stay open while hovered with
+  the same click-to-copy bead ID affordance used in the main bead list.
 - Child bead detail pages now show a clickable parent bead ID in breadcrumbs,
   Properties, and compact metadata when a parent exists.
 - Closed beads now show Reopen instead of Close in action menus.

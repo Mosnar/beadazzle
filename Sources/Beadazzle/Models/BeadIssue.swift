@@ -197,6 +197,7 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
     var issueType: String
     var assignee: String
     var labelsText: String
+    var parentID: String?
     var dueAt: Date?
     var deferUntil: Date?
 
@@ -213,7 +214,7 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
         }
     }
 
-    static func blank(defaultType: String, defaultStatus: String) -> IssueDraft {
+    static func blank(defaultType: String, defaultStatus: String, parentID: String? = nil) -> IssueDraft {
         IssueDraft(
             id: nil,
             title: "",
@@ -225,7 +226,8 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
             priority: 2,
             issueType: defaultType,
             assignee: "",
-            labelsText: ""
+            labelsText: "",
+            parentID: parentID
         )
     }
 
@@ -241,6 +243,7 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
         issueType = issue.issueType
         assignee = issue.assignee ?? ""
         labelsText = issue.labels.joined(separator: ", ")
+        parentID = issue.parentID
         dueAt = issue.dueAt
         deferUntil = issue.deferUntil
     }
@@ -257,6 +260,7 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
         issueType: String,
         assignee: String,
         labelsText: String,
+        parentID: String? = nil,
         dueAt: Date? = nil,
         deferUntil: Date? = nil
     ) {
@@ -271,6 +275,7 @@ struct IssueDraft: Equatable, Identifiable, Sendable {
         self.issueType = issueType
         self.assignee = assignee
         self.labelsText = labelsText
+        self.parentID = parentID
         self.dueAt = dueAt
         self.deferUntil = deferUntil
     }

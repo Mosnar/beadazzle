@@ -363,6 +363,62 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(rows.first { $0.issueID == "bd-child" }?.depth, 1)
     }
 
+    func testImmediateChildRowsUseSiblingDependencyOrderingAndExcludeGrandchildren() {
+        let index = BeadProjectIndex(
+            issues: [
+                issue("bd-parent", title: "Parent", status: "open", type: "epic"),
+                issue("bd-blocked", title: "A Blocked child", status: "open", type: "task", parentID: "bd-parent"),
+                issue("bd-blocker", title: "Z Blocker child", status: "open", type: "task", parentID: "bd-parent"),
+                issue("bd-grandchild", title: "Grandchild", status: "open", type: "task", parentID: "bd-blocked")
+            ],
+            dependencies: [
+                BeadDependency(issueID: "bd-blocked", dependsOnID: "bd-blocker", type: "blocks", createdAt: nil)
+            ],
+            semantics: semantics()
+        )
+        let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
+
+        let rows = index.immediateChildRows(parentID: "bd-parent", sortOrder: sortOrder)
+
+        XCTAssertEqual(rows.map(\.issueID), ["bd-blocker", "bd-blocked"])
+        XCTAssertEqual(rows.first { $0.issueID == "bd-blocked" }?.childProgress, IssueChildProgress(completedCount: 0, workedCount: 0, totalCount: 1))
+        XCTAssertEqual(index.childProgress(for: "bd-parent"), IssueChildProgress(completedCount: 0, workedCount: 0, totalCount: 2))
+    }
+
+    func testActiveBlockingRelationshipHelpersSeparateDirectionAndResolvedEdges() {
+        let closedAt = Date()
+        let index = BeadProjectIndex(
+            issues: [
+                issue("bd-target", title: "Target", status: "open", type: "task"),
+                issue("bd-blocker", title: "B Blocker", status: "open", type: "task"),
+                issue("g-1", title: "A Gate", status: "open", type: "gate"),
+                issue("bd-closed-blocker", title: "Closed Blocker", status: "closed", type: "task", closedAt: closedAt),
+                issue("g-closed", title: "Closed Gate", status: "closed", type: "gate", closedAt: closedAt),
+                issue("bd-dependent", title: "Dependent", status: "open", type: "task"),
+                issue("bd-closed-dependent", title: "Closed Dependent", status: "closed", type: "task", closedAt: closedAt),
+                issue("bd-related", title: "Related", status: "open", type: "task"),
+                issue("bd-closed-target", title: "Closed Target", status: "closed", type: "task", closedAt: closedAt)
+            ],
+            dependencies: [
+                BeadDependency(issueID: "bd-target", dependsOnID: "bd-blocker", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-target", dependsOnID: "g-1", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-target", dependsOnID: "bd-closed-blocker", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-target", dependsOnID: "g-closed", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-dependent", dependsOnID: "bd-target", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-closed-dependent", dependsOnID: "bd-target", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-closed-target", dependsOnID: "bd-blocker", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-related", dependsOnID: "bd-target", type: "related", createdAt: nil)
+            ],
+            semantics: semantics()
+        )
+        let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
+
+        XCTAssertEqual(index.activeBlockingIssues(for: "bd-target", sortOrder: sortOrder).map(\.id), ["g-1", "bd-blocker"])
+        XCTAssertEqual(index.activeBlockingIssues(for: "bd-closed-target", sortOrder: sortOrder).map(\.id), [])
+        XCTAssertEqual(index.activelyBlockedIssues(by: "bd-target", sortOrder: sortOrder).map(\.id), ["bd-dependent"])
+        XCTAssertEqual(index.activelyBlockedIssues(by: "bd-closed-blocker", sortOrder: sortOrder).map(\.id), [])
+    }
+
     func testIssueListRowsIncludeImmediateChildProgressInFlatAndOutlineModes() {
         let now = Date()
         let index = BeadProjectIndex(

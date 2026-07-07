@@ -28,6 +28,26 @@ final class GatePresentationTests: XCTestCase {
         XCTAssertEqual(GatePresentation.conditionHeadline(for: noTimeout, now: now), "Timer gate")
     }
 
+    func testTimerRemainingTextUsesCompactDurations() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let ninetyMinutes: Int64 = 5_400_000_000_000
+
+        let pending = gate(.timer, createdAt: now, timeoutNanoseconds: ninetyMinutes)
+        XCTAssertEqual(GatePresentation.timerRemainingText(for: pending, now: now), "1h 30m left")
+
+        let elapsed = gate(.timer, createdAt: now.addingTimeInterval(-7200), timeoutNanoseconds: ninetyMinutes)
+        XCTAssertEqual(GatePresentation.timerRemainingText(for: elapsed, now: now), "elapsed")
+
+        XCTAssertNil(GatePresentation.timerRemainingText(for: gate(.human), now: now))
+    }
+
+    func testCompactGateTitlesDescribeTheGateKind() {
+        XCTAssertEqual(GatePresentation.compactTitle(for: gate(.timer)), "Timer gate")
+        XCTAssertEqual(GatePresentation.compactTitle(for: gate(.human)), "Approval gate")
+        XCTAssertEqual(GatePresentation.compactTitle(for: gate(.githubPR)), "GitHub PR gate")
+        XCTAssertEqual(GatePresentation.compactTitle(for: gate(.other("quantum"))), "quantum gate")
+    }
+
     func testBlockingDependencyPredicateIsCaseAndWhitespaceInsensitive() {
         XCTAssertTrue(dependency(type: "blocks").isBlocking)
         XCTAssertTrue(dependency(type: " Blocks ").isBlocking)

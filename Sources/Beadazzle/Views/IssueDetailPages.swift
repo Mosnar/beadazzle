@@ -287,7 +287,7 @@ struct IssueBodySections: View {
             )
 
             if let issue {
-                DependenciesView(issue: issue)
+                SubIssuesView(issue: issue)
                 CommentsView(issue: issue)
             }
         }

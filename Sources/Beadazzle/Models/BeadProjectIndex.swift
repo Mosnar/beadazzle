@@ -194,6 +194,26 @@ struct BeadProjectIndex: Sendable {
         parentIDByIssueID[issueID]
     }
 
+    func childProgress(for parentID: String) -> IssueChildProgress? {
+        childProgressByParentID[parentID]
+    }
+
+    func immediateChildRows(parentID: String, sortOrder: BeadIssueSortOrder) -> [IssueListRow] {
+        let childIDs = childIDsByParentID[parentID] ?? []
+        guard !childIDs.isEmpty else { return [] }
+        let visibleIDs = Set(childIDs)
+        return sortedSiblingIDs(childIDs, visibleIDs: visibleIDs, sortOrder: sortOrder).map { issueID in
+            IssueListRow(
+                issueID: issueID,
+                depth: 0,
+                hasChildren: !(childIDsByParentID[issueID] ?? []).isEmpty,
+                childProgress: childProgressByParentID[issueID],
+                isExpanded: false,
+                isContext: false
+            )
+        }
+    }
+
     func ancestorIDs(for issueID: String) -> [String] {
         var ancestors: [String] = []
         var visited: Set<String> = [issueID]
@@ -222,6 +242,37 @@ struct BeadProjectIndex: Sendable {
             }
             return lhs.type < rhs.type
         }
+    }
+
+    func activeBlockingIssues(for issueID: String, sortOrder: BeadIssueSortOrder) -> [BeadIssue] {
+        guard let issue = issueByID[issueID], canBeActivelyBlocked(issue) else { return [] }
+
+        return (dependenciesByIssueID[issueID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { issueByID[$0.dependsOnID] }
+            .filter(isActiveBlocker)
+            .sorted(by: sortOrder.areInIncreasingOrder)
+    }
+
+    func activelyBlockedIssues(by issueID: String, sortOrder: BeadIssueSortOrder) -> [BeadIssue] {
+        guard let issue = issueByID[issueID], isActiveBlocker(issue) else { return [] }
+
+        return (dependentsByIssueID[issueID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { issueByID[$0.issueID] }
+            .filter(canBeActivelyBlocked)
+            .sorted(by: sortOrder.areInIncreasingOrder)
+    }
+
+    private func isActiveBlocker(_ issue: BeadIssue) -> Bool {
+        if let gate = BeadGate(issue: issue) {
+            return gate.isOpen
+        }
+        return !semantics.isDone(issue)
+    }
+
+    private func canBeActivelyBlocked(_ issue: BeadIssue) -> Bool {
+        !semantics.isDone(issue)
     }
 
     func count(for bookmark: BeadBookmark) -> Int {

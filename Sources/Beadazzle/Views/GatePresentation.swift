@@ -27,6 +27,46 @@ enum GatePresentation {
         }
     }
 
+    static func compactTitle(for gate: BeadGate) -> String {
+        switch gate.awaitType {
+        case .human: "Approval gate"
+        case .timer: "Timer gate"
+        case .githubRun: "GitHub run gate"
+        case .githubPR: "GitHub PR gate"
+        case .bead: "Bead gate"
+        case let .other(raw): raw.isEmpty ? "Gate" : "\(raw) gate"
+        }
+    }
+
+    static func timerRemainingText(for gate: BeadGate, now: Date = Date()) -> String? {
+        guard gate.awaitType == .timer, let expiresAt = gate.expiresAt else { return nil }
+        guard expiresAt > now else { return "elapsed" }
+        return "\(durationText(expiresAt.timeIntervalSince(now))) left"
+    }
+
+    static func durationText(_ interval: TimeInterval) -> String {
+        let totalMinutes = max(1, Int(ceil(interval / 60)))
+        if totalMinutes < 60 {
+            return "\(totalMinutes)m"
+        }
+
+        let totalHours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if totalHours < 24 {
+            if minutes > 0, totalHours < 10 {
+                return "\(totalHours)h \(minutes)m"
+            }
+            return "\(totalHours)h"
+        }
+
+        let days = totalHours / 24
+        let hours = totalHours % 24
+        if hours > 0, days < 10 {
+            return "\(days)d \(hours)h"
+        }
+        return "\(days)d"
+    }
+
     static func actionTitles(for gate: BeadGate) -> [String] {
         guard gate.isOpen else { return [] }
         switch gate.awaitType {
