@@ -47,6 +47,59 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.first?.ids, ["bd-2"])
     }
 
+    func testCompletionActionTitlesUseReopenForClosedSelections() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-open", title: "Open"))
+            \(issueLine(id: "bd-blocked", title: "Blocked", status: "blocked"))
+            \(closedIssueLine(id: "bd-closed", title: "Closed"))
+            \(closedIssueLine(id: "bd-done", title: "Done"))
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-done") != nil }
+
+        XCTAssertEqual(store.completionActionTitle(for: ["bd-open"]), "Close Bead...")
+        XCTAssertEqual(store.completionActionTitle(for: ["bd-closed"]), "Reopen Bead")
+        XCTAssertEqual(store.completionActionTitle(for: ["bd-closed", "bd-done"]), "Reopen Selected")
+        XCTAssertEqual(store.completionActionTitle(for: ["bd-open", "bd-closed"]), "Close Open Selected...")
+
+        XCTAssertTrue(store.workflowActions(for: try XCTUnwrap(store.issue(with: "bd-open"))).canCreateGate)
+        XCTAssertTrue(store.workflowActions(for: try XCTUnwrap(store.issue(with: "bd-blocked"))).canCreateGate)
+        XCTAssertFalse(store.workflowActions(for: try XCTUnwrap(store.issue(with: "bd-closed"))).canCreateGate)
+    }
+
+    func testReopenClosedIssueUsesOpenStatusAndClearsClosedAtOptimistically() async throws {
+        let projectURL = try makeProject(closedIssueLine(id: "bd-1", title: "Closed"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.reopen(issueIDs: ["bd-1"])
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.status, "open")
+        XCTAssertNil(store.issue(with: "bd-1")?.closedAt)
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"]])
+        XCTAssertEqual(calls.map(\.status), ["open"])
+    }
+
+    func testBulkSetNonDoneStatusClearsClosedAtOptimistically() async throws {
+        let projectURL = try makeProject(closedIssueLine(id: "bd-1", title: "Closed"))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.bulkSet(issueIDs: ["bd-1"], status: "deferred")
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.status, "deferred")
+        XCTAssertNil(store.issue(with: "bd-1")?.closedAt)
+    }
+
     func testMutationAppliesOptimisticallyBeforeCommandCompletesWithoutLoadingIndicator() async throws {
         // The change must be visible the instant the user makes it — before `bd` returns —
         // and with no loading indicator.
@@ -512,6 +565,131 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
+    func testCreateGateRejectsClosedBlockedBeads() async throws {
+        let projectURL = try makeProject(closedIssueLine(id: "bd-closed", title: "Closed"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-closed") != nil }
+
+        let didCreate = await store.createGate(
+            blocks: "bd-closed",
+            type: .human,
+            reason: nil,
+            timeout: nil,
+            awaitID: nil
+        )
+
+        XCTAssertFalse(didCreate)
+        XCTAssertEqual(store.lastError, "Reopen bd-closed before creating a gate.")
+        let createGateCalls = await commands.createGateCalls
+        XCTAssertTrue(createGateCalls.isEmpty)
+    }
+
+    func testApprovingHumanGateOpensEligibleBlockedBeads() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(
+            gateUpdatedAt: "2026-07-03T21:58:35Z",
+            awaitType: "human",
+            taskStatus: "blocked"
+        ))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+
+        let didApprove = await store.approveGate(id: "bd-gate", reason: " approved ")
+
+        XCTAssertTrue(didApprove)
+        XCTAssertEqual(store.issue(with: "bd-task")?.status, "open")
+        let resolveGateCalls = await commands.resolveGateCalls
+        let bulkUpdateCalls = await commands.bulkUpdateCalls
+        XCTAssertEqual(resolveGateCalls.map(\.id), ["bd-gate"])
+        XCTAssertEqual(resolveGateCalls.first?.reason, "approved")
+        XCTAssertEqual(bulkUpdateCalls.map(\.ids), [["bd-task"]])
+        XCTAssertEqual(bulkUpdateCalls.map(\.status), ["open"])
+    }
+
+    func testApprovingHumanGateDoesNotOpenBeadWithAnotherActiveBlocker() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-gate","title":"Human gate","description":"Ad-hoc gate blocking bd-task","status":"open","priority":1,"issue_type":"gate","await_type":"human","updated_at":"2026-07-03T21:58:35Z"}
+            {"_type":"issue","id":"bd-other","title":"Other blocker","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-task","title":"Ship app","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-gate","type":"blocks"},{"depends_on_id":"bd-other","type":"blocks"}]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+
+        let didApprove = await store.approveGate(id: "bd-gate", reason: nil)
+
+        XCTAssertTrue(didApprove)
+        XCTAssertEqual(store.issue(with: "bd-task")?.status, "blocked")
+        let bulkUpdateCalls = await commands.bulkUpdateCalls
+        XCTAssertTrue(bulkUpdateCalls.isEmpty)
+    }
+
+    func testRejectingHumanGateAppliesSelectedStatus() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(
+            gateUpdatedAt: "2026-07-03T21:58:35Z",
+            awaitType: "human",
+            taskStatus: "blocked"
+        ))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+
+        let rejectedWithoutReason = await store.rejectGate(id: "bd-gate", reason: " ", targetStatus: "deferred")
+        let didReject = await store.rejectGate(id: "bd-gate", reason: "not enough evidence", targetStatus: "deferred")
+
+        XCTAssertFalse(rejectedWithoutReason)
+        XCTAssertTrue(didReject)
+        XCTAssertEqual(store.issue(with: "bd-task")?.status, "deferred")
+        let resolveGateCalls = await commands.resolveGateCalls
+        let bulkUpdateCalls = await commands.bulkUpdateCalls
+        XCTAssertEqual(resolveGateCalls.map(\.reason), ["Rejected: not enough evidence"])
+        XCTAssertEqual(bulkUpdateCalls.map(\.ids), [["bd-task"]])
+        XCTAssertEqual(bulkUpdateCalls.map(\.status), ["deferred"])
+    }
+
+    func testRejectingHumanGateWithClosedStatusUsesCloseReason() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(
+            gateUpdatedAt: "2026-07-03T21:58:35Z",
+            awaitType: "human",
+            taskStatus: "blocked"
+        ))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+
+        let didReject = await store.rejectGate(id: "bd-gate", reason: "validation failed", targetStatus: "closed")
+
+        XCTAssertTrue(didReject)
+        XCTAssertEqual(store.issue(with: "bd-task")?.status, "closed")
+        let closeCalls = await commands.closeCalls
+        XCTAssertEqual(closeCalls.map(\.ids), [["bd-task"]])
+        XCTAssertEqual(closeCalls.map(\.reason), ["Rejected: validation failed"])
+    }
+
+    func testClosedGatesDoNotRenderAsActiveBlockersAndCanSurfaceStaleBlockedRepair() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(
+            gateUpdatedAt: "2026-07-03T21:58:35Z",
+            gateStatus: "closed",
+            awaitType: "human",
+            taskStatus: "blocked"
+        ))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+
+        XCTAssertTrue(store.gatesBlocking(issueID: "bd-task").isEmpty)
+        XCTAssertEqual(store.resolvedGatesBlocking(issueID: "bd-task").map(\.id), ["bd-gate"])
+        XCTAssertEqual(store.resolvedGatesForStaleBlockedIssue(issueID: "bd-task").map(\.id), ["bd-gate"])
+    }
+
     private func makeProject(_ issuesJSONL: String) throws -> URL {
         let projectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeadStoreAsyncMutationTests-\(UUID().uuidString)", isDirectory: true)
@@ -535,10 +713,22 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         """
     }
 
-    private func gateProjectJSONL(gateUpdatedAt: String) -> String {
+    private func closedIssueLine(id: String, title: String, parentID: String? = nil) -> String {
+        let parentFragment = parentID.map { ",\"parent_id\":\"\($0)\"" } ?? ""
+        return """
+        {"_type":"issue","id":"\(id)","title":"\(title)","status":"closed","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","closed_at":"2026-07-03T20:58:35Z"\(parentFragment)}
         """
-        {"_type":"issue","id":"bd-gate","title":"Release gate","description":"Ad-hoc gate blocking bd-task\\n\\nReason: Ship review","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":3600000000000,"created_at":"2026-07-03T20:58:35Z","updated_at":"\(gateUpdatedAt)"}
-        {"_type":"issue","id":"bd-task","title":"Ship app","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-gate","type":"blocks"}]}
+    }
+
+    private func gateProjectJSONL(
+        gateUpdatedAt: String,
+        gateStatus: String = "open",
+        awaitType: String = "timer",
+        taskStatus: String = "open"
+    ) -> String {
+        """
+        {"_type":"issue","id":"bd-gate","title":"Release gate","description":"Ad-hoc gate blocking bd-task\\n\\nReason: Ship review","status":"\(gateStatus)","priority":1,"issue_type":"gate","await_type":"\(awaitType)","timeout":3600000000000,"created_at":"2026-07-03T20:58:35Z","updated_at":"\(gateUpdatedAt)"}
+        {"_type":"issue","id":"bd-task","title":"Ship app","status":"\(taskStatus)","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-gate","type":"blocks"}]}
         """
     }
 

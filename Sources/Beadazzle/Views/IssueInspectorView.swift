@@ -25,6 +25,15 @@ struct IssueInspector: View {
                     InspectorRowDivider()
                     InspectorGatesRow(gates: blockingGates) { store.select([$0]) }
                 }
+                let resolvedGates = store.resolvedGatesForStaleBlockedIssue(issueID: issue.id)
+                if !resolvedGates.isEmpty {
+                    InspectorRowDivider()
+                    ResolvedGateStatusRepairRow(
+                        gates: resolvedGates,
+                        statusOptions: store.statusOptions(including: draft.status),
+                        selectedStatus: $draft.status
+                    )
+                }
 
                 if issue.pinned {
                     InspectorRowDivider()
@@ -98,6 +107,61 @@ struct InspectorGatesRow: View {
                 .help("Blocked by \(gate.awaitType.title) gate \(gate.id) — open it")
             }
         }
+    }
+}
+
+struct ResolvedGateStatusRepairRow: View {
+    let gates: [BeadGate]
+    let statusOptions: [String]
+    @Binding var selectedStatus: String
+    @State private var isPresented = false
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            InspectorRowLabel(
+                title: gates.count == 1 ? "Resolved Gate" : "Resolved Gates",
+                systemImage: "checkmark.seal",
+                tint: .secondary,
+                value: "Set Status...",
+                showsChevron: true,
+                isHighlighted: isHovered || isPresented
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(helpText)
+        .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 2) {
+                if statusOptions.isEmpty {
+                    Text("No statuses available")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                } else {
+                    ForEach(statusOptions, id: \.self) { status in
+                        InspectorOptionItemRow(
+                            title: status,
+                            isSelected: status == selectedStatus
+                        ) {
+                            selectedStatus = status
+                            isPresented = false
+                        }
+                    }
+                }
+            }
+            .padding(8)
+            .frame(width: 220, alignment: .leading)
+        }
+        .accessibilityLabel(gates.count == 1 ? "Resolved gate" : "Resolved gates")
+        .accessibilityValue("Set status")
+    }
+
+    private var helpText: String {
+        let gateIDs = gates.map(\.id).joined(separator: ", ")
+        return "Gate \(gateIDs) is closed; choose a status, then save the bead."
     }
 }
 

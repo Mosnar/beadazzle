@@ -362,7 +362,7 @@ struct IssueListTableView: NSViewRepresentable {
                 }
 
                 if ids.count == 1, let id = ids.first, let issue = store.issue(with: id) {
-                    Button("Close Bead...") {
+                    Button(store.completionActionTitle(for: [id])) {
                         requestClose(issue)
                     }
                 }

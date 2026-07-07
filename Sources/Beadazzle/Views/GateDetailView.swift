@@ -9,6 +9,8 @@ struct GateDetailPage: View {
 
     @Environment(BeadStore.self) private var store: BeadStore
     @State private var isBusy = false
+    @State private var showingApproveSheet = false
+    @State private var showingRejectSheet = false
     @State private var showingResolveSheet = false
     @State private var showingAddWaiterSheet = false
     @State private var checkResult: String?
@@ -18,6 +20,8 @@ struct GateDetailPage: View {
             GateBreadcrumbBar(
                 gate: gate,
                 isBusy: isBusy,
+                onApprove: { showingApproveSheet = true },
+                onReject: { showingRejectSheet = true },
                 onResolve: { showingResolveSheet = true },
                 onCheck: { Task { await runCheck() } },
                 onAddWaiter: { showingAddWaiterSheet = true }
@@ -50,6 +54,21 @@ struct GateDetailPage: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .sheet(isPresented: $showingApproveSheet) {
+            GateApproveSheet(gate: gate, affectedBeads: affectedDecisionBeads) { reason in
+                await perform { await store.approveGate(id: gate.id, reason: reason) }
+            }
+        }
+        .sheet(isPresented: $showingRejectSheet) {
+            GateRejectSheet(
+                gate: gate,
+                affectedBeads: affectedDecisionBeads,
+                statusOptions: store.gateRejectionStatusOptions,
+                defaultStatus: store.defaultGateRejectionStatus
+            ) { reason, status in
+                await perform { await store.rejectGate(id: gate.id, reason: reason, targetStatus: status) }
+            }
+        }
         .sheet(isPresented: $showingResolveSheet) {
             GateResolveSheet(gate: gate) { reason in
                 await perform { await store.resolveGate(id: gate.id, reason: reason) }
@@ -158,6 +177,10 @@ struct GateDetailPage: View {
         store.blockedBeads(byGateID: gate.id)
     }
 
+    private var affectedDecisionBeads: [BeadIssue] {
+        store.gateDecisionAffectedBeads(for: gate.id)
+    }
+
     private var checkResultBinding: Binding<Bool> {
         Binding(get: { checkResult != nil }, set: { if !$0 { checkResult = nil } })
     }
@@ -169,10 +192,10 @@ struct GateDetailPage: View {
         checkResult = (output?.nilIfBlank) ?? "No changes — gate is still waiting."
     }
 
-    private func perform(_ action: @escaping () async -> Bool) async {
+    private func perform(_ action: @escaping () async -> Bool) async -> Bool {
         isBusy = true
         defer { isBusy = false }
-        _ = await action()
+        return await action()
     }
 
     private func expiryHeadline(expiresAt: Date, now: Date) -> String {
@@ -197,6 +220,8 @@ private struct GateBreadcrumbBar: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let gate: BeadGate
     let isBusy: Bool
+    let onApprove: () -> Void
+    let onReject: () -> Void
     let onResolve: () -> Void
     let onCheck: () -> Void
     let onAddWaiter: () -> Void
@@ -225,13 +250,24 @@ private struct GateBreadcrumbBar: View {
 
             HStack(spacing: 8) {
                 if gate.isOpen {
-                    Button("Resolve…", action: onResolve)
-                        .controlSize(.small)
-                        .disabled(isBusy)
+                    switch gate.awaitType {
+                    case .human:
+                        Button("Approve...", action: onApprove)
+                            .controlSize(.small)
+                            .disabled(isBusy)
 
-                    Button("Check", action: onCheck)
-                        .controlSize(.small)
-                        .disabled(isBusy)
+                        Button("Reject...", action: onReject)
+                            .controlSize(.small)
+                            .disabled(isBusy)
+                    default:
+                        Button("Resolve...", action: onResolve)
+                            .controlSize(.small)
+                            .disabled(isBusy)
+
+                        Button("Check", action: onCheck)
+                            .controlSize(.small)
+                            .disabled(isBusy)
+                    }
                 }
 
                 Menu {
@@ -314,9 +350,170 @@ private struct GateMetaRow: View {
 
 // MARK: - Sheets
 
+private struct GateApproveSheet: View {
+    let gate: BeadGate
+    let affectedBeads: [BeadIssue]
+    let onApprove: (String?) async -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var reason = ""
+    @State private var isSubmitting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Approve gate")
+                .font(.headline)
+            Text("Approving \(gate.id) closes the gate and moves eligible blocked beads back to open.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            GateDecisionBeadsList(
+                beads: affectedBeads,
+                emptyText: "No blocked beads need a status change."
+            )
+            TextField("Reason (optional)", text: $reason, axis: .vertical)
+                .lineLimit(2...4)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isSubmitting)
+                Button("Approve") {
+                    Task {
+                        isSubmitting = true
+                        let didApprove = await onApprove(reason)
+                        isSubmitting = false
+                        if didApprove {
+                            dismiss()
+                        }
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isSubmitting)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+        .interactiveDismissDisabled(isSubmitting)
+    }
+}
+
+private struct GateRejectSheet: View {
+    let gate: BeadGate
+    let affectedBeads: [BeadIssue]
+    let statusOptions: [String]
+    let onReject: (String, String) async -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var reason = ""
+    @State private var selectedStatus: String
+    @State private var isSubmitting = false
+
+    init(
+        gate: BeadGate,
+        affectedBeads: [BeadIssue],
+        statusOptions: [String],
+        defaultStatus: String?,
+        onReject: @escaping (String, String) async -> Bool
+    ) {
+        self.gate = gate
+        self.affectedBeads = affectedBeads
+        self.statusOptions = statusOptions
+        self.onReject = onReject
+        self._selectedStatus = State(initialValue: defaultStatus ?? statusOptions.first ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Reject gate")
+                .font(.headline)
+            Text("Rejecting \(gate.id) closes the gate and applies the selected status to eligible blocked beads.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            GateDecisionBeadsList(
+                beads: affectedBeads,
+                emptyText: "No blocked beads need a status change."
+            )
+            if statusOptions.isEmpty {
+                Text("No statuses are available for rejected beads.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Rejected bead status", selection: $selectedStatus) {
+                    ForEach(statusOptions, id: \.self) { status in
+                        Text(status).tag(status)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+            TextField("Reason", text: $reason, axis: .vertical)
+                .lineLimit(2...4)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isSubmitting)
+                Button("Reject", role: .destructive) {
+                    Task {
+                        isSubmitting = true
+                        let didReject = await onReject(reason, selectedStatus)
+                        isSubmitting = false
+                        if didReject {
+                            dismiss()
+                        }
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSubmit)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .interactiveDismissDisabled(isSubmitting)
+    }
+
+    private var canSubmit: Bool {
+        !isSubmitting
+            && !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !selectedStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private struct GateDecisionBeadsList: View {
+    let beads: [BeadIssue]
+    let emptyText: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(beads.count == 1 ? "Affected bead" : "Affected beads")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if beads.isEmpty {
+                Text(emptyText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(beads) { bead in
+                        HStack(spacing: 6) {
+                            Text(bead.id)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                            Text(bead.title)
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct GateResolveSheet: View {
     let gate: BeadGate
-    let onResolve: (String?) async -> Void
+    let onResolve: (String?) async -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var reason = ""
@@ -336,11 +533,15 @@ private struct GateResolveSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(isSubmitting)
                 Button("Resolve") {
                     Task {
                         isSubmitting = true
-                        await onResolve(reason)
-                        dismiss()
+                        let didResolve = await onResolve(reason)
+                        isSubmitting = false
+                        if didResolve {
+                            dismiss()
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -349,12 +550,13 @@ private struct GateResolveSheet: View {
         }
         .padding(20)
         .frame(width: 400)
+        .interactiveDismissDisabled(isSubmitting)
     }
 }
 
 private struct GateAddWaiterSheet: View {
     let gate: BeadGate
-    let onAdd: (String) async -> Void
+    let onAdd: (String) async -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var waiter = ""
@@ -373,11 +575,15 @@ private struct GateAddWaiterSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(isSubmitting)
                 Button("Add") {
                     Task {
                         isSubmitting = true
-                        await onAdd(waiter)
-                        dismiss()
+                        let didAdd = await onAdd(waiter)
+                        isSubmitting = false
+                        if didAdd {
+                            dismiss()
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -386,6 +592,7 @@ private struct GateAddWaiterSheet: View {
         }
         .padding(20)
         .frame(width: 400)
+        .interactiveDismissDisabled(isSubmitting)
     }
 }
 

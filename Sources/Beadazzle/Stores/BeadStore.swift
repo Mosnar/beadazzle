@@ -314,13 +314,62 @@ final class BeadStore {
 
     /// The gates currently blocking a bead (its `blocks` dependencies whose target is a gate).
     func gatesBlocking(issueID: String) -> [BeadGate] {
+        gateBlockers(issueID: issueID).filter(\.isOpen)
+    }
+
+    /// Resolved gate dependencies left behind as history. These should not render as active
+    /// blockers, but they can explain why a bead is still manually marked blocked.
+    func resolvedGatesBlocking(issueID: String) -> [BeadGate] {
+        gateBlockers(issueID: issueID).filter { !$0.isOpen }
+    }
+
+    func resolvedGatesForStaleBlockedIssue(issueID: String) -> [BeadGate] {
+        guard let issue = index.issue(with: issueID),
+              isBuiltInBlockedIssue(issue),
+              !isDone(issue) else {
+            return []
+        }
+        let gates = gateBlockers(issueID: issueID)
+        let resolvedGates = gates.filter { !$0.isOpen }
+        guard !resolvedGates.isEmpty,
+              gates.allSatisfy({ !$0.isOpen }),
+              !hasActiveBlocker(issueID: issueID, excludingGateID: nil) else {
+            return []
+        }
+        return resolvedGates
+    }
+
+    func gateDecisionAffectedBeads(for gateID: String) -> [BeadIssue] {
+        directBlockedBeads(byGateID: gateID)
+            .filter { isEligibleForGateDecision($0, excludingGateID: gateID) }
+            .sorted { lhs, rhs in lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending }
+    }
+
+    private func gateBlockers(issueID: String) -> [BeadGate] {
         (index.dependenciesByIssueID[issueID] ?? [])
             .filter(\.isBlocking)
             .compactMap { gate(for: $0.dependsOnID) }
     }
 
+    private func directBlockedBeads(byGateID gateID: String) -> [BeadIssue] {
+        (index.dependentsByIssueID[gateID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { index.issue(with: $0.issueID) }
+    }
+
     var availableStatuses: [String] {
         optionStatusDefinitions.map(\.name)
+    }
+
+    var gateRejectionStatusOptions: [String] {
+        options(availableStatuses, including: defaultGateRejectionStatus, fallback: index.semantics.statusNames)
+    }
+
+    var defaultGateRejectionStatus: String? {
+        if index.semantics.statusNames.contains(Self.closedStatusName) {
+            return Self.closedStatusName
+        }
+        return index.semantics.statuses.first { $0.category == .done }?.name
     }
 
     var availableTypes: [String] {
@@ -463,6 +512,67 @@ final class BeadStore {
 
     func isDone(_ issue: BeadIssue) -> Bool {
         index.semantics.isDone(issue) || statusClosesBeads(issue.status)
+    }
+
+    func completionAction(for issueIDs: [String]) -> BeadCompletionAction {
+        let issues = issueIDs.compactMap { index.issue(with: $0) }
+        return BeadIssueWorkflowPolicy.completionAction(for: issues, isDone: isDone)
+    }
+
+    func completionActionTitle(for issueIDs: [String]) -> String {
+        let count = Set(issueIDs).count
+        let issues = issueIDs.compactMap { index.issue(with: $0) }
+        return BeadIssueWorkflowPolicy.completionTitle(issueCount: count, issues: issues, isDone: isDone)
+    }
+
+    func completionActionSystemImage(for issueIDs: [String]) -> String {
+        BeadIssueWorkflowPolicy.completionSystemImage(for: completionAction(for: issueIDs))
+    }
+
+    func workflowActions(for issue: BeadIssue) -> BeadIssueWorkflowActions {
+        BeadIssueWorkflowPolicy.actions(for: issue, isDone: isDone(issue))
+    }
+
+    func canCreateGate(blocking issue: BeadIssue) -> Bool {
+        workflowActions(for: issue).canCreateGate
+    }
+
+    private var reopenStatusName: String? {
+        if index.semantics.statuses.contains(where: { $0.name == "open" && $0.category == .active }) {
+            return "open"
+        }
+        return index.semantics.statuses.first { $0.category == .active }?.name
+    }
+
+    private var gateApprovalStatusName: String? {
+        reopenStatusName
+    }
+
+    private func isBuiltInBlockedIssue(_ issue: BeadIssue) -> Bool {
+        index.semantics.statuses.contains { status in
+            status.name == issue.status && status.isBuiltIn && status.name == "blocked"
+        }
+    }
+
+    private func isEligibleForGateDecision(_ issue: BeadIssue, excludingGateID gateID: String) -> Bool {
+        isBuiltInBlockedIssue(issue)
+            && !isDone(issue)
+            && !hasActiveBlocker(issueID: issue.id, excludingGateID: gateID)
+    }
+
+    private func hasActiveBlocker(issueID: String, excludingGateID gateID: String?) -> Bool {
+        for dependency in index.dependenciesByIssueID[issueID] ?? [] where dependency.isBlocking {
+            if dependency.dependsOnID == gateID {
+                continue
+            }
+            guard let blocker = index.issue(with: dependency.dependsOnID) else {
+                return true
+            }
+            if !isDone(blocker) {
+                return true
+            }
+        }
+        return false
     }
 
     func openChildIssues(forClosing issueIDs: [String]) -> [BeadIssue] {
@@ -1137,8 +1247,10 @@ final class BeadStore {
         copy.dueAt = draft.dueAt
         copy.deferUntil = draft.deferUntil
         copy.updatedAt = Date()
-        if index.semantics.category(forStatus: draft.status) == .done, copy.closedAt == nil {
-            copy.closedAt = Date()
+        if statusClosesBeads(draft.status) {
+            copy.closedAt = copy.closedAt ?? Date()
+        } else {
+            copy.closedAt = nil
         }
         return copy
     }
@@ -1284,6 +1396,21 @@ final class BeadStore {
     }
 
     @discardableResult
+    func reopen(issueIDs: [String]) async -> Bool {
+        guard let status = reopenStatusName else {
+            lastError = "No active status is configured for reopened beads."
+            return false
+        }
+        let ids = issueIDs
+            .compactMap { index.issue(with: $0) }
+            .filter(isDone)
+            .map(\.id)
+            .sorted()
+        guard !ids.isEmpty else { return false }
+        return await bulkSet(issueIDs: ids, status: status)
+    }
+
+    @discardableResult
     func deleteSelected() async -> Bool {
         await delete(issueIDs: Array(selectedIDs))
     }
@@ -1340,7 +1467,9 @@ final class BeadStore {
             if let status { copy.status = status }
             if let type { copy.issueType = type }
             if let priority { copy.priority = priority }
-            if makesDone { copy.closedAt = copy.closedAt ?? now }
+            if let status {
+                copy.closedAt = statusClosesBeads(status) ? (copy.closedAt ?? now) : nil
+            }
             copy.updatedAt = now
             return copy
         }
@@ -1365,6 +1494,47 @@ final class BeadStore {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    @discardableResult
+    func approveGate(id: String, reason: String?) async -> Bool {
+        let affectedIDs = gateDecisionAffectedBeads(for: id).map(\.id)
+        guard !affectedIDs.isEmpty else {
+            return await resolveGate(id: id, reason: reason)
+        }
+        guard let approvalStatus = gateApprovalStatusName else {
+            let didResolve = await resolveGate(id: id, reason: reason)
+            if didResolve {
+                lastError = "Gate approved, but no active status is configured for unblocked beads."
+            }
+            return false
+        }
+        guard await resolveGate(id: id, reason: reason) else { return false }
+        return await bulkSet(issueIDs: affectedIDs, status: approvalStatus)
+    }
+
+    @discardableResult
+    func rejectGate(id: String, reason: String, targetStatus: String) async -> Bool {
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReason.isEmpty else {
+            lastError = "A rejection reason is required."
+            return false
+        }
+        let status = targetStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !status.isEmpty else {
+            lastError = "Choose a status for rejected beads."
+            return false
+        }
+
+        let affectedIDs = gateDecisionAffectedBeads(for: id).map(\.id)
+        let rejectionReason = "Rejected: \(trimmedReason)"
+        guard await resolveGate(id: id, reason: rejectionReason) else { return false }
+        guard !affectedIDs.isEmpty else { return true }
+
+        if status.lowercased() == Self.closedStatusName {
+            return await close(issueIDs: affectedIDs, reason: rejectionReason)
+        }
+        return await bulkSet(issueIDs: affectedIDs, status: status)
     }
 
     @discardableResult
@@ -1404,6 +1574,14 @@ final class BeadStore {
     @discardableResult
     func createGate(blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) async -> Bool {
         guard let projectURL else { return false }
+        guard let issue = index.issue(with: blocks) else {
+            lastError = "Bead \(blocks) was not found."
+            return false
+        }
+        guard canCreateGate(blocking: issue) else {
+            lastError = "Reopen \(blocks) before creating a gate."
+            return false
+        }
         do {
             _ = try await commands.createGate(
                 projectURL: projectURL,

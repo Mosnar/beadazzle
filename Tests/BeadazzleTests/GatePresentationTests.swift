@@ -35,6 +35,15 @@ final class GatePresentationTests: XCTestCase {
         XCTAssertFalse(dependency(type: "related").isBlocking)
     }
 
+    func testActionTitlesUseApproveRejectForOpenHumanGates() {
+        XCTAssertEqual(GatePresentation.actionTitles(for: gate(.human)), ["Approve...", "Reject..."])
+        XCTAssertEqual(GatePresentation.actionTitles(for: gate(.timer)), ["Resolve...", "Check"])
+
+        var closedHuman = gate(.human)
+        closedHuman.status = "closed"
+        XCTAssertEqual(GatePresentation.actionTitles(for: closedHuman), [])
+    }
+
     // MARK: - Fixtures
 
     private func gate(

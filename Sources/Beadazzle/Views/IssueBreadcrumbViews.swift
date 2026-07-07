@@ -81,6 +81,7 @@ struct IssueBreadcrumbBar: View {
     @State private var showingGateCreation = false
 
     var body: some View {
+        let workflowActions = store.workflowActions(for: issue)
         HStack(spacing: 8) {
             BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
                 store.clearSelection()
@@ -132,15 +133,20 @@ struct IssueBreadcrumbBar: View {
                 .accessibilityLabel("Copy Bead ID")
 
                 Menu {
-                    Button {
-                        showingGateCreation = true
-                    } label: {
-                        Label("Create Gate...", systemImage: "flag.checkered")
+                    if workflowActions.canCreateGate {
+                        Button {
+                            showingGateCreation = true
+                        } label: {
+                            Label("Create Gate...", systemImage: "flag.checkered")
+                        }
                     }
                     Button {
                         requestClose(issue)
                     } label: {
-                        Label("Close Bead...", systemImage: "checkmark.circle")
+                        Label(
+                            workflowActions.completionTitle,
+                            systemImage: workflowActions.completionSystemImage
+                        )
                     }
                 } label: {
                     Label("More", systemImage: "ellipsis")
@@ -151,6 +157,11 @@ struct IssueBreadcrumbBar: View {
                 .accessibilityLabel("More")
                 .popover(isPresented: $showingGateCreation, arrowEdge: .bottom) {
                     GateCreationForm(blockedIssueID: issue.id, blockedTitle: issue.title) {
+                        showingGateCreation = false
+                    }
+                }
+                .onChange(of: workflowActions.canCreateGate) { _, canCreateGate in
+                    if !canCreateGate {
                         showingGateCreation = false
                     }
                 }

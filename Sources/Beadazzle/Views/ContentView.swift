@@ -212,6 +212,12 @@ struct ContentView: View {
     }
 
     private func requestClose(_ issue: BeadIssue) {
+        guard store.completionAction(for: [issue.id]) == .close else {
+            Task {
+                await store.reopen(issueIDs: [issue.id])
+            }
+            return
+        }
         closeBeadRequest = CloseBeadRequest(issue: issue)
     }
 
@@ -224,7 +230,16 @@ struct ContentView: View {
             .sorted()
             .compactMap { store.issue(with: $0) }
         guard !selectedIssues.isEmpty else { return }
-        closeBeadRequest = CloseBeadRequest(issues: selectedIssues)
+        let issueIDs = selectedIssues.map(\.id)
+        guard store.completionAction(for: issueIDs) == .close else {
+            Task {
+                await store.reopen(issueIDs: issueIDs)
+            }
+            return
+        }
+        let closeableIssues = selectedIssues.filter { !store.isDone($0) }
+        guard !closeableIssues.isEmpty else { return }
+        closeBeadRequest = CloseBeadRequest(issues: closeableIssues)
     }
 
     private func requestSetSelectedStatus(_ status: String) {

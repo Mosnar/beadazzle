@@ -56,6 +56,6 @@ struct BulkActionsMenu: View {
     }
 
     private var closeTitle: String {
-        store.selectedIDs.count == 1 ? "Close Bead..." : "Close Selected..."
+        store.completionActionTitle(for: store.selectedIDs.sorted())
     }
 }

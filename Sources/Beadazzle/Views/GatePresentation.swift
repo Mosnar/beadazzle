@@ -26,4 +26,14 @@ enum GatePresentation {
             return raw.isEmpty ? "Gate" : raw
         }
     }
+
+    static func actionTitles(for gate: BeadGate) -> [String] {
+        guard gate.isOpen else { return [] }
+        switch gate.awaitType {
+        case .human:
+            return ["Approve...", "Reject..."]
+        default:
+            return ["Resolve...", "Check"]
+        }
+    }
 }

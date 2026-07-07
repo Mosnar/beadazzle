@@ -15,6 +15,10 @@ for users, not for the commit log.
 
 ### Changed
 
+- Closed beads now show Reopen instead of Close in action menus.
+- Closed beads no longer show Create Gate until they are reopened.
+- Human gates now use Approve and Reject actions, and approving a gate moves
+  eligible blocked beads back to open when no other blockers remain.
 - Closing a bead that still has open child beads now asks whether to close the
   children too and shows the child beads that will be closed.
 - Selecting a bead now opens its detail beside the list without auto-collapsing
