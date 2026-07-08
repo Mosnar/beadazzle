@@ -695,6 +695,51 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-gate", "bd-task"])
     }
 
+    func testBlockedReasonPresentationClassifiesSnapshotBlockersAndBlockedBookmarkOnly() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-active","title":"Active blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-blocker","type":"blocks"}]}
+            {"_type":"issue","id":"bd-gated","title":"Gate blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-human","type":"blocks"}]}
+            {"_type":"issue","id":"bd-external","title":"External blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"external:project:capability","type":"blocks"}]}
+            {"_type":"issue","id":"bd-resolved","title":"Resolved gate blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-closed","type":"blocks"}]}
+            {"_type":"issue","id":"bd-manual","title":"Manual blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-blocker","title":"Fix upstream","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"g-human","title":"Human gate","description":"Ad-hoc gate blocking bd-gated\\n\\nReason: Need approval","status":"open","priority":1,"issue_type":"gate","await_type":"human","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"g-closed","title":"Closed gate","description":"Ad-hoc gate blocking bd-resolved\\n\\nReason: PR merged","status":"closed","priority":1,"issue_type":"gate","await_type":"gh:pr","await_id":"42","updated_at":"2026-07-03T20:58:35Z","closed_at":"2026-07-03T21:58:35Z"}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-manual") != nil }
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertNil(store.blockedReasonPresentation(for: "bd-active", bookmark: .all, now: now))
+        XCTAssertNil(store.blockedReasonPresentation(for: "bd-active", bookmark: .open, now: now))
+
+        let active = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-active", bookmark: .blocked, now: now))
+        XCTAssertEqual(active.kind, .issue)
+        XCTAssertEqual(active.title, "Blocked by bd-blocker: Fix upstream")
+
+        let gated = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-gated", bookmark: .blocked, now: now))
+        XCTAssertEqual(gated.kind, .gate)
+        XCTAssertEqual(gated.title, "Waiting on Awaiting approval")
+        XCTAssertTrue(gated.help.contains("Reason: Need approval"))
+
+        let external = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-external", bookmark: .blocked, now: now))
+        XCTAssertEqual(external.kind, .external)
+        XCTAssertEqual(external.title, "Blocked by external reference")
+        XCTAssertTrue(external.help.contains("external:project:capability"))
+
+        let resolved = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-resolved", bookmark: .blocked, now: now))
+        XCTAssertEqual(resolved.kind, .resolvedGate)
+        XCTAssertEqual(resolved.title, "Resolved gate; status still blocked")
+        XCTAssertTrue(resolved.help.contains("Gate g-closed: Awaiting PR #42"))
+
+        let manual = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-manual", bookmark: .blocked, now: now))
+        XCTAssertEqual(manual.kind, .unexplained)
+        XCTAssertEqual(manual.title, "Marked blocked; no active blocker found")
+    }
+
     func testGatesBookmarkIgnoresActiveFiltersAndUserSortWithoutClearingThem() async throws {
         let projectURL = try makeProject(
             """
@@ -745,6 +790,32 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         XCTAssertNil(store.nextGateTimerExpiry(after: now))
         store.applyBookmark(.gates)
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.nextGateTimerExpiry(after: now), expectedNextExpiry)
+    }
+
+    func testNextGateTimerExpiryIncludesTimerGatesBlockingBlockedRows() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"g-elapsed","title":"Elapsed timer","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":3600000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"g-next","title":"Next timer","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":7200000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"g-unlinked","title":"Unlinked timer","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":5400000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"g-closed","title":"Closed future timer","status":"closed","priority":1,"issue_type":"gate","await_type":"timer","timeout":10800000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z","closed_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"bd-elapsed","title":"Elapsed blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-elapsed","type":"blocks"}]}
+            {"_type":"issue","id":"bd-next","title":"Next blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-next","type":"blocks"}]}
+            {"_type":"issue","id":"bd-closed","title":"Closed gate blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-closed","type":"blocks"}]}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-next") != nil }
+
+        let now = try XCTUnwrap(BeadFormatters.parseDate("2026-07-03T21:30:00Z"))
+        let expectedNextExpiry = try XCTUnwrap(BeadFormatters.parseDate("2026-07-03T22:00:00Z"))
+
+        XCTAssertNil(store.nextGateTimerExpiry(after: now))
+        store.applyBookmark(.blocked)
         await store.waitForPendingQueryRecompute()
 
         XCTAssertEqual(store.nextGateTimerExpiry(after: now), expectedNextExpiry)

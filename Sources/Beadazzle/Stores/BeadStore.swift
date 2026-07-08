@@ -374,6 +374,37 @@ final class BeadStore {
         )
     }
 
+    func blockedReasonPresentation(
+        for issueID: String,
+        bookmark: BeadBookmark,
+        now: Date = Date()
+    ) -> BlockedReasonPresentation? {
+        guard bookmark == .blocked else { return nil }
+        return blockedReasonPresentation(for: issueID, now: now)
+    }
+
+    func blockedReasonPresentation(for issueID: String, now: Date = Date()) -> BlockedReasonPresentation? {
+        guard let issue = index.issue(with: issueID),
+              isBuiltInBlockedIssue(issue),
+              !isDone(issue) else {
+            return nil
+        }
+
+        let activeBlockers = activeBlockingPresentations(for: issueID, now: now)
+        if let presentation = BlockedReasonPresentation.active(blockers: activeBlockers) {
+            return presentation
+        }
+
+        if let presentation = BlockedReasonPresentation.resolvedGate(
+            gates: resolvedGatesForStaleBlockedIssue(issueID: issueID),
+            now: now
+        ) {
+            return presentation
+        }
+
+        return .unexplained
+    }
+
     /// The gate metadata for an issue, if that issue is a gate bead.
     func gate(for id: String) -> BeadGate? {
         guard let issue = index.issue(with: id),
@@ -387,16 +418,16 @@ final class BeadStore {
     }
 
     func refreshGateClock(_ now: Date = Date()) {
-        guard selectedBookmark == .gates else { return }
+        guard selectedBookmark == .gates || selectedBookmark == .blocked else { return }
         gateClock = now
         rebuildIssueListRows()
     }
 
     func nextGateTimerExpiry(after now: Date = Date()) -> Date? {
-        guard selectedBookmark == .gates else { return nil }
-        return index.issueIDs(for: .gates)
+        timerGateIDsForCurrentBookmark()
             .compactMap { id -> Date? in
                 guard let gate = gate(for: id),
+                      gate.isOpen,
                       gate.awaitType == .timer,
                       let expiresAt = gate.expiresAt,
                       expiresAt > now else {
@@ -405,6 +436,21 @@ final class BeadStore {
                 return expiresAt
             }
             .min()
+    }
+
+    private func timerGateIDsForCurrentBookmark() -> Set<String> {
+        switch selectedBookmark {
+        case .gates:
+            index.issueIDs(for: .gates)
+        case .blocked:
+            Set(index.issueIDs(for: .blocked).flatMap { issueID in
+                (index.dependenciesByIssueID[issueID] ?? [])
+                    .filter(\.isBlocking)
+                    .map(\.dependsOnID)
+            })
+        case .ready, .stale, .open, .inProgress, .closed, .all:
+            []
+        }
     }
 
     /// The beads a gate blocks, derived from the dependency graph (`blocks` edges pointing
@@ -705,6 +751,35 @@ final class BeadStore {
             }
         }
         return false
+    }
+
+    private func activeBlockingPresentations(
+        for issueID: String,
+        now: Date
+    ) -> [BlockedReasonPresentation.Blocker] {
+        let activeIssueBlockers = activeBlockingIssues(for: issueID).map { issue in
+            if let gate = gate(for: issue.id) {
+                return BlockedReasonPresentation.Blocker.gate(gate, now: now)
+            }
+            return BlockedReasonPresentation.Blocker.issue(issue)
+        }
+
+        let externalBlockers = externalBlockingReferences(for: issueID).map {
+            BlockedReasonPresentation.Blocker.external(reference: $0)
+        }
+
+        return activeIssueBlockers + externalBlockers
+    }
+
+    private func externalBlockingReferences(for issueID: String) -> [String] {
+        var references: Set<String> = []
+        for dependency in index.dependenciesByIssueID[issueID] ?? [] where dependency.isBlocking {
+            guard index.issue(with: dependency.dependsOnID) == nil else { continue }
+            references.insert(dependency.dependsOnID)
+        }
+        return references.sorted { lhs, rhs in
+            lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
     }
 
     func openDefaultProjectIfAvailable() {

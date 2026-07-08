@@ -1,0 +1,132 @@
+import XCTest
+@testable import Beadazzle
+
+final class BlockedReasonPresentationTests: XCTestCase {
+    func testActiveIssueBlockerPresentation() throws {
+        let blocker = BlockedReasonPresentation.Blocker.issue(issue("bd-blocker", title: "Fix crawler"))
+
+        let presentation = try XCTUnwrap(BlockedReasonPresentation.active(blockers: [blocker]))
+
+        XCTAssertEqual(presentation.kind, .issue)
+        XCTAssertEqual(presentation.title, "Blocked by bd-blocker: Fix crawler")
+        XCTAssertEqual(presentation.systemImage, "arrow.down.right.and.arrow.up.left")
+        XCTAssertEqual(presentation.tint, .secondary)
+        XCTAssertEqual(presentation.help, "bd-blocker: Fix crawler")
+    }
+
+    func testActiveGateBlockerPresentation() throws {
+        let gate = gate(.human, reason: "Need design sign-off")
+        let blocker = BlockedReasonPresentation.Blocker.gate(gate, now: Date(timeIntervalSince1970: 1_000))
+
+        let presentation = try XCTUnwrap(BlockedReasonPresentation.active(blockers: [blocker]))
+
+        XCTAssertEqual(presentation.kind, .gate)
+        XCTAssertEqual(presentation.title, "Waiting on Awaiting approval")
+        XCTAssertEqual(presentation.systemImage, "person.badge.clock")
+        XCTAssertEqual(presentation.tint, .action)
+        XCTAssertTrue(presentation.help.contains("Gate g-1: Awaiting approval"))
+        XCTAssertTrue(presentation.help.contains("Reason: Need design sign-off"))
+    }
+
+    func testMultipleBlockerPresentation() throws {
+        let blockers = [
+            BlockedReasonPresentation.Blocker.issue(issue("bd-a", title: "Alpha")),
+            BlockedReasonPresentation.Blocker.issue(issue("bd-b", title: "Beta"))
+        ]
+
+        let presentation = try XCTUnwrap(BlockedReasonPresentation.active(blockers: blockers))
+
+        XCTAssertEqual(presentation.kind, .multiple)
+        XCTAssertEqual(presentation.title, "Blocked by 2 blockers: bd-a: Alpha")
+        XCTAssertTrue(presentation.help.contains("- bd-a: Alpha"))
+        XCTAssertTrue(presentation.help.contains("- bd-b: Beta"))
+    }
+
+    func testExternalBlockerPresentation() throws {
+        let blocker = BlockedReasonPresentation.Blocker.external(reference: "external:project:capability")
+
+        let presentation = try XCTUnwrap(BlockedReasonPresentation.active(blockers: [blocker]))
+
+        XCTAssertEqual(presentation.kind, .external)
+        XCTAssertEqual(presentation.title, "Blocked by external reference")
+        XCTAssertEqual(presentation.systemImage, "link")
+        XCTAssertEqual(presentation.tint, .warning)
+        XCTAssertTrue(presentation.help.contains("external:project:capability"))
+    }
+
+    func testResolvedGatePresentation() throws {
+        let gate = gate(.githubPR, status: "closed", reason: "PR merged", awaitID: "42")
+
+        let presentation = try XCTUnwrap(BlockedReasonPresentation.resolvedGate(
+            gates: [gate],
+            now: Date(timeIntervalSince1970: 1_000)
+        ))
+
+        XCTAssertEqual(presentation.kind, .resolvedGate)
+        XCTAssertEqual(presentation.title, "Resolved gate; status still blocked")
+        XCTAssertEqual(presentation.systemImage, "checkmark.seal")
+        XCTAssertEqual(presentation.tint, .resolved)
+        XCTAssertTrue(presentation.help.contains("Gate g-1: Awaiting PR #42"))
+        XCTAssertTrue(presentation.help.contains("Reason: PR merged"))
+    }
+
+    func testUnexplainedPresentation() {
+        let presentation = BlockedReasonPresentation.unexplained
+
+        XCTAssertEqual(presentation.kind, .unexplained)
+        XCTAssertEqual(presentation.title, "Marked blocked; no active blocker found")
+        XCTAssertEqual(presentation.systemImage, "questionmark.circle")
+        XCTAssertEqual(presentation.tint, .unexplained)
+    }
+
+    private func issue(_ id: String, title: String) -> BeadIssue {
+        BeadIssue(
+            id: id,
+            title: title,
+            description: "",
+            design: "",
+            acceptanceCriteria: "",
+            notes: "",
+            status: "open",
+            priority: 1,
+            issueType: "task",
+            assignee: nil,
+            owner: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            closedAt: nil,
+            dueAt: nil,
+            deferUntil: nil,
+            externalRef: nil,
+            parentID: nil,
+            labels: [],
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
+        )
+    }
+
+    private func gate(
+        _ awaitType: GateAwaitType,
+        status: String = "open",
+        reason: String? = nil,
+        awaitID: String? = nil
+    ) -> BeadGate {
+        BeadGate(
+            id: "g-1",
+            title: "Gate",
+            awaitType: awaitType,
+            status: status,
+            reason: reason,
+            awaitID: awaitID,
+            timeoutNanoseconds: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            waiters: [],
+            blocksIssueID: "bd-target"
+        )
+    }
+}

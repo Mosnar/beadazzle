@@ -14,6 +14,7 @@ struct IssueSummaryRowContent: View {
     var showsOwner = false
     var showsAssignee = false
     var showsDueDate = false
+    var blockedReason: BlockedReasonPresentation?
     var showsDependencyCounts = true
     var showsComments = true
     var showsLabels = true
@@ -86,6 +87,10 @@ struct IssueSummaryRowContent: View {
                         .lineLimit(1)
                         .help(childProgressHelp(for: childProgress))
                         .accessibilityLabel(childProgressAccessibilityLabel(for: childProgress))
+                    }
+
+                    if let blockedReason {
+                        BlockedReasonInlineLabel(reason: blockedReason)
                     }
 
                     if showsDependencyCounts, issue.dependencyCount > 0 {
@@ -174,6 +179,43 @@ struct IssueSummaryRowContent: View {
 
     private func childBeadText(for count: Int) -> String {
         count == 1 ? "child bead" : "child beads"
+    }
+}
+
+private struct BlockedReasonInlineLabel: View {
+    let reason: BlockedReasonPresentation
+
+    var body: some View {
+        Label {
+            Text(reason.title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } icon: {
+            Image(systemName: reason.systemImage)
+        }
+        .foregroundStyle(reason.tint.shapeStyle)
+        .lineLimit(1)
+        .layoutPriority(1)
+        .help(reason.help)
+        .accessibilityLabel("Blocked reason")
+        .accessibilityValue(reason.accessibilityValue)
+    }
+}
+
+private extension BlockedReasonPresentation.Tint {
+    var shapeStyle: AnyShapeStyle {
+        switch self {
+        case .secondary:
+            AnyShapeStyle(.secondary)
+        case .action:
+            AnyShapeStyle(GatePresentation.actionTint)
+        case .warning:
+            AnyShapeStyle(Color(nsColor: .systemOrange))
+        case .resolved:
+            AnyShapeStyle(Color(nsColor: .systemGreen))
+        case .unexplained:
+            AnyShapeStyle(.tertiary)
+        }
     }
 }
 

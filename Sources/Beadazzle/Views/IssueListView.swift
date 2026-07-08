@@ -52,8 +52,8 @@ struct IssueListView: View {
 
     @MainActor
     private func runGateClockIfNeeded() async {
-        guard store.selectedBookmark == .gates else { return }
-        while !Task.isCancelled, store.selectedBookmark == .gates {
+        guard usesGateClock else { return }
+        while !Task.isCancelled, usesGateClock {
             let now = Date()
             store.refreshGateClock(now)
             guard let nextExpiry = store.nextGateTimerExpiry(after: now) else { return }
@@ -61,6 +61,10 @@ struct IssueListView: View {
             let delayMilliseconds = max(1_000, Int64(ceil(nextExpiry.timeIntervalSince(Date()) * 1_000)))
             try? await Task.sleep(for: .milliseconds(delayMilliseconds))
         }
+    }
+
+    private var usesGateClock: Bool {
+        store.selectedBookmark == .gates || store.selectedBookmark == .blocked
     }
 }
 
@@ -296,6 +300,7 @@ struct IssueRowView: View, Equatable {
     let showsDisclosure: Bool
     let displayOptions: BeadListDisplayOptions
     let statusCategory: BeadStatusCategory
+    let blockedReason: BlockedReasonPresentation?
     let toggleExpansion: () -> Void
 
     static func == (lhs: IssueRowView, rhs: IssueRowView) -> Bool {
@@ -304,6 +309,7 @@ struct IssueRowView: View, Equatable {
             && lhs.showsDisclosure == rhs.showsDisclosure
             && lhs.displayOptions == rhs.displayOptions
             && lhs.statusCategory == rhs.statusCategory
+            && lhs.blockedReason == rhs.blockedReason
     }
 
     var body: some View {
@@ -335,6 +341,7 @@ struct IssueRowView: View, Equatable {
                 showsOwner: displayOptions.showsOwner,
                 showsAssignee: displayOptions.showsAssignee,
                 showsDueDate: displayOptions.showsDueDate,
+                blockedReason: blockedReason,
                 showsDependencyCounts: true,
                 showsComments: displayOptions.showsComments,
                 showsLabels: true

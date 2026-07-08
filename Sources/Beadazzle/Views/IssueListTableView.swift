@@ -244,6 +244,11 @@ struct IssueListTableView: NSViewRepresentable {
                         showsDisclosure: parent.mode == .outline,
                         displayOptions: parent.displayOptions,
                         statusCategory: store.statusCategory(for: issue.status),
+                        blockedReason: store.blockedReasonPresentation(
+                            for: itemID,
+                            bookmark: store.selectedBookmark,
+                            now: parent.gateClock
+                        ),
                         toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
                     )
                     .equatable()

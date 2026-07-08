@@ -20,6 +20,9 @@ for users, not for the commit log.
 - Relationship fields now use a fast bead picker with search, filters, outline
   mode, and a compact quick-create flow for parent, blocking, and sub-issue
   workflows.
+- Blocked rows now explain why each bead is blocked inline, including active
+  blocker beads, gates, external references, resolved gates, and manually
+  blocked beads with no active blocker.
 
 ### Changed
 
