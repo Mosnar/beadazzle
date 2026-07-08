@@ -95,7 +95,7 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
                 message: "Marked blocked with no active gate.",
                 actions: canCreateGate ? [.createTimer, .createDecision, .reopen] : [.reopen]
             )
-        case .issue, .gate, .multiple, .external:
+        case .issue, .gate, .multiple, .external, .subissue:
             return nil
         }
     }

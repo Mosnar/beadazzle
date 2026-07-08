@@ -79,6 +79,20 @@ final class BlockedReasonPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.tint, .unexplained)
     }
 
+    func testSubissueBlockerPresentation() {
+        let child = issue("bd-child", title: "Child task")
+        let blocker = BlockedReasonPresentation.Blocker.issue(issue("bd-blocker", title: "Fix crawler"))
+
+        let presentation = BlockedReasonPresentation.subissue(child, blockers: [blocker])
+
+        XCTAssertEqual(presentation.kind, .subissue)
+        XCTAssertEqual(presentation.title, "Sub-issue blocked by bd-blocker: Fix crawler")
+        XCTAssertEqual(presentation.systemImage, "list.bullet.indent")
+        XCTAssertEqual(presentation.tint, .secondary)
+        XCTAssertTrue(presentation.help.contains("Sub-issue bd-child: Child task"))
+        XCTAssertTrue(presentation.help.contains("bd-blocker: Fix crawler"))
+    }
+
     func testResolvedGateAttentionPresentationOffersReopen() throws {
         let gate = gate(.githubPR, status: "closed", reason: "PR merged", awaitID: "42")
         let reason = try XCTUnwrap(BlockedReasonPresentation.resolvedGate(
@@ -121,6 +135,12 @@ final class BlockedReasonPresentationTests: XCTestCase {
         let reason = try XCTUnwrap(BlockedReasonPresentation.active(blockers: [blocker]))
 
         XCTAssertNil(BlockedActionPresentation.make(issueID: "bd-blocked", reason: reason))
+    }
+
+    func testSubissueBlockerPresentationDoesNotCreateAttentionPresentation() {
+        let reason = BlockedReasonPresentation.subissue(issue("bd-child", title: "Child task"), blockers: [])
+
+        XCTAssertNil(BlockedActionPresentation.make(issueID: "bd-parent", reason: reason))
     }
 
     private func issue(_ id: String, title: String) -> BeadIssue {

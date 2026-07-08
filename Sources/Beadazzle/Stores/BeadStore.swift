@@ -380,7 +380,11 @@ final class BeadStore {
         now: Date = Date()
     ) -> BlockedReasonPresentation? {
         guard bookmark == .blocked else { return nil }
-        return blockedReasonPresentation(for: issueID, now: now)
+        if let presentation = blockedReasonPresentation(for: issueID, now: now) {
+            return presentation
+        }
+        guard index.issue(with: issueID) != nil else { return nil }
+        return blockedDescendantPresentation(for: issueID, now: now)
     }
 
     func blockedReasonPresentation(for issueID: String, now: Date = Date()) -> BlockedReasonPresentation? {
@@ -392,6 +396,10 @@ final class BeadStore {
 
         let activeBlockers = activeBlockingPresentations(for: issueID, now: now)
         if let presentation = BlockedReasonPresentation.active(blockers: activeBlockers) {
+            return presentation
+        }
+
+        if let presentation = blockedDescendantPresentation(for: issueID, now: now) {
             return presentation
         }
 
@@ -778,6 +786,11 @@ final class BeadStore {
     }
 
     private func hasActiveBlocker(issueID: String, excludingGateID gateID: String?) -> Bool {
+        hasDirectActiveBlocker(issueID: issueID, excludingGateID: gateID)
+            || hasActiveBlockedDescendant(issueID: issueID, excludingGateID: gateID)
+    }
+
+    private func hasDirectActiveBlocker(issueID: String, excludingGateID gateID: String?) -> Bool {
         for dependency in index.dependenciesByIssueID[issueID] ?? [] where dependency.isBlocking {
             if dependency.dependsOnID == gateID {
                 continue
@@ -790,6 +803,83 @@ final class BeadStore {
             }
         }
         return false
+    }
+
+    private func hasActiveBlockedDescendant(issueID: String, excludingGateID gateID: String?) -> Bool {
+        containsOpenDescendant(of: issueID) { descendant in
+            hasDirectActiveBlocker(issueID: descendant.id, excludingGateID: gateID)
+        }
+    }
+
+    private func containsOpenDescendant(
+        of issueID: String,
+        where predicate: (BeadIssue) -> Bool
+    ) -> Bool {
+        visitOpenDescendants(of: issueID) { descendant in
+            predicate(descendant)
+        }
+    }
+
+    private func bestOpenDescendant(
+        of issueID: String,
+        where predicate: (BeadIssue) -> Bool
+    ) -> BeadIssue? {
+        let sortOrder = BeadIssueSortOrder(sort: .priority, direction: .ascending)
+        var bestMatch: BeadIssue?
+
+        visitOpenDescendants(of: issueID) { descendant in
+            guard predicate(descendant) else { return false }
+            if let current = bestMatch {
+                if sortOrder.areInIncreasingOrder(descendant, current) {
+                    bestMatch = descendant
+                }
+            } else {
+                bestMatch = descendant
+            }
+            return false
+        }
+
+        return bestMatch
+    }
+
+    @discardableResult
+    private func visitOpenDescendants(
+        of issueID: String,
+        _ visit: (BeadIssue) -> Bool
+    ) -> Bool {
+        var visitedIDs = Set([issueID])
+        var stack = index.childIDsByParentID[issueID] ?? []
+
+        while let descendantID = stack.popLast() {
+            guard visitedIDs.insert(descendantID).inserted,
+                  let descendant = index.issue(with: descendantID) else {
+                continue
+            }
+            stack.append(contentsOf: index.childIDsByParentID[descendantID] ?? [])
+            guard !isDone(descendant) else { continue }
+            if visit(descendant) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func blockedDescendantPresentation(for issueID: String, now: Date) -> BlockedReasonPresentation? {
+        if let descendant = bestOpenDescendant(
+            of: issueID,
+            where: { !activeBlockingPresentations(for: $0.id, now: now).isEmpty }
+        ) {
+            return BlockedReasonPresentation.subissue(
+                descendant,
+                blockers: activeBlockingPresentations(for: descendant.id, now: now)
+            )
+        }
+
+        guard let blockedDescendant = bestOpenDescendant(of: issueID, where: isBuiltInBlockedIssue) else {
+            return nil
+        }
+        return BlockedReasonPresentation.subissue(blockedDescendant, blockers: [])
     }
 
     private func activeBlockingPresentations(

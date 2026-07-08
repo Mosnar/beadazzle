@@ -42,6 +42,8 @@ for users, not for the commit log.
   bead.
 - Selecting beads in the Gates list now keeps the active row highlight aligned
   with AppKit selection, including during fast keyboard navigation.
+- Blocked parent and context rows now recognize blocked sub-issues before
+  showing the "no active blocker" helper.
 - Bead picker quick-create labels now use the same label picker as the rest of
   the app, label filters are searchable, and picker popovers use native
   material/glass styling instead of a heavy gradient panel, with tighter form

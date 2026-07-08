@@ -749,6 +749,11 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             {"_type":"issue","id":"bd-external","title":"External blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"external:project:capability","type":"blocks"}]}
             {"_type":"issue","id":"bd-resolved","title":"Resolved gate blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-closed","type":"blocks"}]}
             {"_type":"issue","id":"bd-manual","title":"Manual blocked","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-parent","title":"Parent blocked by child","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-child","title":"Child blocked","status":"blocked","priority":0,"issue_type":"task","parent_id":"bd-parent","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-blocker","type":"blocks"}]}
+            {"_type":"issue","id":"bd-low-child","title":"Low priority child blocked","status":"blocked","priority":3,"issue_type":"task","parent_id":"bd-parent","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-blocker","type":"blocks"}]}
+            {"_type":"issue","id":"bd-open-parent","title":"Open parent with gated child","status":"open","priority":1,"issue_type":"epic","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-gated-child","title":"Gated child","status":"blocked","priority":0,"issue_type":"task","parent_id":"bd-open-parent","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-human","type":"blocks"}]}
             {"_type":"issue","id":"bd-blocker","title":"Fix upstream","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
             {"_type":"issue","id":"g-human","title":"Human gate","description":"Ad-hoc gate blocking bd-gated\\n\\nReason: Need approval","status":"open","priority":1,"issue_type":"gate","await_type":"human","updated_at":"2026-07-03T20:58:35Z"}
             {"_type":"issue","id":"g-closed","title":"Closed gate","description":"Ad-hoc gate blocking bd-resolved\\n\\nReason: PR merged","status":"closed","priority":1,"issue_type":"gate","await_type":"gh:pr","await_id":"42","updated_at":"2026-07-03T20:58:35Z","closed_at":"2026-07-03T21:58:35Z"}
@@ -784,6 +789,18 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let manual = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-manual", bookmark: .blocked, now: now))
         XCTAssertEqual(manual.kind, .unexplained)
         XCTAssertEqual(manual.title, "Marked blocked; no active blocker found")
+
+        let parent = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-parent", bookmark: .blocked, now: now))
+        XCTAssertEqual(parent.kind, .subissue)
+        XCTAssertEqual(parent.title, "Sub-issue blocked by bd-blocker: Fix upstream")
+        XCTAssertTrue(parent.help.contains("Sub-issue bd-child: Child blocked"))
+
+        XCTAssertNil(store.blockedReasonPresentation(for: "bd-open-parent", now: now))
+        XCTAssertNil(store.blockedReasonPresentation(for: "bd-open-parent", bookmark: .all, now: now))
+        let openParent = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-open-parent", bookmark: .blocked, now: now))
+        XCTAssertEqual(openParent.kind, .subissue)
+        XCTAssertEqual(openParent.title, "Sub-issue waiting on Awaiting approval")
+        XCTAssertTrue(openParent.help.contains("Sub-issue bd-gated-child: Gated child"))
     }
 
     func testGatesBookmarkIgnoresActiveFiltersAndUserSortWithoutClearingThem() async throws {
@@ -1088,6 +1105,25 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(store.gatesBlocking(issueID: "bd-task").isEmpty)
         XCTAssertEqual(store.resolvedGatesBlocking(issueID: "bd-task").map(\.id), ["bd-gate"])
         XCTAssertEqual(store.resolvedGatesForStaleBlockedIssue(issueID: "bd-task").map(\.id), ["bd-gate"])
+    }
+
+    func testActiveBlockedSubissueSuppressesStaleGateRepairForParent() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"blocked","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-gate","type":"blocks"}]}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"blocked","priority":0,"issue_type":"task","parent_id":"bd-parent","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-blocker","type":"blocks"}]}
+            {"_type":"issue","id":"bd-blocker","title":"Fix upstream","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-gate","title":"Closed gate","description":"Ad-hoc gate blocking bd-parent\\n\\nReason: Already cleared","status":"closed","priority":1,"issue_type":"gate","await_type":"human","updated_at":"2026-07-03T21:58:35Z","closed_at":"2026-07-03T21:58:35Z"}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-parent") != nil }
+
+        XCTAssertEqual(store.resolvedGatesForStaleBlockedIssue(issueID: "bd-parent").map(\.id), [])
+        let parent = try XCTUnwrap(store.blockedReasonPresentation(for: "bd-parent", now: Date(timeIntervalSince1970: 1_000)))
+        XCTAssertEqual(parent.kind, .subissue)
+        XCTAssertEqual(parent.title, "Sub-issue blocked by bd-blocker: Fix upstream")
     }
 
     func testSetParentOptimisticallyUpdatesParentAndUsesParentCommand() async throws {

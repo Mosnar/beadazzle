@@ -6,6 +6,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
         case gate
         case multiple
         case external
+        case subissue
         case resolvedGate
         case unexplained
     }
@@ -137,6 +138,48 @@ struct BlockedReasonPresentation: Hashable, Sendable {
                 + gateLines.map { "- \($0)" }.joined(separator: "\n"),
             systemImage: "checkmark.seal",
             tint: .resolved
+        )
+    }
+
+    static func subissue(_ issue: BeadIssue, blockers: [Blocker]) -> BlockedReasonPresentation {
+        let issueTitle = "\(issue.id): \(issue.title)"
+        guard let first = blockers.first else {
+            return BlockedReasonPresentation(
+                kind: .subissue,
+                title: "Blocked sub-issue: \(issueTitle)",
+                help: "Sub-issue \(issueTitle) is marked blocked.",
+                systemImage: "list.bullet.indent",
+                tint: .secondary
+            )
+        }
+
+        if blockers.count > 1 {
+            return BlockedReasonPresentation(
+                kind: .subissue,
+                title: "Sub-issue blocked by \(blockers.count.formatted()) blockers: \(issueTitle)",
+                help: "Sub-issue \(issueTitle) is blocked by \(blockers.count.formatted()) blockers:\n"
+                    + blockers.map { "- \($0.help)" }.joined(separator: "\n"),
+                systemImage: "list.bullet.indent",
+                tint: blockers.contains { $0.kind == .external } ? .warning : .secondary
+            )
+        }
+
+        let title: String
+        switch first.kind {
+        case .issue:
+            title = "Sub-issue blocked by \(first.inlineTitle)"
+        case .gate:
+            title = "Sub-issue waiting on \(first.inlineTitle)"
+        case .external:
+            title = "Sub-issue blocked by external reference"
+        }
+
+        return BlockedReasonPresentation(
+            kind: .subissue,
+            title: title,
+            help: "Sub-issue \(issueTitle):\n\(first.help)",
+            systemImage: "list.bullet.indent",
+            tint: first.tint
         )
     }
 
