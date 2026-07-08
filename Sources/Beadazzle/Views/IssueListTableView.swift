@@ -14,6 +14,7 @@ struct IssueListTableView: NSViewRepresentable {
     let mode: IssueListMode
     let displayOptions: BeadListDisplayOptions
     let contentRevision: Int
+    let gateClock: Date
     let store: BeadStore
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
@@ -37,6 +38,7 @@ struct IssueListTableView: NSViewRepresentable {
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.backgroundColor = .clear
         tableView.style = .inset
+        tableView.selectionHighlightStyle = .regular
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.delegate = coordinator
         tableView.target = coordinator
@@ -95,6 +97,7 @@ struct IssueListTableView: NSViewRepresentable {
         private var orderedIDs: [String] = []
         private var indexByID: [String: Int] = [:]
         private var rowByID: [String: IssueListRow] = [:]
+        private var readyGateGroupRange: Range<Int>?
         private var isSyncingSelection = false
         private var isHandlingContextClick = false
         private var contextFocusedIssueID: String?
@@ -105,6 +108,7 @@ struct IssueListTableView: NSViewRepresentable {
         private var lastMode: IssueListMode?
         private var lastDisplayOptions: BeadListDisplayOptions?
         private var lastContentRevision = -1
+        private var lastGateClock = Date.distantPast
 
         init(_ parent: IssueListTableView) {
             self.parent = parent
@@ -113,7 +117,7 @@ struct IssueListTableView: NSViewRepresentable {
         /// Reconciles the table with `parent`. Reapplies the diffable snapshot only when the
         /// row identity/order changed, reconfigures visible cells only when row-derived or
         /// issue content changed, and always syncs selection. A selection-only update thus
-        /// costs nothing beyond the AppKit selection change.
+        /// stays inside AppKit's native selection invalidation path.
         func update(force: Bool) {
             let rows = parent.rows
             let ids = rows.map(\.issueID)
@@ -123,6 +127,7 @@ struct IssueListTableView: NSViewRepresentable {
             orderedIDs = ids
             indexByID = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
             rowByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.issueID, $0) })
+            readyGateGroupRange = computeReadyGateGroupRange(rows)
             if let contextFocusedIssueID, indexByID[contextFocusedIssueID] == nil {
                 self.contextFocusedIssueID = nil
             }
@@ -147,6 +152,7 @@ struct IssueListTableView: NSViewRepresentable {
                     || parent.mode != lastMode
                     || parent.displayOptions != lastDisplayOptions
                     || parent.contentRevision != lastContentRevision
+                    || parent.gateClock != lastGateClock
                 reconfigureVisibleRows { id in
                     guard let previous = previousRowByID[id] else { return false }
                     return globalChange || rowByID[id] != previous
@@ -157,6 +163,7 @@ struct IssueListTableView: NSViewRepresentable {
             lastMode = parent.mode
             lastDisplayOptions = parent.displayOptions
             lastContentRevision = parent.contentRevision
+            lastGateClock = parent.gateClock
 
             syncSelection(parent.selectedIDs)
             updateVisibleFocusOutlines()
@@ -174,22 +181,22 @@ struct IssueListTableView: NSViewRepresentable {
         }
 
         func makeCell(for itemID: String, in table: NSTableView) -> NSView {
-            let host: RowHostingView
-            if let reused = table.makeView(withIdentifier: Self.cellID, owner: self) as? RowHostingView {
-                host = reused
+            let cell: RowCellView
+            if let reused = table.makeView(withIdentifier: Self.cellID, owner: self) as? RowCellView {
+                cell = reused
             } else {
-                host = RowHostingView()
-                host.identifier = Self.cellID
+                cell = RowCellView()
+                cell.identifier = Self.cellID
             }
-            host.representedIssueID = itemID
-            host.onContextFocusChange = { [weak self] issueID in
+            cell.representedIssueID = itemID
+            cell.onContextFocusChange = { [weak self] issueID in
                 self?.setContextFocusedIssueID(issueID)
             }
-            host.onContextClickChange = { [weak self] isActive in
+            cell.onContextClickChange = { [weak self] isActive in
                 self?.setContextClickActive(isActive)
             }
-            host.rootView = rowView(for: itemID)
-            return host
+            cell.rootView = rowView(for: itemID)
+            return cell
         }
 
         /// Re-pushes fresh SwiftUI content into the on-screen cells matching `shouldReconfigure`.
@@ -203,9 +210,9 @@ struct IssueListTableView: NSViewRepresentable {
                 guard row >= 0, row < orderedIDs.count else { continue }
                 let id = orderedIDs[row]
                 guard shouldReconfigure(id),
-                      let host = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? RowHostingView
+                      let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? RowCellView
                 else { continue }
-                host.rootView = rowView(for: id)
+                cell.rootView = rowView(for: id)
             }
         }
 
@@ -222,6 +229,7 @@ struct IssueListTableView: NSViewRepresentable {
                         issue: issue,
                         row: row,
                         gate: gate,
+                        now: parent.gateClock,
                         // Gate rows disclose their blocked beads in the Gates section.
                         showsDisclosure: parent.mode == .outline || parent.store.selectedBookmark == .gates,
                         toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
@@ -246,8 +254,54 @@ struct IssueListTableView: NSViewRepresentable {
                     .padding(.leading, 12)
                     .padding(.trailing, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .readyGateGroupChrome(position: readyGateGroupPosition(for: itemID))
                     .contextFocusChrome(isVisible: isContextFocused)
             )
+        }
+
+        private func computeReadyGateGroupRange(_ rows: [IssueListRow]) -> Range<Int>? {
+            guard parent.store.selectedBookmark == .gates else { return nil }
+
+            var groupStart: Int?
+            var groupEnd: Int?
+            var currentGateIsReady = false
+            for (index, row) in rows.enumerated() {
+                if row.depth == 0 {
+                    guard let gate = parent.store.gate(for: row.issueID),
+                          gate.actionState(now: parent.gateClock).isReady
+                    else {
+                        if groupStart != nil { break }
+                        currentGateIsReady = false
+                        continue
+                    }
+
+                    if groupStart == nil {
+                        groupStart = index
+                    }
+                    currentGateIsReady = true
+                    groupEnd = index + 1
+                } else if currentGateIsReady {
+                    groupEnd = index + 1
+                } else if groupStart != nil {
+                    break
+                }
+            }
+
+            guard let groupStart, let groupEnd, groupStart < groupEnd else { return nil }
+            return groupStart..<groupEnd
+        }
+
+        private func readyGateGroupPosition(for itemID: String) -> ReadyGateGroupPosition {
+            guard let rowIndex = indexByID[itemID],
+                  let readyGateGroupRange,
+                  readyGateGroupRange.contains(rowIndex)
+            else {
+                return .none
+            }
+            if readyGateGroupRange.count == 1 { return .single }
+            if rowIndex == readyGateGroupRange.lowerBound { return .first }
+            if rowIndex == readyGateGroupRange.upperBound - 1 { return .last }
+            return .middle
         }
 
         // MARK: Selection
@@ -287,6 +341,8 @@ struct IssueListTableView: NSViewRepresentable {
                 rowView.identifier = Self.rowViewID
             }
             rowView.showsFocusOutline = shouldShowFocusOutline(forRow: row)
+            rowView.readyGateGroupPosition = readyGateGroupPosition(forRow: row)
+            rowView.selectionHighlightStyle = .regular
             return rowView
         }
 
@@ -336,6 +392,7 @@ struct IssueListTableView: NSViewRepresentable {
                 let shouldShow = shouldShowFocusOutline(forRow: row)
                 if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? IssueListTableRowView {
                     rowView.showsFocusOutline = shouldShow
+                    rowView.readyGateGroupPosition = readyGateGroupPosition(forRow: row)
                 }
             }
         }
@@ -348,12 +405,13 @@ struct IssueListTableView: NSViewRepresentable {
             let shouldShow = shouldShowFocusOutline(forRow: row)
             if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? IssueListTableRowView {
                 rowView.showsFocusOutline = shouldShow
+                rowView.readyGateGroupPosition = readyGateGroupPosition(forRow: row)
                 rowView.displayIfNeeded()
             }
-            if let host = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? RowHostingView {
-                host.rootView = rowView(for: issueID)
-                host.layoutSubtreeIfNeeded()
-                host.displayIfNeeded()
+            if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? RowCellView {
+                cell.rootView = rowView(for: issueID)
+                cell.layoutSubtreeIfNeeded()
+                cell.displayIfNeeded()
             }
         }
 
@@ -367,6 +425,15 @@ struct IssueListTableView: NSViewRepresentable {
 
         private func shouldShowFocusOutline(for issueID: String) -> Bool {
             contextFocusedIssueID == issueID
+        }
+
+        private func readyGateGroupPosition(forRow row: Int) -> ReadyGateGroupPosition {
+            guard row >= 0,
+                  row < orderedIDs.count
+            else {
+                return .none
+            }
+            return readyGateGroupPosition(for: orderedIDs[row])
         }
 
         // MARK: Context menu
@@ -481,7 +548,177 @@ private final class ContextMenuAction {
     }
 }
 
+private enum ReadyGateGroupPosition: Equatable {
+    case none
+    case single
+    case first
+    case middle
+    case last
+
+    var isVisible: Bool {
+        self != .none
+    }
+
+    var chromeInsets: EdgeInsets {
+        EdgeInsets(
+            top: hasTopEdge ? 3 : 0,
+            leading: 4,
+            bottom: hasBottomEdge ? 3 : 0,
+            trailing: 4
+        )
+    }
+
+    private var hasTopEdge: Bool {
+        self == .single || self == .first
+    }
+
+    private var hasBottomEdge: Bool {
+        self == .single || self == .last
+    }
+}
+
+private struct ReadyGateGroupFillShape: Shape {
+    let position: ReadyGateGroupPosition
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(IssueListMetrics.focusOutlineCornerRadius + 2, rect.height / 2)
+        switch position {
+        case .none:
+            return Path()
+        case .single:
+            return Path(roundedRect: rect, cornerRadius: radius)
+        case .first:
+            return topRoundedPath(in: rect, radius: radius)
+        case .middle:
+            return Path(rect)
+        case .last:
+            return bottomRoundedPath(in: rect, radius: radius)
+        }
+    }
+
+    private func topRoundedPath(in rect: CGRect, radius: CGFloat) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+
+    private func bottomRoundedPath(in rect: CGRect, radius: CGFloat) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct ReadyGateGroupBorderShape: Shape {
+    let position: ReadyGateGroupPosition
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(IssueListMetrics.focusOutlineCornerRadius + 2, rect.height / 2)
+        switch position {
+        case .none:
+            return Path()
+        case .single:
+            return Path(roundedRect: rect, cornerRadius: radius)
+        case .first:
+            return topBorderPath(in: rect, radius: radius)
+        case .middle:
+            return sideBorderPath(in: rect)
+        case .last:
+            return bottomBorderPath(in: rect, radius: radius)
+        }
+    }
+
+    private func topBorderPath(in rect: CGRect, radius: CGFloat) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        return path
+    }
+
+    private func sideBorderPath(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        return path
+    }
+
+    private func bottomBorderPath(in rect: CGRect, radius: CGFloat) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        return path
+    }
+}
+
 private extension View {
+    func readyGateGroupChrome(position: ReadyGateGroupPosition) -> some View {
+        background {
+            if position.isVisible {
+                ReadyGateGroupFillShape(position: position)
+                    .fill(Color(nsColor: .controlAccentColor).opacity(0.045))
+                    .padding(position.chromeInsets)
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay {
+            if position.isVisible {
+                ReadyGateGroupBorderShape(position: position)
+                    .stroke(
+                        Color(nsColor: .controlAccentColor).opacity(0.75),
+                        lineWidth: IssueListMetrics.focusOutlineLineWidth
+                    )
+                    .padding(position.chromeInsets)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
     func contextFocusChrome(isVisible: Bool) -> some View {
         background {
             if isVisible {
@@ -517,13 +754,31 @@ private final class IssueListTableRowView: NSTableRowView {
         }
     }
 
+    var readyGateGroupPosition: ReadyGateGroupPosition = .none {
+        didSet {
+            guard oldValue != readyGateGroupPosition else { return }
+            needsDisplay = true
+        }
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard selectionHighlightStyle != .none else { return }
+        let path = NSBezierPath(
+            roundedRect: rowChromeRect(),
+            xRadius: IssueListMetrics.focusOutlineCornerRadius + 2,
+            yRadius: IssueListMetrics.focusOutlineCornerRadius + 2
+        )
+        selectionFillColor.setFill()
+        path.fill()
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+
         guard showsFocusOutline else { return }
 
-        let outlineRect = bounds.insetBy(dx: 4, dy: 3)
         let path = NSBezierPath(
-            roundedRect: outlineRect,
+            roundedRect: rowChromeRect(),
             xRadius: IssueListMetrics.focusOutlineCornerRadius,
             yRadius: IssueListMetrics.focusOutlineCornerRadius
         )
@@ -534,6 +789,23 @@ private final class IssueListTableRowView: NSTableRowView {
         path.lineWidth = IssueListMetrics.focusOutlineLineWidth
         NSColor.tertiaryLabelColor.setStroke()
         path.stroke()
+    }
+
+    private func rowChromeRect() -> NSRect {
+        let baseRect: NSRect
+        if readyGateGroupPosition.isVisible,
+           let cell = subviews.compactMap({ $0 as? RowCellView }).first {
+            baseRect = cell.frame
+        } else {
+            baseRect = bounds
+        }
+        return baseRect.insetBy(dx: 4, dy: 3)
+    }
+
+    private var selectionFillColor: NSColor {
+        isEmphasized
+            ? .selectedContentBackgroundColor
+            : .unemphasizedSelectedContentBackgroundColor
     }
 }
 
@@ -603,6 +875,45 @@ private final class IssueKeyboardTableView: NSTableView {
 /// Reusable fixed-size host for a SwiftUI row. `sizingOptions = []` stops `NSHostingView`
 /// from installing intrinsic-content-size constraints, so it never triggers the automatic
 /// row-height Auto Layout pass — the row's frame comes from the table's fixed `rowHeight`.
+private final class RowCellView: NSView {
+    private let hostingView = RowHostingView()
+
+    var representedIssueID: String? {
+        get { hostingView.representedIssueID }
+        set { hostingView.representedIssueID = newValue }
+    }
+
+    var onContextFocusChange: ((String?) -> Void)? {
+        get { hostingView.onContextFocusChange }
+        set { hostingView.onContextFocusChange = newValue }
+    }
+
+    var onContextClickChange: ((Bool) -> Void)? {
+        get { hostingView.onContextClickChange }
+        set { hostingView.onContextClickChange = newValue }
+    }
+
+    var rootView: AnyView {
+        get { hostingView.rootView }
+        set { hostingView.rootView = newValue }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        addSubview(hostingView)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        addSubview(hostingView)
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = bounds
+    }
+}
+
 private final class RowHostingView: NSHostingView<AnyView> {
     var representedIssueID: String?
     var onContextFocusChange: ((String?) -> Void)?
@@ -611,9 +922,13 @@ private final class RowHostingView: NSHostingView<AnyView> {
     required init(rootView: AnyView) {
         super.init(rootView: rootView)
         sizingOptions = []
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
         translatesAutoresizingMaskIntoConstraints = true
         autoresizingMask = [.width, .height]
     }
+
+    override var isOpaque: Bool { false }
 
     convenience init() {
         self.init(rootView: AnyView(Color.clear))

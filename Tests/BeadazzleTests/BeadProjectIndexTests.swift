@@ -827,16 +827,96 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertTrue(flat[0].hasChildren)
     }
 
+    func testGatesSortReadyFirstThenBestBlockedPriorityAndChildrenByPriority() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let oneHour: Int64 = 3_600_000_000_000
+        let issues = [
+            issue("g-pending-p0", title: "A Pending", status: "open", type: "gate", gateAwaitType: .timer, gateTimeoutNanoseconds: oneHour, createdAt: now),
+            issue("g-elapsed-p1", title: "B Elapsed", status: "open", type: "gate", gateAwaitType: .timer, gateTimeoutNanoseconds: oneHour, createdAt: now.addingTimeInterval(-7200)),
+            issue("g-human-p0", title: "C Human", status: "open", type: "gate", gateAwaitType: .human),
+            issue("human-p3", title: "Human low", status: "open", type: "task", priority: 3),
+            issue("human-p0", title: "Human high", status: "open", type: "task", priority: 0),
+            issue("elapsed-p1", title: "Elapsed", status: "open", type: "task", priority: 1),
+            issue("pending-p0", title: "Pending", status: "open", type: "task", priority: 0)
+        ]
+        let dependencies = [
+            BeadDependency(issueID: "human-p3", dependsOnID: "g-human-p0", type: "blocks", createdAt: nil),
+            BeadDependency(issueID: "human-p0", dependsOnID: "g-human-p0", type: "blocks", createdAt: nil),
+            BeadDependency(issueID: "elapsed-p1", dependsOnID: "g-elapsed-p1", type: "blocks", createdAt: nil),
+            BeadDependency(issueID: "pending-p0", dependsOnID: "g-pending-p0", type: "blocks", createdAt: nil)
+        ]
+        let index = BeadProjectIndex(issues: issues, dependencies: dependencies, semantics: semantics())
+
+        let sortedGateIDs = BeadIssueListQuery.sortedIssueIDs(
+            index: index,
+            ids: ["g-pending-p0", "g-elapsed-p1", "g-human-p0"],
+            sort: .title,
+            direction: .descending,
+            bookmark: .gates,
+            now: now
+        )
+        let rows = index.issueListRows(
+            for: sortedGateIDs,
+            mode: .flat,
+            expandedIssueIDs: [],
+            sortOrder: BeadIssueSortOrder(sort: .priority, direction: .ascending),
+            bookmark: .gates
+        )
+
+        XCTAssertEqual(sortedGateIDs, ["g-human-p0", "g-elapsed-p1", "g-pending-p0"])
+        XCTAssertEqual(rows.map(\.issueID), [
+            "g-human-p0",
+            "human-p0",
+            "human-p3",
+            "g-elapsed-p1",
+            "elapsed-p1",
+            "g-pending-p0",
+            "pending-p0"
+        ])
+    }
+
+    func testGatesSortPendingByBlockedPriorityBeforeOrphans() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let oneHour: Int64 = 3_600_000_000_000
+        let issues = [
+            issue("g-orphan", title: "A Orphan", status: "open", type: "gate", priority: 0, gateAwaitType: .githubRun),
+            issue("g-pending-p1", title: "B Pending P1", status: "open", type: "gate", gateAwaitType: .timer, gateTimeoutNanoseconds: oneHour, createdAt: now),
+            issue("g-pending-p0", title: "C Pending P0", status: "open", type: "gate", gateAwaitType: .githubPR),
+            issue("blocked-p1", title: "Blocked P1", status: "open", type: "task", priority: 1),
+            issue("blocked-p0", title: "Blocked P0", status: "open", type: "task", priority: 0)
+        ]
+        let dependencies = [
+            BeadDependency(issueID: "blocked-p1", dependsOnID: "g-pending-p1", type: "blocks", createdAt: nil),
+            BeadDependency(issueID: "blocked-p0", dependsOnID: "g-pending-p0", type: "blocks", createdAt: nil)
+        ]
+        let index = BeadProjectIndex(issues: issues, dependencies: dependencies, semantics: semantics())
+
+        let sortedGateIDs = BeadIssueListQuery.sortedIssueIDs(
+            index: index,
+            ids: ["g-orphan", "g-pending-p1", "g-pending-p0"],
+            sort: .title,
+            direction: .ascending,
+            bookmark: .gates,
+            now: now
+        )
+
+        XCTAssertEqual(sortedGateIDs, ["g-pending-p0", "g-pending-p1", "g-orphan"])
+    }
+
     private func issue(
         _ id: String,
         title: String = "Example",
         status: String,
         type: String,
+        priority: Int = 2,
         labels: [String] = [],
         description: String = "",
         design: String = "",
         acceptanceCriteria: String = "",
         notes: String = "",
+        gateAwaitType: GateAwaitType? = nil,
+        gateAwaitID: String? = nil,
+        gateTimeoutNanoseconds: Int64? = nil,
         assignee: String? = nil,
         owner: String? = nil,
         externalRef: String? = nil,
@@ -854,8 +934,11 @@ final class BeadProjectIndexTests: XCTestCase {
             acceptanceCriteria: acceptanceCriteria,
             notes: notes,
             status: status,
-            priority: 2,
+            priority: priority,
             issueType: type,
+            gateAwaitType: gateAwaitType,
+            gateAwaitID: gateAwaitID,
+            gateTimeoutNanoseconds: gateTimeoutNanoseconds,
             assignee: assignee,
             owner: owner,
             createdAt: createdAt,

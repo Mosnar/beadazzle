@@ -3,9 +3,40 @@ import SwiftUI
 /// Single source of truth for how gates render across the app (list row, detail, breadcrumb,
 /// inspector, ribbon chip) so the icon, tint, and one-line condition stay consistent.
 enum GatePresentation {
-    /// Open gates read as actionable (accent), resolved ones recede.
-    static func tint(isOpen: Bool) -> Color {
-        isOpen ? .orange : .secondary
+    /// Neutral status tint for labels that describe whether a gate is open or closed.
+    static func statusTint(isOpen: Bool) -> Color {
+        isOpen ? .secondary : Color(nsColor: .tertiaryLabelColor)
+    }
+
+    static func tint(for gate: BeadGate, now: Date = Date()) -> Color {
+        tint(for: gate.actionState(now: now), isOpen: gate.isOpen)
+    }
+
+    static func tint(for state: GateActionState, isOpen: Bool) -> Color {
+        guard isOpen else { return .secondary }
+        switch state {
+        case .needsInput, .elapsed:
+            return actionTint
+        case .pending:
+            return .secondary
+        }
+    }
+
+    static var actionTint: Color {
+        Color(nsColor: .controlAccentColor)
+    }
+
+    static var readyLabelTint: Color {
+        Color(nsColor: .systemGreen)
+    }
+
+    static func actionStateLabel(for state: GateActionState) -> String? {
+        switch state {
+        case .needsInput, .elapsed:
+            return "Ready"
+        case .pending:
+            return nil
+        }
     }
 
     /// A one-line summary of what the gate is waiting on.

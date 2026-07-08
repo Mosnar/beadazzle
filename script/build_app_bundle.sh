@@ -134,6 +134,10 @@ if beadazzle_release_write_app_icon "$BEADAZZLE_APP_ICON_SOURCE" "$app_resources
 fi
 
 /usr/bin/xattr -cr "$app_bundle"
+# File Provider/Finder metadata can survive `xattr -c` on some local synced
+# folders and makes codesign reject the generated app bundle.
+/usr/bin/xattr -d -r com.apple.FinderInfo "$app_bundle" 2>/dev/null || true
+/usr/bin/xattr -d -r 'com.apple.fileprovider.fpfs#P' "$app_bundle" 2>/dev/null || true
 beadazzle_release_sign_sparkle "$codesign_identity" "$app_contents/Frameworks"
 beadazzle_release_sign_app_bundle "$codesign_identity" "$app_bundle"
 beadazzle_release_verify_app_bundle_signature "$app_bundle"

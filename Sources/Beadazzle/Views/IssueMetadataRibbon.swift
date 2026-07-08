@@ -57,7 +57,7 @@ struct IssueMetadataRibbon: View {
                         } label: {
                             IssueMetadataRibbonChipLabel(
                                 systemImage: gate.awaitType.systemImage,
-                                tint: GatePresentation.tint(isOpen: gate.isOpen),
+                                tint: GatePresentation.tint(for: gate),
                                 value: gate.id,
                                 showsChevron: false,
                                 isHighlighted: false

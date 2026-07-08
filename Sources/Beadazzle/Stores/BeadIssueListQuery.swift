@@ -11,12 +11,13 @@ struct BeadIssueListQuery: Sendable {
         searchText: String
     ) -> [String] {
         PerformanceSignposts.query.withIntervalSignpost("Filter") {
-            index.filteredIssueIDs(
+            let ignoresFilters = bookmark == .gates
+            return index.filteredIssueIDs(
                 within: index.issueIDs(for: bookmark),
-                statusFilters: statusFilters,
-                typeFilters: typeFilters,
-                priorityFilters: priorityFilters,
-                labelFilters: labelFilters,
+                statusFilters: ignoresFilters ? [] : statusFilters,
+                typeFilters: ignoresFilters ? [] : typeFilters,
+                priorityFilters: ignoresFilters ? [] : priorityFilters,
+                labelFilters: ignoresFilters ? [] : labelFilters,
                 searchText: searchText
             )
         }
@@ -26,9 +27,14 @@ struct BeadIssueListQuery: Sendable {
         index: BeadProjectIndex,
         ids: [String],
         sort: IssueSort,
-        direction: SortDirection
+        direction: SortDirection,
+        bookmark: BeadBookmark = .all,
+        now: Date = Date()
     ) -> [String] {
         PerformanceSignposts.query.withIntervalSignpost("Sort") {
+            if bookmark == .gates {
+                return index.sortedGateIssueIDs(ids, now: now)
+            }
             let sortOrder = BeadIssueSortOrder(sort: sort, direction: direction)
             return ids.compactMap(index.issue)
                 .sorted(by: sortOrder.areInIncreasingOrder)
@@ -65,12 +71,15 @@ struct BeadIssueListQuery: Sendable {
         bookmark: BeadBookmark = .all
     ) -> [IssueListRow] {
         PerformanceSignposts.query.withIntervalSignpost("RowBuild") {
-            index.issueListRows(
+            let sortOrder = bookmark == .gates
+                ? BeadIssueSortOrder(sort: .priority, direction: .ascending)
+                : BeadIssueSortOrder(sort: sort, direction: direction)
+            return index.issueListRows(
                 for: filteredIssueIDs,
                 mode: mode,
                 expandedIssueIDs: outlineState.expandedIssueIDs,
                 collapsedIssueIDs: outlineState.collapsedIssueIDs,
-                sortOrder: BeadIssueSortOrder(sort: sort, direction: direction),
+                sortOrder: sortOrder,
                 bookmark: bookmark
             )
         }

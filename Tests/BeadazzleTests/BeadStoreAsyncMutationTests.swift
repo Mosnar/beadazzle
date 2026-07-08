@@ -695,6 +695,61 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-gate", "bd-task"])
     }
 
+    func testGatesBookmarkIgnoresActiveFiltersAndUserSortWithoutClearingThem() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"g-pending","title":"A Pending gate","status":"open","priority":1,"issue_type":"gate","await_type":"gh:pr","updated_at":"2026-07-03T21:58:35Z"}
+            {"_type":"issue","id":"g-human","title":"Z Human gate","status":"open","priority":1,"issue_type":"gate","await_type":"human","updated_at":"2026-07-03T21:58:35Z"}
+            {"_type":"issue","id":"bd-low","title":"Low blocked bead","status":"open","priority":3,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-pending","type":"blocks"}]}
+            {"_type":"issue","id":"bd-high","title":"High blocked bead","status":"open","priority":0,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"g-human","type":"blocks"}]}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "g-human") != nil }
+
+        store.setStatusFilter("closed", isOn: true)
+        store.setTypeFilter("bug", isOn: true)
+        store.setPriorityFilter(4, isOn: true)
+        store.setLabelFilter("missing", isOn: true)
+        store.sort = .title
+        store.sortDirection = .ascending
+        store.applyBookmark(.gates)
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertTrue(store.hasActiveFilters)
+        XCTAssertEqual(store.sort, .title)
+        XCTAssertEqual(store.sortDirection, .ascending)
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["g-human", "bd-high", "g-pending", "bd-low"])
+
+        store.applyBookmark(.all)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertTrue(store.issueListRows.isEmpty)
+    }
+
+    func testNextGateTimerExpiryUsesFutureOpenTimerGatesOnly() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"g-elapsed","title":"Elapsed timer","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":3600000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"g-next","title":"Next timer","status":"open","priority":1,"issue_type":"gate","await_type":"timer","timeout":7200000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"g-human","title":"Human gate","status":"open","priority":1,"issue_type":"gate","await_type":"human","updated_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"g-closed","title":"Closed future timer","status":"closed","priority":1,"issue_type":"gate","await_type":"timer","timeout":10800000000000,"created_at":"2026-07-03T20:00:00Z","updated_at":"2026-07-03T20:00:00Z","closed_at":"2026-07-03T20:00:00Z"}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "g-next") != nil }
+
+        let now = try XCTUnwrap(BeadFormatters.parseDate("2026-07-03T21:30:00Z"))
+        let expectedNextExpiry = try XCTUnwrap(BeadFormatters.parseDate("2026-07-03T22:00:00Z"))
+
+        XCTAssertNil(store.nextGateTimerExpiry(after: now))
+        store.applyBookmark(.gates)
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.nextGateTimerExpiry(after: now), expectedNextExpiry)
+    }
+
     func testSelectedGateLoadsWaitersOnlyWhenGateUpdatedAtChanges() async throws {
         let projectURL = try makeProject(gateProjectJSONL(gateUpdatedAt: "2026-07-03T21:58:35Z"))
         let commands = RecordingBeadsCommands()

@@ -8,9 +8,10 @@ struct IssueListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            IssueListHeader()
-
-            Divider()
+            if store.selectedBookmark != .gates {
+                IssueListHeader()
+                Divider()
+            }
 
             Group {
                 if store.projectURL == nil {
@@ -33,6 +34,7 @@ struct IssueListView: View {
                         mode: store.issueListMode,
                         displayOptions: store.beadListDisplayOptions,
                         contentRevision: store.contentRevision,
+                        gateClock: store.gateClock,
                         store: store,
                         requestClose: requestClose,
                         requestSetStatus: requestSetStatus,
@@ -43,7 +45,28 @@ struct IssueListView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .task(id: GateClockTaskID(bookmark: store.selectedBookmark, contentRevision: store.contentRevision)) {
+            await runGateClockIfNeeded()
+        }
     }
+
+    @MainActor
+    private func runGateClockIfNeeded() async {
+        guard store.selectedBookmark == .gates else { return }
+        while !Task.isCancelled, store.selectedBookmark == .gates {
+            let now = Date()
+            store.refreshGateClock(now)
+            guard let nextExpiry = store.nextGateTimerExpiry(after: now) else { return }
+
+            let delayMilliseconds = max(1_000, Int64(ceil(nextExpiry.timeIntervalSince(Date()) * 1_000)))
+            try? await Task.sleep(for: .milliseconds(delayMilliseconds))
+        }
+    }
+}
+
+private struct GateClockTaskID: Hashable {
+    var bookmark: BeadBookmark
+    var contentRevision: Int
 }
 
 enum IssueListMetrics {
@@ -180,6 +203,7 @@ struct GateRowView: View, Equatable {
     let issue: BeadIssue
     let row: IssueListRow
     let gate: BeadGate
+    let now: Date
     let showsDisclosure: Bool
     let toggleExpansion: () -> Void
 
@@ -187,10 +211,14 @@ struct GateRowView: View, Equatable {
         lhs.issue == rhs.issue
             && lhs.row == rhs.row
             && lhs.gate == rhs.gate
+            && lhs.now == rhs.now
             && lhs.showsDisclosure == rhs.showsDisclosure
     }
 
     var body: some View {
+        let actionState = gate.actionState(now: now)
+        let tint = GatePresentation.tint(for: actionState, isOpen: gate.isOpen)
+
         HStack(spacing: 0) {
             if showsDisclosure {
                 Spacer()
@@ -213,7 +241,7 @@ struct GateRowView: View, Equatable {
             Image(systemName: gate.awaitType.systemImage)
                 .font(.caption.weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(GatePresentation.tint(isOpen: gate.isOpen))
+                .foregroundStyle(tint)
                 .frame(width: 16, alignment: .center)
                 .padding(.trailing, 8)
                 .help("\(gate.awaitType.title) gate")
@@ -221,10 +249,21 @@ struct GateRowView: View, Equatable {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(GatePresentation.conditionHeadline(for: gate))
+                    Text(GatePresentation.conditionHeadline(for: gate, now: now))
                         .font(.headline)
                         .lineLimit(1)
                         .layoutPriority(1)
+
+                    if let actionLabel = GatePresentation.actionStateLabel(for: actionState) {
+                        let labelTint = GatePresentation.readyLabelTint
+                        Text(actionLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(labelTint)
+                            .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(labelTint.opacity(0.14), in: Capsule())
+                    }
 
                     Spacer(minLength: 8)
 

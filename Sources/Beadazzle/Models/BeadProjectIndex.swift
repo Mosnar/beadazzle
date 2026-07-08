@@ -33,6 +33,12 @@ struct BeadFilterCounts: Equatable, Sendable {
     }
 }
 
+private extension ComparisonResult {
+    func then(_ next: ComparisonResult) -> ComparisonResult {
+        self == .orderedSame ? next : self
+    }
+}
+
 struct BeadProjectIndex: Sendable {
     static let empty = BeadProjectIndex(issues: [], dependencies: [], semantics: .empty)
     static let defaultStaleCutoffDays = 14
@@ -427,6 +433,13 @@ struct BeadProjectIndex: Sendable {
         return blocked.sorted(by: sortOrder.areInIncreasingOrder).map(\.id)
     }
 
+    func sortedGateIssueIDs(_ gateIDs: [String], now: Date = Date()) -> [String] {
+        gateIDs
+            .compactMap { gateSortCandidate(issueID: $0, now: now) }
+            .sorted(by: areGateSortCandidatesInIncreasingOrder)
+            .map(\.issue.id)
+    }
+
     /// Two-level outline for the Gates section: each gate, then the beads it blocks as
     /// context children. Gates default to expanded (blocked beads visible) unless the user
     /// collapses them, since seeing what a gate holds up is the point of the view.
@@ -465,6 +478,82 @@ struct BeadProjectIndex: Sendable {
             }
         }
         return rows
+    }
+
+    private struct GateSortCandidate {
+        var issue: BeadIssue
+        var state: GateActionState
+        var bestBlockedPriority: Int?
+    }
+
+    private func gateSortCandidate(issueID: String, now: Date) -> GateSortCandidate? {
+        guard let issue = issueByID[issueID],
+              let gate = BeadGate(issue: issue) else {
+            return nil
+        }
+        let bestBlockedPriority = (dependentsByIssueID[issueID] ?? [])
+            .filter(\.isBlocking)
+            .compactMap { issueByID[$0.issueID]?.priority }
+            .min()
+        return GateSortCandidate(
+            issue: issue,
+            state: gate.actionState(now: now),
+            bestBlockedPriority: bestBlockedPriority
+        )
+    }
+
+    private func areGateSortCandidatesInIncreasingOrder(_ lhs: GateSortCandidate, _ rhs: GateSortCandidate) -> Bool {
+        let comparison = compareGateSortCandidates(lhs, rhs)
+        guard comparison != .orderedSame else { return false }
+        return comparison == .orderedAscending
+    }
+
+    private func compareGateSortCandidates(_ lhs: GateSortCandidate, _ rhs: GateSortCandidate) -> ComparisonResult {
+        compareBools(lhs.state.isReady, rhs.state.isReady, trueFirst: true)
+            .then(compareOptionalInts(lhs.bestBlockedPriority, rhs.bestBlockedPriority, nilLast: true))
+            .then(compareInts(lhs.state.rawValue, rhs.state.rawValue))
+            .then(compareInts(lhs.issue.priority, rhs.issue.priority))
+            .then(compareDates(rhs.issue.updatedAt, lhs.issue.updatedAt))
+            .then(compareStrings(lhs.issue.id, rhs.issue.id))
+    }
+
+    private func compareBools(_ lhs: Bool, _ rhs: Bool, trueFirst: Bool) -> ComparisonResult {
+        guard lhs != rhs else { return .orderedSame }
+        if trueFirst {
+            return lhs ? .orderedAscending : .orderedDescending
+        }
+        return lhs ? .orderedDescending : .orderedAscending
+    }
+
+    private func compareOptionalInts(_ lhs: Int?, _ rhs: Int?, nilLast: Bool) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case let (left?, right?):
+            return compareInts(left, right)
+        case (nil, nil):
+            return .orderedSame
+        case (nil, _?):
+            return nilLast ? .orderedDescending : .orderedAscending
+        case (_?, nil):
+            return nilLast ? .orderedAscending : .orderedDescending
+        }
+    }
+
+    private func compareInts(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
+        if lhs < rhs { return .orderedAscending }
+        if lhs > rhs { return .orderedDescending }
+        return .orderedSame
+    }
+
+    private func compareDates(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {
+        let left = lhs ?? .distantPast
+        let right = rhs ?? .distantPast
+        if left < right { return .orderedAscending }
+        if left > right { return .orderedDescending }
+        return .orderedSame
+    }
+
+    private func compareStrings(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        lhs.localizedStandardCompare(rhs)
     }
 
     func filterCounts(

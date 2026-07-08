@@ -16,7 +16,9 @@ struct SidebarGateLink: View {
     }
 
     private func linkButton(now: Date) -> some View {
-        HoverPersistentPopover {
+        let gateTint = GatePresentation.tint(for: gate, now: now)
+
+        return HoverPersistentPopover {
             store.openIssueFromDetail(issueID: issue.id)
         } label: { isHovered in
             HStack(alignment: .center, spacing: 9) {
@@ -80,10 +82,6 @@ struct SidebarGateLink: View {
         .accessibilityHint("Opens the gate")
     }
 
-    private var gateTint: Color {
-        GatePresentation.tint(isOpen: gate.isOpen)
-    }
-
     private func subtitle(now: Date) -> String {
         if let reason = gate.reason?.nilIfBlank {
             return reason
@@ -112,7 +110,7 @@ private struct SidebarGatePreview: View {
                 Image(systemName: gate.awaitType.systemImage)
                     .font(.system(size: 15, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(GatePresentation.tint(isOpen: gate.isOpen))
+                    .foregroundStyle(GatePresentation.tint(for: gate, now: now))
 
                 Text(GatePresentation.compactTitle(for: gate))
                     .font(.headline)

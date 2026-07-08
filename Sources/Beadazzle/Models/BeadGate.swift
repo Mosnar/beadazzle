@@ -66,6 +66,21 @@ enum GateAwaitType: Hashable, Sendable {
     static let creatable: [GateAwaitType] = [.timer, .human, .githubPR, .githubRun]
 }
 
+enum GateActionState: Int, Hashable, Sendable {
+    case needsInput
+    case elapsed
+    case pending
+
+    var isReady: Bool {
+        switch self {
+        case .needsInput, .elapsed:
+            true
+        case .pending:
+            false
+        }
+    }
+}
+
 /// A Beads gate: a bead (`issue_type == "gate"`) that blocks another bead until it is
 /// resolved (closed). Snapshot reads provide the display fields; `bd gate show --json`
 /// enriches the selected gate with waiters.
@@ -100,6 +115,19 @@ struct BeadGate: Identifiable, Hashable, Sendable {
     var expiresAt: Date? {
         guard awaitType == .timer, let createdAt, let timeout else { return nil }
         return createdAt.addingTimeInterval(timeout)
+    }
+
+    func actionState(now: Date = Date()) -> GateActionState {
+        guard isOpen else { return .pending }
+        switch awaitType {
+        case .human:
+            return .needsInput
+        case .timer:
+            guard let expiresAt else { return .pending }
+            return expiresAt <= now ? .elapsed : .pending
+        case .githubRun, .githubPR, .bead, .other:
+            return .pending
+        }
     }
 }
 

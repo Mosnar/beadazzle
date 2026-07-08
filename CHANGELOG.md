@@ -19,8 +19,16 @@ for users, not for the commit log.
   mode, and a compact quick-create flow for parent, blocking, and sub-issue
   workflows.
 
+### Changed
+
+- The Gates screen now acts as a dedicated gate queue: filters and sort controls
+  are hidden, actionable gates are grouped at the top with an accent outline,
+  ready gates use a green Ready label, and pending gates continue below them.
+
 ### Fixed
 
+- Selecting beads in the Gates list now keeps the active row highlight aligned
+  with AppKit selection, including during fast keyboard navigation.
 - Bead picker quick-create labels now use the same label picker as the rest of
   the app, label filters are searchable, and picker popovers use native
   material/glass styling instead of a heavy gradient panel, with tighter form

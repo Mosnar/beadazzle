@@ -52,6 +52,7 @@ final class BeadStore {
     /// Gate detail cache keyed by gate bead id. The issue snapshot is the source of truth
     /// for display fields; `bd gate show` only enriches the selected gate with waiters.
     private(set) var gatesByID: [String: BeadGate] = [:]
+    private(set) var gateClock = Date()
     var searchText = "" {
         didSet {
             guard oldValue != searchText else { return }
@@ -376,6 +377,27 @@ final class BeadStore {
             gate.waiters = detail.waiters
         }
         return gate
+    }
+
+    func refreshGateClock(_ now: Date = Date()) {
+        guard selectedBookmark == .gates else { return }
+        gateClock = now
+        rebuildIssueListRows()
+    }
+
+    func nextGateTimerExpiry(after now: Date = Date()) -> Date? {
+        guard selectedBookmark == .gates else { return nil }
+        return index.issueIDs(for: .gates)
+            .compactMap { id -> Date? in
+                guard let gate = gate(for: id),
+                      gate.awaitType == .timer,
+                      let expiresAt = gate.expiresAt,
+                      expiresAt > now else {
+                    return nil
+                }
+                return expiresAt
+            }
+            .min()
     }
 
     /// The beads a gate blocks, derived from the dependency graph (`blocks` edges pointing
@@ -1241,6 +1263,9 @@ final class BeadStore {
     func applyBookmark(_ bookmark: BeadBookmark) {
         guard selectedBookmark != bookmark else { return }
         selectedBookmark = bookmark
+        if bookmark == .gates {
+            gateClock = Date()
+        }
         // Choosing a bookmark returns you to the list: drop any detail selection so the
         // detail pane collapses back to the bead list instead of stranding you on a page.
         // Recompute exactly once afterward — a stray `applyFilters()` before this would be
@@ -2535,6 +2560,7 @@ final class BeadStore {
         let sort = sort
         let direction = sortDirection
         let mode = issueListMode
+        let gateClock = gateClock
         let outlineSnapshot = outlineState
 
         recomputeTask = Task { @MainActor [weak self] in
@@ -2552,7 +2578,9 @@ final class BeadStore {
                     index: index,
                     ids: filteredIDs,
                     sort: sort,
-                    direction: direction
+                    direction: direction,
+                    bookmark: bookmark,
+                    now: gateClock
                 )
 
                 var outlineState = outlineSnapshot

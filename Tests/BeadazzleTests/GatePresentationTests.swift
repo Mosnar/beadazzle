@@ -41,6 +41,26 @@ final class GatePresentationTests: XCTestCase {
         XCTAssertNil(GatePresentation.timerRemainingText(for: gate(.human), now: now))
     }
 
+    func testGateActionStateIdentifiesReadyGates() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let oneHour: Int64 = 3_600_000_000_000
+
+        XCTAssertEqual(gate(.human).actionState(now: now), .needsInput)
+        XCTAssertEqual(
+            gate(.timer, createdAt: now.addingTimeInterval(-7200), timeoutNanoseconds: oneHour)
+                .actionState(now: now),
+            .elapsed
+        )
+        XCTAssertEqual(gate(.timer, createdAt: now, timeoutNanoseconds: oneHour).actionState(now: now), .pending)
+        XCTAssertEqual(gate(.githubPR).actionState(now: now), .pending)
+    }
+
+    func testGateActionStateLabelsOnlyReadyGates() {
+        XCTAssertEqual(GatePresentation.actionStateLabel(for: .needsInput), "Ready")
+        XCTAssertEqual(GatePresentation.actionStateLabel(for: .elapsed), "Ready")
+        XCTAssertNil(GatePresentation.actionStateLabel(for: .pending))
+    }
+
     func testCompactGateTitlesDescribeTheGateKind() {
         XCTAssertEqual(GatePresentation.compactTitle(for: gate(.timer)), "Timer gate")
         XCTAssertEqual(GatePresentation.compactTitle(for: gate(.human)), "Approval gate")

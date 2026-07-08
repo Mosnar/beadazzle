@@ -242,7 +242,7 @@ private struct GateBreadcrumbBar: View {
                 title: gate.title,
                 statusDescription: gate.isOpen ? "open gate" : "closed gate",
                 statusSymbol: gate.awaitType.systemImage,
-                statusColor: GatePresentation.tint(isOpen: gate.isOpen)
+                statusColor: GatePresentation.tint(for: gate)
             )
             .layoutPriority(-1)
 
@@ -307,7 +307,7 @@ private struct GateStateBadge: View {
     let isOpen: Bool
 
     var body: some View {
-        let tint = GatePresentation.tint(isOpen: isOpen)
+        let tint = GatePresentation.statusTint(isOpen: isOpen)
         Text(isOpen ? "OPEN" : "CLOSED")
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 6)
