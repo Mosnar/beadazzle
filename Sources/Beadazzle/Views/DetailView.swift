@@ -8,6 +8,8 @@ struct DetailView: View {
     @State private var suppressesCreationDraftUpdates = false
     @State private var isCreatingDraft = false
     @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
+    @State private var deferredStatusRequest: DeferredStatusRequest?
+    @State private var suppressedDeferredDateWrite: DeferredDateWriteSuppression?
 
     var body: some View {
         @Bindable var store = store
@@ -33,6 +35,7 @@ struct DetailView: View {
                 )
                 .onChange(of: issue.id) {
                     resetDraft()
+                    deferredStatusRequest = nil
                 }
                 .onChange(of: activeDraft(for: issue).status) { _, newStatus in
                     commitStatusChangeIfNeeded(issue: issue, status: newStatus)
@@ -59,6 +62,16 @@ struct DetailView: View {
         .focusedValue(\.beadSaveAction, activeSaveAction)
         .sheet(item: $hierarchySheetRequest) { request in
             hierarchySheet(for: request)
+        }
+        .sheet(item: $deferredStatusRequest) { request in
+            DeferredStatusDateSheet(
+                request: request,
+                cancelAction: {
+                    rollbackDeferredStatusChangeIfNeeded(request)
+                }
+            ) { deferUntil in
+                await confirmDeferredStatusChange(request, deferUntil: deferUntil)
+            }
         }
     }
 
@@ -120,6 +133,17 @@ struct DetailView: View {
                     rollbackLiveStatusChangeIfNeeded(request)
                 }
             ) {
+                if store.isDeferredStatus(request.status) {
+                    presentDeferredStatusAfterCurrentSheet(
+                        DeferredStatusRequest(
+                            issueIDs: request.issueIDs,
+                            title: request.title,
+                            status: request.status,
+                            reopeningAncestorIssueIDs: request.ancestorIssueIDs
+                        )
+                    )
+                    return true
+                }
                 let didSet = await store.bulkSet(
                     issueIDs: request.issueIDs,
                     status: request.status,
@@ -265,6 +289,11 @@ struct DetailView: View {
             }
         }
 
+        if store.isDeferredStatus(status) {
+            deferredStatusRequest = DeferredStatusRequest(issues: [issue], status: status)
+            return
+        }
+
         Task { @MainActor in
             let didSet = await store.bulkSet(issueIDs: [issue.id], status: status)
             if !didSet {
@@ -323,6 +352,9 @@ struct DetailView: View {
 
     private func commitDeferredDateChangeIfNeeded(issueID: String, deferUntil: Date?) {
         guard draftIssueID == issueID, draft != nil else { return }
+        if suppressedDeferredDateWrite == DeferredDateWriteSuppression(issueID: issueID, date: deferUntil) {
+            return
+        }
         guard store.issue(with: issueID)?.deferUntil != deferUntil else { return }
 
         Task { @MainActor in
@@ -331,6 +363,51 @@ struct DetailView: View {
                 rollbackDeferredDateIfStillAttempted(issueID: issueID, attemptedDate: deferUntil)
             }
         }
+    }
+
+    private func confirmDeferredStatusChange(_ request: DeferredStatusRequest, deferUntil: Date?) async -> Bool {
+        let didSet = await store.bulkSet(
+            issueIDs: request.issueIDs,
+            status: request.status,
+            deferUntil: .set(deferUntil),
+            reopeningAncestorIssueIDs: request.reopeningAncestorIssueIDs
+        )
+        if didSet {
+            syncDraftAfterDeferredStatusChange(request, deferUntil: deferUntil)
+        } else {
+            rollbackDeferredStatusChangeIfNeeded(request)
+        }
+        return didSet
+    }
+
+    private func presentDeferredStatusAfterCurrentSheet(_ request: DeferredStatusRequest) {
+        Task { @MainActor in
+            await Task.yield()
+            deferredStatusRequest = request
+        }
+    }
+
+    private func syncDraftAfterDeferredStatusChange(_ request: DeferredStatusRequest, deferUntil: Date?) {
+        guard let issueID = request.issueIDs.first,
+              draftIssueID == issueID,
+              var currentDraft = draft
+        else { return }
+        let suppression = DeferredDateWriteSuppression(issueID: issueID, date: deferUntil)
+        suppressedDeferredDateWrite = suppression
+        currentDraft.status = request.status
+        currentDraft.deferUntil = deferUntil
+        draft = currentDraft
+        Task { @MainActor in
+            await Task.yield()
+            if suppressedDeferredDateWrite == suppression {
+                suppressedDeferredDateWrite = nil
+            }
+        }
+    }
+
+    private func rollbackDeferredStatusChangeIfNeeded(_ request: DeferredStatusRequest) {
+        guard let issueID = request.issueIDs.first else { return }
+        rollbackStatusIfStillAttempted(issueID: issueID, attemptedStatus: request.status)
     }
 
     private func rollbackLiveStatusChangeIfNeeded(_ request: CloseChildBeadsStatusRequest) {
@@ -433,4 +510,9 @@ private enum DetailHierarchySheetRequest: Identifiable, Equatable {
             "reopen-ancestors-live-status|\(request.id)"
         }
     }
+}
+
+private struct DeferredDateWriteSuppression: Equatable {
+    let issueID: String
+    let date: Date?
 }

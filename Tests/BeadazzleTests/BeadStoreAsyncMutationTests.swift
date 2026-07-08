@@ -146,6 +146,88 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertNil(store.issue(with: "bd-1")?.closedAt)
     }
 
+    func testBulkSetDeferredStatusCanSetDeferredDateOptimistically() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let deferUntil = try XCTUnwrap(BeadFormatters.parseDate("2026-08-01"))
+
+        let task = Task { @MainActor in
+            await store.bulkSet(
+                issueIDs: ["bd-1"],
+                status: "deferred",
+                deferUntil: .set(deferUntil)
+            )
+        }
+
+        try await waitUntil {
+            store.issue(with: "bd-1")?.status == "deferred"
+                && store.issue(with: "bd-1")?.deferUntil == deferUntil
+        }
+        let callsBeforeCommandCompletes = await commands.bulkUpdateCalls
+        XCTAssertTrue(callsBeforeCommandCompletes.isEmpty)
+
+        let succeeded = await task.value
+        XCTAssertTrue(succeeded)
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.first?.status, "deferred")
+        XCTAssertEqual(calls.first?.deferUntil, .set(deferUntil))
+        let metadataCalls = await commands.metadataUpdateCalls
+        XCTAssertTrue(metadataCalls.isEmpty)
+    }
+
+    func testBulkSetDeferredStatusCanClearExistingDeferredDate() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-11","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.bulkSet(
+            issueIDs: ["bd-1"],
+            status: "deferred",
+            deferUntil: .set(nil)
+        )
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.status, "deferred")
+        XCTAssertNil(store.issue(with: "bd-1")?.deferUntil)
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.first?.deferUntil, .set(nil))
+    }
+
+    func testBulkSetDeferredStatusRollsBackStatusAndDeferredDateOnFailure() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-11","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateError(NSError(domain: "BeadStoreAsyncMutationTests", code: 1))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let originalDate = store.issue(with: "bd-1")?.deferUntil
+        let nextDate = try XCTUnwrap(BeadFormatters.parseDate("2026-08-01"))
+
+        let succeeded = await store.bulkSet(
+            issueIDs: ["bd-1"],
+            status: "deferred",
+            deferUntil: .set(nextDate)
+        )
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.status, "open")
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, originalDate)
+    }
+
     func testMutationAppliesOptimisticallyBeforeCommandCompletesWithoutLoadingIndicator() async throws {
         // The change must be visible the instant the user makes it — before `bd` returns —
         // and with no loading indicator.
@@ -1069,6 +1151,63 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(resolveGateCalls.map(\.reason), ["Rejected: not enough evidence"])
         XCTAssertEqual(bulkUpdateCalls.map(\.ids), [["bd-task"]])
         XCTAssertEqual(bulkUpdateCalls.map(\.status), ["deferred"])
+        XCTAssertEqual(bulkUpdateCalls.map(\.deferUntil), [.set(nil)])
+    }
+
+    func testRejectingHumanGateCanClearDeferredDateForDeferredStatus() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(
+            gateUpdatedAt: "2026-07-03T21:58:35Z",
+            awaitType: "human",
+            taskStatus: "blocked",
+            taskDeferUntil: "2026-07-11"
+        ))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+
+        let didReject = await store.rejectGate(
+            id: "bd-gate",
+            reason: "not enough evidence",
+            targetStatus: "deferred",
+            deferUntil: .set(nil)
+        )
+
+        XCTAssertTrue(didReject)
+        XCTAssertEqual(store.issue(with: "bd-task")?.status, "deferred")
+        XCTAssertNil(store.issue(with: "bd-task")?.deferUntil)
+        let bulkUpdateCalls = await commands.bulkUpdateCalls
+        XCTAssertEqual(bulkUpdateCalls.map(\.ids), [["bd-task"]])
+        XCTAssertEqual(bulkUpdateCalls.map(\.status), ["deferred"])
+        XCTAssertEqual(bulkUpdateCalls.map(\.deferUntil), [.set(nil)])
+    }
+
+    func testRejectingHumanGateCanSetDeferredDateForDeferredStatus() async throws {
+        let projectURL = try makeProject(gateProjectJSONL(
+            gateUpdatedAt: "2026-07-03T21:58:35Z",
+            awaitType: "human",
+            taskStatus: "blocked"
+        ))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+        let deferUntil = try XCTUnwrap(BeadFormatters.parseDate("2026-08-01"))
+
+        let didReject = await store.rejectGate(
+            id: "bd-gate",
+            reason: "not enough evidence",
+            targetStatus: "deferred",
+            deferUntil: .set(deferUntil)
+        )
+
+        XCTAssertTrue(didReject)
+        XCTAssertEqual(store.issue(with: "bd-task")?.status, "deferred")
+        XCTAssertEqual(store.issue(with: "bd-task")?.deferUntil, deferUntil)
+        let bulkUpdateCalls = await commands.bulkUpdateCalls
+        XCTAssertEqual(bulkUpdateCalls.map(\.ids), [["bd-task"]])
+        XCTAssertEqual(bulkUpdateCalls.map(\.status), ["deferred"])
+        XCTAssertEqual(bulkUpdateCalls.map(\.deferUntil), [.set(deferUntil)])
     }
 
     func testRejectingHumanGateWithClosedStatusUsesCloseReason() async throws {
@@ -1283,11 +1422,13 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         gateUpdatedAt: String,
         gateStatus: String = "open",
         awaitType: String = "timer",
-        taskStatus: String = "open"
+        taskStatus: String = "open",
+        taskDeferUntil: String? = nil
     ) -> String {
-        """
+        let taskDeferFragment = taskDeferUntil.map { #","defer_until":"\#($0)""# } ?? ""
+        return """
         {"_type":"issue","id":"bd-gate","title":"Release gate","description":"Ad-hoc gate blocking bd-task\\n\\nReason: Ship review","status":"\(gateStatus)","priority":1,"issue_type":"gate","await_type":"\(awaitType)","timeout":3600000000000,"created_at":"2026-07-03T20:58:35Z","updated_at":"\(gateUpdatedAt)"}
-        {"_type":"issue","id":"bd-task","title":"Ship app","status":"\(taskStatus)","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"depends_on_id":"bd-gate","type":"blocks"}]}
+        {"_type":"issue","id":"bd-task","title":"Ship app","status":"\(taskStatus)","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"\(taskDeferFragment),"dependencies":[{"depends_on_id":"bd-gate","type":"blocks"}]}
         """
     }
 
@@ -1376,7 +1517,16 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         )
     ] = []
     private(set) var closeCalls: [(projectURL: URL, ids: [String], reason: String?)] = []
-    private(set) var bulkUpdateCalls: [(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?)] = []
+    private(set) var bulkUpdateCalls: [
+        (
+            projectURL: URL,
+            ids: [String],
+            status: String?,
+            type: String?,
+            priority: Int?,
+            deferUntil: IssueMetadataDateUpdate
+        )
+    ] = []
     private(set) var setParentCalls: [(projectURL: URL, issueID: String, parentID: String?)] = []
     private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var mutationEvents: [String] = []
@@ -1507,14 +1657,28 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func delete(projectURL: URL, ids: [String]) async throws {}
 
-    func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws {
+    func bulkUpdate(
+        projectURL: URL,
+        ids: [String],
+        status: String?,
+        type: String?,
+        priority: Int?,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {
         if let bulkUpdateDelay {
             try await Task.sleep(for: bulkUpdateDelay)
         }
         if let bulkUpdateError {
             throw bulkUpdateError
         }
-        bulkUpdateCalls.append((projectURL: projectURL, ids: ids, status: status, type: type, priority: priority))
+        bulkUpdateCalls.append((
+            projectURL: projectURL,
+            ids: ids,
+            status: status,
+            type: type,
+            priority: priority,
+            deferUntil: deferUntil
+        ))
         mutationEvents.append("bulk:\(ids.joined(separator: ","))")
     }
 

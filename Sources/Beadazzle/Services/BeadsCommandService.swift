@@ -15,7 +15,14 @@ protocol BeadsCommanding: Sendable {
     ) async throws
     func close(projectURL: URL, ids: [String], reason: String?) async throws
     func delete(projectURL: URL, ids: [String]) async throws
-    func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws
+    func bulkUpdate(
+        projectURL: URL,
+        ids: [String],
+        status: String?,
+        type: String?,
+        priority: Int?,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws
@@ -84,6 +91,17 @@ extension BeadsCommanding {
         throw BeadError.commandFailed(
             command: "bd update --parent",
             output: "Parent updates are not supported by this command service."
+        )
+    }
+
+    func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws {
+        try await bulkUpdate(
+            projectURL: projectURL,
+            ids: ids,
+            status: status,
+            type: type,
+            priority: priority,
+            deferUntil: .unchanged
         )
     }
 }
@@ -163,18 +181,22 @@ struct BeadsCommandService {
         try await run(projectURL: projectURL, arguments: ["delete"] + ids + ["--force"])
     }
 
-    func bulkUpdate(projectURL: URL, ids: [String], status: String? = nil, type: String? = nil, priority: Int? = nil) async throws {
+    func bulkUpdate(
+        projectURL: URL,
+        ids: [String],
+        status: String? = nil,
+        type: String? = nil,
+        priority: Int? = nil,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) async throws {
         guard !ids.isEmpty else { return }
-        var arguments = ["update"] + ids
-        if let status {
-            arguments += ["--status", status]
-        }
-        if let type {
-            arguments += ["--type", type]
-        }
-        if let priority {
-            arguments += ["--priority", "P\(priority)"]
-        }
+        let arguments = BeadsCommandArguments.bulkUpdate(
+            ids: ids,
+            status: status,
+            type: type,
+            priority: priority,
+            deferUntil: deferUntil
+        )
         try await run(projectURL: projectURL, arguments: arguments)
     }
 
@@ -804,6 +826,32 @@ enum BeadsCommandArguments {
         }
 
         return didAppendUpdate ? arguments : nil
+    }
+
+    static func bulkUpdate(
+        ids: [String],
+        status: String? = nil,
+        type: String? = nil,
+        priority: Int? = nil,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) -> [String] {
+        var arguments = ["update"] + ids
+        if let status {
+            arguments += ["--status", status]
+        }
+        if let type {
+            arguments += ["--type", type]
+        }
+        if let priority {
+            arguments += ["--priority", "P\(priority)"]
+        }
+        switch deferUntil {
+        case .unchanged:
+            break
+        case .set(let date):
+            arguments += ["--defer", dateUpdateArgument(date)]
+        }
+        return arguments
     }
 
     static func setParent(issueID: String, parentID: String?) -> [String] {

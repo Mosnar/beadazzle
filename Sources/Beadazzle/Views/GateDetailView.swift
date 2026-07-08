@@ -64,9 +64,17 @@ struct GateDetailPage: View {
                 gate: gate,
                 affectedBeads: affectedDecisionBeads,
                 statusOptions: store.gateRejectionStatusOptions,
-                defaultStatus: store.defaultGateRejectionStatus
-            ) { reason, status in
-                await perform { await store.rejectGate(id: gate.id, reason: reason, targetStatus: status) }
+                defaultStatus: store.defaultGateRejectionStatus,
+                isDeferredStatus: { store.isDeferredStatus($0) }
+            ) { reason, status, deferUntil in
+                await perform {
+                    await store.rejectGate(
+                        id: gate.id,
+                        reason: reason,
+                        targetStatus: status,
+                        deferUntil: deferUntil
+                    )
+                }
             }
         }
         .sheet(isPresented: $showingResolveSheet) {
@@ -402,23 +410,27 @@ private struct GateRejectSheet: View {
     let gate: BeadGate
     let affectedBeads: [BeadIssue]
     let statusOptions: [String]
-    let onReject: (String, String) async -> Bool
+    let isDeferredStatus: (String) -> Bool
+    let onReject: (String, String, IssueMetadataDateUpdate) async -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var reason = ""
     @State private var selectedStatus: String
     @State private var isSubmitting = false
+    @State private var deferredStatusRequest: DeferredStatusRequest?
 
     init(
         gate: BeadGate,
         affectedBeads: [BeadIssue],
         statusOptions: [String],
         defaultStatus: String?,
-        onReject: @escaping (String, String) async -> Bool
+        isDeferredStatus: @escaping (String) -> Bool,
+        onReject: @escaping (String, String, IssueMetadataDateUpdate) async -> Bool
     ) {
         self.gate = gate
         self.affectedBeads = affectedBeads
         self.statusOptions = statusOptions
+        self.isDeferredStatus = isDeferredStatus
         self.onReject = onReject
         self._selectedStatus = State(initialValue: defaultStatus ?? statusOptions.first ?? "")
     }
@@ -455,14 +467,7 @@ private struct GateRejectSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(isSubmitting)
                 Button("Reject", role: .destructive) {
-                    Task {
-                        isSubmitting = true
-                        let didReject = await onReject(reason, selectedStatus)
-                        isSubmitting = false
-                        if didReject {
-                            dismiss()
-                        }
-                    }
+                    reject()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSubmit)
@@ -471,12 +476,40 @@ private struct GateRejectSheet: View {
         .padding(20)
         .frame(width: 460)
         .interactiveDismissDisabled(isSubmitting)
+        .sheet(item: $deferredStatusRequest) { request in
+            DeferredStatusDateSheet(request: request) { deferUntil in
+                await submit(deferUntil: .set(deferUntil))
+            }
+        }
     }
 
     private var canSubmit: Bool {
         !isSubmitting
             && !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func reject() {
+        guard canSubmit else { return }
+        if isDeferredStatus(selectedStatus), !affectedBeads.isEmpty {
+            deferredStatusRequest = DeferredStatusRequest(issues: affectedBeads, status: selectedStatus)
+            return
+        }
+        Task {
+            await submit(deferUntil: .unchanged)
+        }
+    }
+
+    @MainActor
+    private func submit(deferUntil: IssueMetadataDateUpdate) async -> Bool {
+        guard !isSubmitting else { return false }
+        isSubmitting = true
+        let didReject = await onReject(reason, selectedStatus, deferUntil)
+        isSubmitting = false
+        if didReject {
+            dismiss()
+        }
+        return didReject
     }
 }
 

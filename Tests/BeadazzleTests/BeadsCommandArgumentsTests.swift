@@ -175,6 +175,38 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(value(after: "--defer", in: arguments), "")
     }
 
+    func testBulkUpdateArgumentsIncludeDeferredDateWhenPresent() {
+        let arguments = BeadsCommandArguments.bulkUpdate(
+            ids: ["bd-1", "bd-2"],
+            status: "deferred",
+            deferUntil: .set(date(year: 2026, month: 8, day: 1))
+        )
+
+        XCTAssertEqual(value(after: "--status", in: arguments), "deferred")
+        XCTAssertEqual(value(after: "--defer", in: arguments), "2026-08-01")
+    }
+
+    func testBulkUpdateArgumentsClearDeferredDateWhenSetToNil() {
+        let arguments = BeadsCommandArguments.bulkUpdate(
+            ids: ["bd-1"],
+            status: "deferred",
+            deferUntil: .set(nil)
+        )
+
+        XCTAssertEqual(value(after: "--status", in: arguments), "deferred")
+        XCTAssertEqual(value(after: "--defer", in: arguments), "")
+    }
+
+    func testBulkUpdateArgumentsOmitDeferredDateWhenUnchanged() {
+        let arguments = BeadsCommandArguments.bulkUpdate(
+            ids: ["bd-1"],
+            status: "deferred"
+        )
+
+        XCTAssertEqual(value(after: "--status", in: arguments), "deferred")
+        XCTAssertNil(value(after: "--defer", in: arguments))
+    }
+
     func testMetadataUpdateArgumentsClearLabelsFromOriginalIssue() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(
             issueID: "bd-1",

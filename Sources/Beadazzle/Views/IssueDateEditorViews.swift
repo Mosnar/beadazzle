@@ -1,5 +1,12 @@
 import SwiftUI
 
+enum DateEditorLayout {
+    static let contentWidth: CGFloat = 258
+    static let horizontalPadding: CGFloat = 18
+    static let verticalPadding: CGFloat = 16
+    static let containerWidth = contentWidth + horizontalPadding * 2
+}
+
 struct InspectorDateRow: View {
     let title: String
     let systemImage: String
@@ -66,9 +73,9 @@ struct DateEditorPopover: View {
                 }
             )
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .frame(width: 294, alignment: .leading)
+        .padding(.horizontal, DateEditorLayout.horizontalPadding)
+        .padding(.vertical, DateEditorLayout.verticalPadding)
+        .frame(width: DateEditorLayout.containerWidth, alignment: .leading)
     }
 
     private func add(_ component: Calendar.Component, value amount: Int) {
@@ -153,7 +160,7 @@ struct CalendarMonthPicker: View {
                 }
             }
         }
-        .frame(width: 258, alignment: .leading)
+        .frame(width: DateEditorLayout.contentWidth, alignment: .leading)
     }
 
     static func monthStart(for date: Date) -> Date {
@@ -267,7 +274,7 @@ struct DateEditorActionBar: View {
                 action: clear
             )
         }
-        .frame(width: 258, alignment: .leading)
+        .frame(width: DateEditorLayout.contentWidth, alignment: .leading)
     }
 }
 

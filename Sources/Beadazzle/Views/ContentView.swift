@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var workspaceWidth: CGFloat = 0
     @State private var showingDeleteConfirmation = false
     @State private var hierarchySheetRequest: ContentHierarchySheetRequest?
+    @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var searchPresented = false
 
     var body: some View {
@@ -57,6 +58,16 @@ struct ContentView: View {
         .sheet(item: $hierarchySheetRequest) { request in
             hierarchySheet(for: request)
         }
+        .sheet(item: $deferredStatusRequest) { request in
+            DeferredStatusDateSheet(request: request) { deferUntil in
+                await store.bulkSet(
+                    issueIDs: request.issueIDs,
+                    status: request.status,
+                    deferUntil: .set(deferUntil),
+                    reopeningAncestorIssueIDs: request.reopeningAncestorIssueIDs
+                )
+            }
+        }
         .alert("Beadazzle", isPresented: errorBinding) {
             Button("OK") {
                 store.lastError = nil
@@ -85,6 +96,7 @@ struct ContentView: View {
         }
         .onChange(of: store.projectURL) {
             hierarchySheetRequest = nil
+            deferredStatusRequest = nil
         }
     }
 
@@ -269,6 +281,11 @@ struct ContentView: View {
             }
         }
 
+        if store.isDeferredStatus(status) {
+            deferredStatusRequest = DeferredStatusRequest(issues: issues, status: status)
+            return
+        }
+
         Task {
             await store.bulkSet(issueIDs: issues.map(\.id), status: status)
         }
@@ -317,12 +334,30 @@ struct ContentView: View {
                 confirmTitle: "Set Status and Reopen Parents",
                 relatedIssues: request.ancestorIssues
             ) {
-                await store.bulkSet(
+                if store.isDeferredStatus(request.status) {
+                    presentDeferredStatusAfterCurrentSheet(
+                        DeferredStatusRequest(
+                            issueIDs: request.issueIDs,
+                            title: request.title,
+                            status: request.status,
+                            reopeningAncestorIssueIDs: request.ancestorIssueIDs
+                        )
+                    )
+                    return true
+                }
+                return await store.bulkSet(
                     issueIDs: request.issueIDs,
                     status: request.status,
                     reopeningAncestorIssueIDs: request.ancestorIssueIDs
                 )
             }
+        }
+    }
+
+    private func presentDeferredStatusAfterCurrentSheet(_ request: DeferredStatusRequest) {
+        Task { @MainActor in
+            await Task.yield()
+            deferredStatusRequest = request
         }
     }
 

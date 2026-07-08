@@ -29,6 +29,8 @@ for users, not for the commit log.
   blocked beads with no active blocker.
 - Blocked bead detail pages now show an inline helper for stale blocked states,
   and sub-issue rows surface the same blocker context as the main list.
+- Changing a bead to Deferred now asks for an optional deferral date, while
+  still supporting deferred beads with no date.
 
 ### Changed
 

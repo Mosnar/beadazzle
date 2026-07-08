@@ -745,6 +745,10 @@ final class BeadStore {
         hierarchyMutationPolicy.statusClosesBeads(status)
     }
 
+    func isDeferredStatus(_ status: String) -> Bool {
+        status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == Self.deferredStatusName
+    }
+
     func isDone(_ issue: BeadIssue) -> Bool {
         index.semantics.isDone(issue) || statusClosesBeads(issue.status)
     }
@@ -1640,6 +1644,7 @@ final class BeadStore {
 
     /// Built-in status `bd close` moves an issue to; used for optimistic close patches.
     private static let closedStatusName = "closed"
+    private static let deferredStatusName = "deferred"
 
     /// The in-memory issues/dependencies captured before an optimistic mutation, so a
     /// failed `bd` write can be rolled back to the last authoritative state.
@@ -2100,8 +2105,19 @@ final class BeadStore {
     }
 
     @discardableResult
-    func bulkSet(status: String? = nil, type: String? = nil, priority: Int? = nil) async -> Bool {
-        await bulkSet(issueIDs: Array(selectedIDs), status: status, type: type, priority: priority)
+    func bulkSet(
+        status: String? = nil,
+        type: String? = nil,
+        priority: Int? = nil,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) async -> Bool {
+        await bulkSet(
+            issueIDs: Array(selectedIDs),
+            status: status,
+            type: type,
+            priority: priority,
+            deferUntil: deferUntil
+        )
     }
 
     @discardableResult
@@ -2110,6 +2126,7 @@ final class BeadStore {
         status: String? = nil,
         type: String? = nil,
         priority: Int? = nil,
+        deferUntil: IssueMetadataDateUpdate = .unchanged,
         reopeningAncestorIssueIDs ancestorIssueIDs: [String] = []
     ) async -> Bool {
         guard let projectURL else { return false }
@@ -2166,6 +2183,12 @@ final class BeadStore {
             if let status { copy.status = status }
             if let type { copy.issueType = type }
             if let priority { copy.priority = priority }
+            switch deferUntil {
+            case .unchanged:
+                break
+            case .set(let date):
+                copy.deferUntil = date
+            }
             if let status {
                 copy.closedAt = statusClosesBeads(status) ? (copy.closedAt ?? now) : nil
             }
@@ -2196,10 +2219,18 @@ final class BeadStore {
                         ids: ancestorIDsForWrite,
                         status: ancestorReopenStatus,
                         type: nil,
-                        priority: nil
+                        priority: nil,
+                        deferUntil: .unchanged
                     )
                 }
-                try await commands.bulkUpdate(projectURL: projectURL, ids: idsForWrite, status: status, type: type, priority: priority)
+                try await commands.bulkUpdate(
+                    projectURL: projectURL,
+                    ids: idsForWrite,
+                    status: status,
+                    type: type,
+                    priority: priority,
+                    deferUntil: deferUntil
+                )
             }
             guard self.projectURL == projectURL else { return false }
             pendingReconcile = true
@@ -2395,7 +2426,12 @@ final class BeadStore {
     }
 
     @discardableResult
-    func rejectGate(id: String, reason: String, targetStatus: String) async -> Bool {
+    func rejectGate(
+        id: String,
+        reason: String,
+        targetStatus: String,
+        deferUntil: IssueMetadataDateUpdate = .unchanged
+    ) async -> Bool {
         let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedReason.isEmpty else {
             lastError = "A rejection reason is required."
@@ -2418,7 +2454,22 @@ final class BeadStore {
         if status.lowercased() == Self.closedStatusName {
             return await close(issueIDs: affectedIDs, reason: rejectionReason)
         }
-        return await bulkSet(issueIDs: affectedIDs, status: status)
+        let deferredStatusUpdate: IssueMetadataDateUpdate
+        if isDeferredStatus(status) {
+            switch deferUntil {
+            case .unchanged:
+                deferredStatusUpdate = .set(nil)
+            case .set:
+                deferredStatusUpdate = deferUntil
+            }
+        } else {
+            deferredStatusUpdate = .unchanged
+        }
+        return await bulkSet(
+            issueIDs: affectedIDs,
+            status: status,
+            deferUntil: deferredStatusUpdate
+        )
     }
 
     @discardableResult

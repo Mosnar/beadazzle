@@ -176,6 +176,25 @@ final class BeadProjectIndexTests: XCTestCase {
         ])
     }
 
+    func testReadyBookmarkTreatsDeferredStatusAndDeferredDateIndependently() {
+        let now = Date()
+        let issues = [
+            issue("bd-open-undated", status: "open", type: "task"),
+            issue("bd-open-past-defer", status: "open", type: "task", deferUntil: now.addingTimeInterval(-3_600)),
+            issue("bd-open-future-defer", status: "open", type: "task", deferUntil: now.addingTimeInterval(3_600)),
+            issue("bd-deferred-undated", status: "deferred", type: "task"),
+            issue("bd-deferred-past", status: "deferred", type: "task", deferUntil: now.addingTimeInterval(-3_600)),
+            issue("bd-deferred-future", status: "deferred", type: "task", deferUntil: now.addingTimeInterval(3_600))
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.issueIDs(for: .ready), [
+            "bd-open-undated",
+            "bd-open-past-defer"
+        ])
+    }
+
     func testReadyBookmarkExcludesOpenGates() {
         let issues = [
             issue("bd-ready", status: "open", type: "task"),

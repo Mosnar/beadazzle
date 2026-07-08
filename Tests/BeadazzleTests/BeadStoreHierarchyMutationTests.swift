@@ -404,7 +404,16 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
 private actor RecordingHierarchyBeadsCommands: BeadsCommanding {
     private(set) var updateCalls: [(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?)] = []
     private(set) var closeCalls: [(projectURL: URL, ids: [String], reason: String?)] = []
-    private(set) var bulkUpdateCalls: [(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?)] = []
+    private(set) var bulkUpdateCalls: [
+        (
+            projectURL: URL,
+            ids: [String],
+            status: String?,
+            type: String?,
+            priority: Int?,
+            deferUntil: IssueMetadataDateUpdate
+        )
+    ] = []
     private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var resolveGateCalls: [(projectURL: URL, id: String, reason: String?)] = []
 
@@ -431,8 +440,15 @@ private actor RecordingHierarchyBeadsCommands: BeadsCommanding {
 
     func delete(projectURL: URL, ids: [String]) async throws {}
 
-    func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws {
-        bulkUpdateCalls.append((projectURL, ids, status, type, priority))
+    func bulkUpdate(
+        projectURL: URL,
+        ids: [String],
+        status: String?,
+        type: String?,
+        priority: Int?,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {
+        bulkUpdateCalls.append((projectURL, ids, status, type, priority, deferUntil))
     }
 
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {

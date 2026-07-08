@@ -201,7 +201,14 @@ private struct MetadataTestCommands: BeadsCommanding {
 
     func delete(projectURL: URL, ids: [String]) async throws {}
 
-    func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws {}
+    func bulkUpdate(
+        projectURL: URL,
+        ids: [String],
+        status: String?,
+        type: String?,
+        priority: Int?,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {}
 
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {}
 
