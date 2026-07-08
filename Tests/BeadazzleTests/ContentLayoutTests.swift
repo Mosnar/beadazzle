@@ -4,51 +4,114 @@ import XCTest
 
 final class ContentLayoutTests: XCTestCase {
     func testSidebarStaysVisibleAtListOnlyBreakpointAndCollapsesBelowIt() {
-        XCTAssertTrue(ContentLayout.showsSidebar(for: ContentLayout.listOnlySidebarCollapseBreakpoint, showsDetail: false))
-        XCTAssertFalse(ContentLayout.showsSidebar(for: ContentLayout.listOnlySidebarCollapseBreakpoint - 1, showsDetail: false))
-    }
-
-    func testSidebarStaysVisibleAtDetailBreakpointAndCollapsesBelowIt() {
-        XCTAssertTrue(ContentLayout.showsSidebar(for: ContentLayout.detailSidebarCollapseBreakpoint, showsDetail: true))
-        XCTAssertFalse(ContentLayout.showsSidebar(for: ContentLayout.detailSidebarCollapseBreakpoint - 1, showsDetail: true))
-    }
-
-    func testIssueListVisibilityOnlyDependsOnFullPageStates() {
-        XCTAssertTrue(ContentLayout.showsIssueList(isFullPageDetailPresented: false, hasCreationDraft: false))
-        XCTAssertFalse(ContentLayout.showsIssueList(isFullPageDetailPresented: true, hasCreationDraft: false))
-        XCTAssertFalse(ContentLayout.showsIssueList(isFullPageDetailPresented: false, hasCreationDraft: true))
-    }
-
-    func testWorkspaceDetailIsShownForSingleSelectionExplicitDetailOrCreation() {
-        XCTAssertFalse(ContentLayout.showsWorkspaceDetail(selectionCount: 0, isFullPageDetailPresented: false, hasCreationDraft: false))
-        XCTAssertTrue(ContentLayout.showsWorkspaceDetail(selectionCount: 1, isFullPageDetailPresented: false, hasCreationDraft: false))
-        XCTAssertFalse(ContentLayout.showsWorkspaceDetail(selectionCount: 2, isFullPageDetailPresented: false, hasCreationDraft: false))
-        XCTAssertTrue(ContentLayout.showsWorkspaceDetail(selectionCount: 0, isFullPageDetailPresented: true, hasCreationDraft: false))
-        XCTAssertTrue(ContentLayout.showsWorkspaceDetail(selectionCount: 0, isFullPageDetailPresented: false, hasCreationDraft: true))
-    }
-
-    func testMissingDataSourceUsesDetailPaneWithoutHidingProjectSelector() {
         XCTAssertTrue(
-            ContentLayout.showsWorkspaceDetail(
-                selectionCount: 0,
-                isFullPageDetailPresented: false,
-                hasCreationDraft: false,
-                hasMissingDataSource: true
+            ContentLayout.showsSidebar(
+                for: ContentLayout.listOnlySidebarCollapseBreakpoint,
+                presentation: .listOnly
             )
         )
         XCTAssertFalse(
-            ContentLayout.showsIssueList(
-                isFullPageDetailPresented: false,
-                hasCreationDraft: false,
-                hasMissingDataSource: true
+            ContentLayout.showsSidebar(
+                for: ContentLayout.listOnlySidebarCollapseBreakpoint - 1,
+                presentation: .listOnly
             )
         )
+    }
+
+    func testSidebarStaysVisibleAtDetailBreakpointAndCollapsesBelowIt() {
+        XCTAssertTrue(
+            ContentLayout.showsSidebar(
+                for: ContentLayout.detailSidebarCollapseBreakpoint,
+                presentation: .splitDetail
+            )
+        )
+        XCTAssertFalse(
+            ContentLayout.showsSidebar(
+                for: ContentLayout.detailSidebarCollapseBreakpoint - 1,
+                presentation: .splitDetail
+            )
+        )
+    }
+
+    func testPresentationDrivesIssueListVisibility() {
+        XCTAssertTrue(WorkspacePresentation.listOnly.showsIssueList)
+        XCTAssertTrue(WorkspacePresentation.splitDetail.showsIssueList)
+        XCTAssertFalse(WorkspacePresentation.fullPageDetail.showsIssueList)
+        XCTAssertFalse(WorkspacePresentation.creation.showsIssueList)
+        XCTAssertFalse(WorkspacePresentation.missingDataSource.showsIssueList)
+    }
+
+    func testPresentationDerivesWorkspaceState() {
+        XCTAssertEqual(
+            ContentLayout.presentation(
+                selectionCount: 0,
+                isFullPageDetailPresented: false,
+                hasCreationDraft: false
+            ),
+            .listOnly
+        )
+        XCTAssertEqual(
+            ContentLayout.presentation(
+                selectionCount: 1,
+                isFullPageDetailPresented: false,
+                hasCreationDraft: false
+            ),
+            .splitDetail
+        )
+        XCTAssertEqual(
+            ContentLayout.presentation(
+                selectionCount: 2,
+                isFullPageDetailPresented: false,
+                hasCreationDraft: false
+            ),
+            .listOnly
+        )
+        XCTAssertEqual(
+            ContentLayout.presentation(
+                selectionCount: 0,
+                isFullPageDetailPresented: true,
+                hasCreationDraft: false
+            ),
+            .fullPageDetail
+        )
+        XCTAssertEqual(
+            ContentLayout.presentation(
+                selectionCount: 0,
+                isFullPageDetailPresented: false,
+                hasCreationDraft: true
+            ),
+            .creation
+        )
+    }
+
+    func testMissingDataSourceUsesDetailPaneWithoutHidingProjectSelector() {
+        let presentation = ContentLayout.presentation(
+            selectionCount: 0,
+            isFullPageDetailPresented: false,
+            hasCreationDraft: false,
+            hasMissingDataSource: true
+        )
+
+        XCTAssertEqual(presentation, .missingDataSource)
+        XCTAssertTrue(presentation.showsDetail)
+        XCTAssertFalse(presentation.showsIssueList)
         XCTAssertTrue(
             ContentLayout.showsSidebar(
                 for: ContentLayout.detailSidebarCollapseBreakpoint - 1,
-                showsDetail: true,
-                keepsProjectSelectorVisible: true
+                presentation: presentation
             )
+        )
+    }
+
+    func testMissingDataSourcePresentationTakesPriorityOverTransientWorkspaceState() {
+        XCTAssertEqual(
+            ContentLayout.presentation(
+                selectionCount: 0,
+                isFullPageDetailPresented: true,
+                hasCreationDraft: true,
+                hasMissingDataSource: true
+            ),
+            .missingDataSource
         )
     }
 
@@ -70,20 +133,20 @@ final class ContentLayoutTests: XCTestCase {
 
     func testResponsiveDetailWidthZones() {
         let wideWidth = ContentLayout.detailSidebarCollapseBreakpoint
-        XCTAssertTrue(ContentLayout.showsSidebar(for: wideWidth, showsDetail: true))
-        XCTAssertTrue(ContentLayout.showsIssueList(isFullPageDetailPresented: false, hasCreationDraft: false))
+        XCTAssertTrue(ContentLayout.showsSidebar(for: wideWidth, presentation: .splitDetail))
+        XCTAssertTrue(WorkspacePresentation.splitDetail.showsIssueList)
 
         let detailOnlyRailWidth = ContentLayout.detailSidebarCollapseBreakpoint - 1
-        XCTAssertFalse(ContentLayout.showsSidebar(for: detailOnlyRailWidth, showsDetail: true))
-        XCTAssertTrue(ContentLayout.showsIssueList(isFullPageDetailPresented: false, hasCreationDraft: false))
+        XCTAssertFalse(ContentLayout.showsSidebar(for: detailOnlyRailWidth, presentation: .splitDetail))
+        XCTAssertTrue(WorkspacePresentation.splitDetail.showsIssueList)
         XCTAssertTrue(IssueDetailLayout.usesInspectorRail(for: detailOnlyRailWidth))
 
         let ribbonWidth = IssueDetailLayout.railBreakpoint - 1
-        XCTAssertFalse(ContentLayout.showsSidebar(for: ribbonWidth, showsDetail: true))
-        XCTAssertTrue(ContentLayout.showsIssueList(isFullPageDetailPresented: false, hasCreationDraft: false))
+        XCTAssertFalse(ContentLayout.showsSidebar(for: ribbonWidth, presentation: .splitDetail))
+        XCTAssertTrue(WorkspacePresentation.splitDetail.showsIssueList)
         XCTAssertFalse(IssueDetailLayout.usesInspectorRail(for: ribbonWidth))
 
-        XCTAssertFalse(ContentLayout.showsIssueList(isFullPageDetailPresented: true, hasCreationDraft: false))
+        XCTAssertFalse(WorkspacePresentation.fullPageDetail.showsIssueList)
     }
 
     func testInspectorRailUsesThresholdOnly() {

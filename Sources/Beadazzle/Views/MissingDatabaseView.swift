@@ -12,80 +12,102 @@ struct MissingDatabaseView: View {
     @FocusState private var focusedField: FocusedField?
 
     var body: some View {
-        VStack(spacing: 22) {
-            Image(systemName: "externaldrive.badge.exclamationmark")
-                .font(.largeTitle)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-
-            VStack(spacing: 8) {
-                Text("No Beads Database Found")
-                    .font(.title2.weight(.semibold))
-
-                Text("Beadazzle could not find a readable `.beads/issues.jsonl` snapshot or populated legacy `.beads/beads.db` in this project.")
-                    .font(.body)
+        ScrollView {
+            VStack(spacing: 22) {
+                Image(systemName: "externaldrive.badge.exclamationmark")
+                    .font(.largeTitle)
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityHidden(true)
 
-                Text(projectURL.path)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(projectURL.path)
-            }
+                VStack(spacing: 8) {
+                    Text("No Beads Database Found")
+                        .font(.title2.weight(.semibold))
 
-            HStack(spacing: 10) {
-                Button(action: initialize) {
-                    if isInitializing {
-                        Label("Initializing Beads", systemImage: "hourglass")
-                    } else if isRecovering {
-                        Label("Checking Beads", systemImage: "arrow.clockwise")
-                    } else {
-                        Label("Initialize Beads", systemImage: "plus.circle")
+                    Text("Beadazzle could not find a readable `.beads/issues.jsonl` snapshot or populated legacy `.beads/beads.db` in this project.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(projectURL.path)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(projectURL.path)
+                }
+
+                actionButtons
+
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                VStack(spacing: 0) {
+                    MoreOptionsHeader(isExpanded: showsMoreOptions) {
+                        showsMoreOptions.toggle()
+                        if !showsMoreOptions {
+                            focusedField = nil
+                        }
+                    }
+
+                    if showsMoreOptions {
+                        MoreOptionsContent(
+                            options: $options,
+                            focusedField: $focusedField,
+                            isDisabled: isBusy
+                        )
+                        .padding(.top, 12)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(isBusy)
-
-                Button(action: onOpenProject) {
-                    Label("Open Different Project", systemImage: "folder")
-                }
-                .controlSize(.large)
                 .disabled(isBusy)
             }
-
-            if isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            VStack(spacing: 0) {
-                MoreOptionsHeader(isExpanded: showsMoreOptions) {
-                    showsMoreOptions.toggle()
-                    if !showsMoreOptions {
-                        focusedField = nil
-                    }
-                }
-
-                if showsMoreOptions {
-                    MoreOptionsContent(
-                        options: $options,
-                        focusedField: $focusedField,
-                        isDisabled: isBusy
-                    )
-                    .padding(.top, 12)
-                }
-            }
-            .disabled(isBusy)
+            .padding(32)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+            .containerRelativeFrame(.vertical, alignment: .center)
         }
-        .padding(32)
-        .frame(maxWidth: 560)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var actionButtons: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                initializeButton
+                openProjectButton
+            }
+
+            VStack(spacing: 10) {
+                initializeButton
+                openProjectButton
+            }
+        }
+    }
+
+    private var initializeButton: some View {
+        Button(action: initialize) {
+            if isInitializing {
+                Label("Initializing Beads", systemImage: "hourglass")
+            } else if isRecovering {
+                Label("Checking Beads", systemImage: "arrow.clockwise")
+            } else {
+                Label("Initialize Beads", systemImage: "plus.circle")
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(isBusy)
+    }
+
+    private var openProjectButton: some View {
+        Button(action: onOpenProject) {
+            Label("Open Different Project", systemImage: "folder")
+        }
+        .controlSize(.large)
+        .disabled(isBusy)
     }
 
     private func initialize() {
@@ -136,6 +158,21 @@ private struct MoreOptionsContent: View {
     let isDisabled: Bool
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                wideOptionsGrid
+                compactOptionsStack
+            }
+
+            Text("Beadazzle will also export `.beads/issues.jsonl` after initialization so the project can load immediately.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var wideOptionsGrid: some View {
         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
             GridRow(alignment: .firstTextBaseline) {
                 OptionLabel(
@@ -143,22 +180,7 @@ private struct MoreOptionsContent: View {
                     help: "Sets the ID prefix for new beads. Leave it blank to use the project folder name."
                 )
 
-                TextField("Use project folder name", text: $options.prefix)
-                    .textFieldStyle(.plain)
-                    .font(.body)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5)
-                            .stroke(fieldBorderColor, lineWidth: focusedField.wrappedValue == .prefix ? 1.5 : 1)
-                    }
-                    .focused(focusedField, equals: .prefix)
-                    .onSubmit {
-                        focusedField.wrappedValue = nil
-                    }
-                    .disabled(isDisabled)
-                    .frame(maxWidth: .infinity)
+                prefixField
             }
 
             GridRow {
@@ -197,20 +219,81 @@ private struct MoreOptionsContent: View {
                     help: "Shows the bd init command Beadazzle will run with the selected options."
                 )
 
-                Text(options.commandPreview)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                commandPreview
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-        Text("Beadazzle will also export `.beads/issues.jsonl` after initialization so the project can load immediately.")
-            .font(.caption)
+    private var compactOptionsStack: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                OptionLabel(
+                    title: "Issue prefix",
+                    help: "Sets the ID prefix for new beads. Leave it blank to use the project folder name."
+                )
+
+                prefixField
+            }
+
+            ToggleOption(
+                title: "Use stealth mode",
+                help: "Configures local git excludes so Beads files stay out of the repository by default.",
+                isOn: $options.usesStealthMode,
+                isDisabled: isDisabled
+            )
+
+            ToggleOption(
+                title: "Skip AGENTS.md setup",
+                help: "Prevents bd from creating or updating agent instruction files during initialization.",
+                isOn: $options.skipsAgents,
+                isDisabled: isDisabled
+            )
+
+            ToggleOption(
+                title: "Skip git hooks",
+                help: "Skips installing bd-managed git hooks for this repository.",
+                isOn: $options.skipsHooks,
+                isDisabled: isDisabled
+            )
+
+            VStack(alignment: .leading, spacing: 5) {
+                OptionLabel(
+                    title: "Command",
+                    help: "Shows the bd init command Beadazzle will run with the selected options."
+                )
+
+                commandPreview
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var prefixField: some View {
+        TextField("Use project folder name", text: $options.prefix)
+            .textFieldStyle(.plain)
+            .font(.body)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(fieldBorderColor, lineWidth: focusedField.wrappedValue == .prefix ? 1.5 : 1)
+            }
+            .focused(focusedField, equals: .prefix)
+            .onSubmit {
+                focusedField.wrappedValue = nil
+            }
+            .disabled(isDisabled)
+            .frame(maxWidth: .infinity)
+    }
+
+    private var commandPreview: some View {
+        Text(options.commandPreview)
+            .font(.system(.caption, design: .monospaced))
             .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 12)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var fieldBorderColor: Color {
@@ -230,7 +313,7 @@ private struct OptionLabel: View {
         }
         .font(.callout)
         .foregroundStyle(.primary)
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -249,7 +332,7 @@ private struct ToggleOption: View {
         }
         .font(.callout)
         .foregroundStyle(.primary)
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

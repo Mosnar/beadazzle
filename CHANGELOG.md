@@ -52,7 +52,8 @@ for users, not for the commit log.
   while the write runs in the background; only title and body text remain
   draft-until-save.
 - Opening a folder before Beads is initialized now keeps the project selector
-  visible so you can switch projects without initializing that folder first.
+  visible, labels the project as needing setup, and keeps the init controls
+  usable in narrower windows.
 
 ## [0.1.0-beta.3] - 2026-07-07
 

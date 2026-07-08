@@ -6,11 +6,13 @@ struct ProjectPickerButton: View {
     @State private var showsProjectPicker = false
 
     var body: some View {
+        let state = projectState
+
         Button {
             showsProjectPicker.toggle()
         } label: {
             HStack(alignment: .center, spacing: 8) {
-                Image(systemName: store.projectURL == nil ? "folder.badge.plus" : "folder")
+                Image(systemName: state.systemImage)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                     .accessibilityHidden(true)
@@ -22,7 +24,7 @@ struct ProjectPickerButton: View {
                         .truncationMode(.tail)
                         .layoutPriority(1)
 
-                    Text(store.projectURL == nil ? "Choose Folder" : "Project")
+                    Text(state.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -41,7 +43,7 @@ struct ProjectPickerButton: View {
         .buttonStyle(.plain)
         .help(projectHelp)
         .accessibilityLabel("Current Project")
-        .accessibilityValue(store.projectName)
+        .accessibilityValue(state.accessibilityValue(projectName: store.projectName))
         .accessibilityHint("Shows project picker")
         .popover(isPresented: $showsProjectPicker, arrowEdge: .trailing) {
             ProjectPickerPopover(isPresented: $showsProjectPicker)
@@ -50,6 +52,53 @@ struct ProjectPickerButton: View {
 
     private var projectHelp: String {
         store.projectURL?.path ?? "Open a Beads project"
+    }
+
+    private var projectState: ProjectPickerButtonState {
+        if store.projectURL == nil {
+            return .noProject
+        }
+        if store.missingDataSourceURL != nil {
+            return .needsSetup
+        }
+        return .ready
+    }
+}
+
+private enum ProjectPickerButtonState {
+    case noProject
+    case ready
+    case needsSetup
+
+    var systemImage: String {
+        switch self {
+        case .noProject:
+            "folder.badge.plus"
+        case .ready:
+            "folder"
+        case .needsSetup:
+            "folder.badge.questionmark"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .noProject:
+            "Choose Folder"
+        case .ready:
+            "Project"
+        case .needsSetup:
+            "Needs Setup"
+        }
+    }
+
+    func accessibilityValue(projectName: String) -> String {
+        switch self {
+        case .needsSetup:
+            "\(projectName), needs setup"
+        case .noProject, .ready:
+            projectName
+        }
     }
 }
 
