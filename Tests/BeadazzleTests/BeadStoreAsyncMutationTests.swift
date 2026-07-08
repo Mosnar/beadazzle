@@ -897,6 +897,122 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.resolvedGatesForStaleBlockedIssue(issueID: "bd-task").map(\.id), ["bd-gate"])
     }
 
+    func testSetParentOptimisticallyUpdatesParentAndUsesParentCommand() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-child") != nil }
+
+        let didSet = await store.setParent(issueID: "bd-child", parentID: "bd-parent")
+
+        XCTAssertTrue(didSet)
+        XCTAssertEqual(store.parentIssue(for: "bd-child")?.id, "bd-parent")
+        XCTAssertEqual(store.issue(with: "bd-child")?.parentID, "bd-parent")
+        let calls = await commands.setParentCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-child"])
+        XCTAssertEqual(calls.map(\.parentID), ["bd-parent"])
+    }
+
+    func testSetParentClearsExistingParent() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", parentID: "bd-parent"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.parentIssue(for: "bd-child") != nil }
+
+        let didClear = await store.setParent(issueID: "bd-child", parentID: nil)
+
+        XCTAssertTrue(didClear)
+        XCTAssertNil(store.parentIssue(for: "bd-child"))
+        XCTAssertNil(store.issue(with: "bd-child")?.parentID)
+        let calls = await commands.setParentCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-child"])
+        XCTAssertEqual(calls.first?.parentID, nil)
+    }
+
+    func testSetParentRejectsOpenChildUnderDoneParent() async throws {
+        let projectURL = try makeProject(
+            """
+            \(closedIssueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-child") != nil }
+
+        let didSet = await store.setParent(issueID: "bd-child", parentID: "bd-parent")
+
+        XCTAssertFalse(didSet)
+        XCTAssertEqual(
+            store.lastError,
+            "Reopen bd-parent or resolve child beads before adding bd-child as a child: bd-child."
+        )
+        let calls = await commands.setParentCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testPickerRelationshipActionsUseExpectedDependencyDirections() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-current", title: "Current"))
+            \(issueLine(id: "bd-other", title: "Other"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-other") != nil }
+
+        let blockedBy = await store.applyBeadPickerSelection("bd-other", action: .addBlockedBy(issueID: "bd-current"))
+        let blocks = await store.applyBeadPickerSelection("bd-other", action: .addBlocks(issueID: "bd-current"))
+
+        XCTAssertTrue(blockedBy)
+        XCTAssertTrue(blocks)
+        let calls = await commands.addDependencyCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-current", "bd-other"])
+        XCTAssertEqual(calls.map(\.dependsOnID), ["bd-other", "bd-current"])
+        XCTAssertEqual(calls.map(\.type), ["blocks", "blocks"])
+    }
+
+    func testCreateBeadCanReturnCreatedIDWithoutStealingSelection() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-current", title: "Current"))
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateResult(issueID: "bd-child")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-current") != nil }
+        store.select(["bd-current"])
+
+        var draft = store.blankDraft(parentID: "bd-parent")
+        draft.title = "Quick child"
+        let createdID = await store.createBead(draft, revealCreated: false)
+
+        XCTAssertEqual(createdID, "bd-child")
+        XCTAssertEqual(store.selectedIDs, Set(["bd-current"]))
+        XCTAssertEqual(store.issue(with: "bd-child")?.parentID, "bd-parent")
+        let calls = await commands.createCalls
+        XCTAssertEqual(calls.map(\.draft.title), ["Quick child"])
+        XCTAssertEqual(calls.map(\.draft.parentID), ["bd-parent"])
+    }
+
     private func makeProject(_ issuesJSONL: String) throws -> URL {
         let projectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeadStoreAsyncMutationTests-\(UUID().uuidString)", isDirectory: true)
@@ -1031,6 +1147,8 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     ] = []
     private(set) var closeCalls: [(projectURL: URL, ids: [String], reason: String?)] = []
     private(set) var bulkUpdateCalls: [(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?)] = []
+    private(set) var setParentCalls: [(projectURL: URL, issueID: String, parentID: String?)] = []
+    private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var mutationEvents: [String] = []
     private(set) var loadGateDetailCalls: [(projectURL: URL, id: String)] = []
     private(set) var resolveGateCalls: [(projectURL: URL, id: String, reason: String?)] = []
@@ -1170,7 +1288,15 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         mutationEvents.append("bulk:\(ids.joined(separator: ","))")
     }
 
-    func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {}
+    func setParent(projectURL: URL, issueID: String, parentID: String?) async throws {
+        setParentCalls.append((projectURL: projectURL, issueID: issueID, parentID: parentID))
+        mutationEvents.append("parent:\(issueID)")
+    }
+
+    func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {
+        addDependencyCalls.append((projectURL: projectURL, issueID: issueID, dependsOnID: dependsOnID, type: type))
+        mutationEvents.append("dep:\(issueID)->\(dependsOnID):\(type)")
+    }
 
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws {}
 

@@ -8,10 +8,8 @@ struct IssueInspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             InspectorGroup("Properties") {
-                if let parentIssue = store.parentIssue(for: issue.id) {
-                    SidebarBeadLink(issue: parentIssue, label: "Parent")
-                    InspectorRowDivider()
-                }
+                ParentBeadPickerControl(issue: issue, draft: $draft)
+                InspectorRowDivider()
 
                 IssueInspectorProperties(draft: $draft, includesStatus: true)
                 InspectorRowDivider()

@@ -320,6 +320,34 @@ final class BeadStore {
         )
     }
 
+    func beadPickerRows(
+        configuration: BeadPickerConfiguration,
+        filters: BeadPickerFilters,
+        searchText: String,
+        mode: IssueListMode,
+        outlineState: BeadOutlineSelectionState
+    ) async -> BeadPickerQueryResult {
+        let index = index
+        let sortOrder = BeadIssueSortOrder(sort: sort, direction: sortDirection)
+        let queryTask = Task.detached(priority: .userInitiated) {
+            BeadPickerQuery.rows(
+                index: index,
+                configuration: configuration,
+                filters: filters,
+                searchText: searchText,
+                mode: mode,
+                outlineState: outlineState,
+                sortOrder: sortOrder,
+                shouldCancel: { Task.isCancelled }
+            )
+        }
+        return await withTaskCancellationHandler {
+            await queryTask.value
+        } onCancel: {
+            queryTask.cancel()
+        }
+    }
+
     func childProgress(parentID: String) -> IssueChildProgress? {
         index.childProgress(for: parentID)
     }
@@ -1404,15 +1432,7 @@ final class BeadStore {
                 return false
             }
 
-            do {
-                let createdIssueID = try await commands.create(projectURL: projectURL, draft: draft)
-                guard self.projectURL == projectURL else { return false }
-                return try await reloadProjectAfterMutation(projectURL: projectURL, revealIssueID: createdIssueID)
-            } catch {
-                guard self.projectURL == projectURL else { return false }
-                lastError = error.localizedDescription
-                return false
-            }
+            return await createBead(draft, revealCreated: true) != nil
         }
 
         guard BeadIssueWorkflowPolicy.canChangeIssueTypeThroughNormalMutation(
@@ -1514,7 +1534,36 @@ final class BeadStore {
         }
     }
 
+    @discardableResult
+    func createBead(_ draft: IssueDraft, revealCreated: Bool) async -> String? {
+        guard let projectURL else { return nil }
+        guard draft.id == nil else { return nil }
+        guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(draft.issueType) else {
+            lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+            return nil
+        }
+
+        do {
+            let createdIssueID = try await commands.create(projectURL: projectURL, draft: draft)
+            guard self.projectURL == projectURL else { return nil }
+            _ = try await reloadProjectAfterMutation(
+                projectURL: projectURL,
+                revealIssueID: createdIssueID,
+                revealCreated: revealCreated
+            )
+            return createdIssueID
+        } catch {
+            guard self.projectURL == projectURL else { return nil }
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
     private func reloadProjectAfterMutation(projectURL: URL, revealIssueID: String) async throws -> Bool {
+        try await reloadProjectAfterMutation(projectURL: projectURL, revealIssueID: revealIssueID, revealCreated: true)
+    }
+
+    private func reloadProjectAfterMutation(projectURL: URL, revealIssueID: String, revealCreated: Bool) async throws -> Bool {
         refreshTask?.cancel()
         lastError = nil
 
@@ -1528,7 +1577,9 @@ final class BeadStore {
                 output: "Created bead \(revealIssueID) was not found after refresh."
             )
         }
-        revealIssue(id: revealIssueID)
+        if revealCreated {
+            revealIssue(id: revealIssueID)
+        }
         return true
     }
 
@@ -1827,6 +1878,103 @@ final class BeadStore {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    @discardableResult
+    func setParent(issueID: String, parentID: String?) async -> Bool {
+        guard let projectURL, let originalIssue = index.issue(with: issueID) else { return false }
+        let normalizedParentID = parentID?.nilIfBlank
+        guard normalizedParentID != issueID else {
+            lastError = "A bead cannot be its own parent."
+            return false
+        }
+        if let normalizedParentID {
+            guard index.issue(with: normalizedParentID) != nil else {
+                lastError = "Bead \(normalizedParentID) was not found."
+                return false
+            }
+            guard !index.descendantIDs(for: issueID).contains(normalizedParentID) else {
+                lastError = "A bead cannot be moved under one of its child beads."
+                return false
+            }
+            guard guardHierarchyAllowsParentChildDependency(
+                issueID: issueID,
+                dependsOnID: normalizedParentID,
+                type: "parent-child"
+            ) else { return false }
+        }
+        guard originalIssue.parentID != normalizedParentID else { return true }
+
+        let snapshot = currentMutationSnapshot()
+        let now = Date()
+        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
+            guard issue.id == issueID else { return issue }
+            var copy = issue
+            copy.parentID = normalizedParentID
+            copy.updatedAt = now
+            return copy
+        }
+        var optimisticDependencies = snapshot.dependencies.filter {
+            !($0.issueID == issueID && $0.type == "parent-child")
+        }
+        if let normalizedParentID {
+            optimisticDependencies.append(
+                BeadDependency(
+                    issueID: issueID,
+                    dependsOnID: normalizedParentID,
+                    type: "parent-child",
+                    createdAt: now
+                )
+            )
+        }
+
+        beginMutation()
+        defer { endMutation() }
+        applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
+
+        let commands = commands
+        var attemptedWrite = false
+        do {
+            attemptedWrite = true
+            try await enqueueMutationWrite {
+                try await commands.setParent(
+                    projectURL: projectURL,
+                    issueID: issueID,
+                    parentID: normalizedParentID
+                )
+            }
+            guard self.projectURL == projectURL else { return false }
+            pendingReconcile = true
+            return true
+        } catch {
+            guard self.projectURL == projectURL else { return false }
+            rollbackOptimisticState(to: snapshot)
+            if attemptedWrite {
+                pendingReconcile = true
+            }
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func applyBeadPickerSelection(_ selectedIssueID: String, action: BeadPickerAction) async -> Bool {
+        switch action {
+        case .setParent(let issueID):
+            return await setParent(issueID: issueID, parentID: selectedIssueID)
+        case .addBlockedBy(let issueID):
+            return await addDependency(issueID: issueID, dependsOnID: selectedIssueID, type: "blocks")
+        case .addBlocks(let issueID):
+            return await addDependency(issueID: selectedIssueID, dependsOnID: issueID, type: "blocks")
+        case .addChild(let parentID):
+            return await setParent(issueID: selectedIssueID, parentID: parentID)
+        }
+    }
+
+    @discardableResult
+    func applyBeadPickerQuickCreate(_ createdIssueID: String, action: BeadPickerAction) async -> Bool {
+        guard action.needsPostCreateRelationship else { return true }
+        return await applyBeadPickerSelection(createdIssueID, action: action)
     }
 
     @discardableResult

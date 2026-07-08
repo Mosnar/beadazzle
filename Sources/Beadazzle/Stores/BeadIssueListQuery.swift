@@ -77,7 +77,7 @@ struct BeadIssueListQuery: Sendable {
     }
 }
 
-struct BeadOutlineSelectionState: Equatable, Sendable {
+struct BeadOutlineSelectionState: Equatable, Hashable, Sendable {
     private(set) var expandedIssueIDs: Set<String> = []
     private(set) var collapsedIssueIDs: Set<String> = []
 

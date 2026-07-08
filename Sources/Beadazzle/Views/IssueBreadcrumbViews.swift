@@ -79,6 +79,7 @@ struct IssueBreadcrumbBar: View {
     let revertAction: () -> Void
     let requestClose: (BeadIssue) -> Void
     @State private var showingGateCreation = false
+    @State private var pickerConfiguration: BeadPickerConfiguration?
 
     var body: some View {
         let canCreateGate = store.canCreateGate(blocking: issue)
@@ -150,6 +151,17 @@ struct IssueBreadcrumbBar: View {
                 .accessibilityLabel("Copy Bead ID")
 
                 Menu {
+                    Button {
+                        pickerConfiguration = .blockedBy(issue: issue)
+                    } label: {
+                        Label("Blocked by...", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                    Button {
+                        pickerConfiguration = .blocks(issue: issue)
+                    } label: {
+                        Label("Blocks bead...", systemImage: "arrow.up.forward")
+                    }
+                    Divider()
                     if canCreateGate {
                         Button {
                             showingGateCreation = true
@@ -176,6 +188,15 @@ struct IssueBreadcrumbBar: View {
                     GateCreationForm(blockedIssueID: issue.id, blockedTitle: issue.title) {
                         showingGateCreation = false
                     }
+                }
+                .popover(item: $pickerConfiguration, arrowEdge: .bottom) { configuration in
+                    BeadPickerPopover(
+                        configuration: configuration,
+                        onApplied: { _ in },
+                        onDismiss: {
+                            pickerConfiguration = nil
+                        }
+                    )
                 }
                 .onChange(of: canCreateGate) { _, canCreateGate in
                     if !canCreateGate {

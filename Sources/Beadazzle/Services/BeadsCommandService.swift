@@ -16,6 +16,7 @@ protocol BeadsCommanding: Sendable {
     func close(projectURL: URL, ids: [String], reason: String?) async throws
     func delete(projectURL: URL, ids: [String]) async throws
     func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws
+    func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws
     func addComment(projectURL: URL, issueID: String, text: String) async throws
@@ -49,6 +50,12 @@ extension BeadsCommanding {
     func checkGates(projectURL _: URL, type _: String?, escalate _: Bool, dryRun _: Bool) async throws -> String { "" }
     func createGate(projectURL _: URL, blocks _: String, type _: GateAwaitType, reason _: String?, timeout _: String?, awaitID _: String?) async throws -> String { "" }
     func addGateWaiter(projectURL _: URL, id _: String, waiter _: String) async throws {}
+    func setParent(projectURL _: URL, issueID _: String, parentID _: String?) async throws {
+        throw BeadError.commandFailed(
+            command: "bd update --parent",
+            output: "Parent updates are not supported by this command service."
+        )
+    }
 }
 
 struct BeadsCommandService {
@@ -139,6 +146,13 @@ struct BeadsCommandService {
             arguments += ["--priority", "P\(priority)"]
         }
         try await run(projectURL: projectURL, arguments: arguments)
+    }
+
+    func setParent(projectURL: URL, issueID: String, parentID: String?) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.setParent(issueID: issueID, parentID: parentID)
+        )
     }
 
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {
@@ -689,6 +703,10 @@ enum BeadsCommandArguments {
         }
 
         return didAppendUpdate ? arguments : nil
+    }
+
+    static func setParent(issueID: String, parentID: String?) -> [String] {
+        ["update", issueID, "--parent", parentID?.nilIfBlank ?? ""]
     }
 
     static func saveCustomStatuses(_ statuses: [BeadStatusDefinition]) -> [String] {

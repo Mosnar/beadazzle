@@ -228,6 +228,18 @@ struct BeadProjectIndex: Sendable {
         return ancestors
     }
 
+    func descendantIDs(for issueID: String) -> Set<String> {
+        var descendants: Set<String> = []
+        var stack = childIDsByParentID[issueID] ?? []
+
+        while let childID = stack.popLast() {
+            guard descendants.insert(childID).inserted else { continue }
+            stack.append(contentsOf: childIDsByParentID[childID] ?? [])
+        }
+
+        return descendants
+    }
+
     func openChildIssues(forClosing issueIDs: [String]) -> [BeadIssue] {
         BeadHierarchyMutationPolicy(index: self)
             .unresolvedDescendantsPreventingCompletion(of: issueIDs, includedIssueIDs: issueIDs)
@@ -289,19 +301,24 @@ struct BeadProjectIndex: Sendable {
         typeFilters: Set<String>,
         priorityFilters: Set<Int>,
         labelFilters: Set<String>,
-        searchText: String
+        searchText: String,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> [String] {
         var candidateIDs = baseIDs
+        guard !shouldCancel() else { return [] }
         if !statusFilters.isEmpty {
             candidateIDs.formIntersection(unionSets(statusFilters.map { issueIDsByStatus[$0, default: []] }))
         }
+        guard !shouldCancel() else { return [] }
         if !typeFilters.isEmpty {
             candidateIDs.formIntersection(unionSets(typeFilters.map { issueIDsByType[$0, default: []] }))
         }
+        guard !shouldCancel() else { return [] }
         if !priorityFilters.isEmpty {
             candidateIDs.formIntersection(unionSets(priorityFilters.map { issueIDsByPriority[$0, default: []] }))
         }
         for label in labelFilters {
+            guard !shouldCancel() else { return [] }
             candidateIDs.formIntersection(issueIDsByLabel[label, default: []])
         }
 
@@ -314,10 +331,16 @@ struct BeadProjectIndex: Sendable {
         // bytes for that subsequence. This matches `localizedStandardContains` semantics
         // on folded text without a locale-aware (or grapheme-aware) scan per keystroke.
         let foldedQuery = ContiguousArray(Self.foldedForSearch(query).utf8)
-        return candidateIDs.filter { id in
-            guard let bytes = foldedSearchBytesByID[id] else { return false }
-            return Self.containsSubsequence(bytes, foldedQuery)
+        var matchingIDs: [String] = []
+        matchingIDs.reserveCapacity(candidateIDs.count)
+        for id in candidateIDs {
+            guard !shouldCancel() else { return [] }
+            guard let bytes = foldedSearchBytesByID[id] else { continue }
+            if Self.containsSubsequence(bytes, foldedQuery) {
+                matchingIDs.append(id)
+            }
         }
+        return matchingIDs
     }
 
     /// Case-, diacritic-, and width-insensitive folding using the current locale — the
@@ -355,8 +378,10 @@ struct BeadProjectIndex: Sendable {
         expandedIssueIDs: Set<String>,
         collapsedIssueIDs: Set<String> = [],
         sortOrder: BeadIssueSortOrder,
-        bookmark: BeadBookmark = .all
+        bookmark: BeadBookmark = .all,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
+        guard !shouldCancel() else { return [] }
         // Gates have no parent-child children, so the generic outline is meaningless for
         // them. The Gates section always renders as gate → the beads it blocks, regardless
         // of the global flat/outline mode (which is hidden there).
@@ -369,22 +394,27 @@ struct BeadProjectIndex: Sendable {
         }
         switch mode {
         case .flat:
-            return filteredIssueIDs.map { issueID in
-                IssueListRow(
+            var rows: [IssueListRow] = []
+            rows.reserveCapacity(filteredIssueIDs.count)
+            for issueID in filteredIssueIDs {
+                guard !shouldCancel() else { return [] }
+                rows.append(IssueListRow(
                     issueID: issueID,
                     depth: 0,
                     hasChildren: !(childIDsByParentID[issueID] ?? []).isEmpty,
                     childProgress: childProgressByParentID[issueID],
                     isExpanded: expandedIssueIDs.contains(issueID) && !collapsedIssueIDs.contains(issueID),
                     isContext: false
-                )
+                ))
             }
+            return rows
         case .outline:
             return outlineRows(
                 matchingIssueIDs: Set(filteredIssueIDs),
                 expandedIssueIDs: expandedIssueIDs,
                 collapsedIssueIDs: collapsedIssueIDs,
-                sortOrder: sortOrder
+                sortOrder: sortOrder,
+                shouldCancel: shouldCancel
             )
         }
     }
@@ -486,13 +516,16 @@ struct BeadProjectIndex: Sendable {
         matchingIssueIDs: Set<String>,
         expandedIssueIDs: Set<String>,
         collapsedIssueIDs: Set<String>,
-        sortOrder: BeadIssueSortOrder
+        sortOrder: BeadIssueSortOrder,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
         let visibleContextIDs = outlineVisibleIDs(
             matchingIssueIDs: matchingIssueIDs,
             expandedIssueIDs: expandedIssueIDs,
-            collapsedIssueIDs: collapsedIssueIDs
+            collapsedIssueIDs: collapsedIssueIDs,
+            shouldCancel: shouldCancel
         )
+        guard !shouldCancel() else { return [] }
 
         let rootIDs = visibleContextIDs.filter { parentID(for: $0) == nil }
         var rows: [IssueListRow] = []
@@ -507,6 +540,7 @@ struct BeadProjectIndex: Sendable {
             .map { OutlineNode(issueID: $0, depth: 0) }
 
         while let node = nodesToVisit.popLast() {
+            guard !shouldCancel() else { return [] }
             let childIDs = childIDsByParentID[node.issueID] ?? []
             let visibleChildIDs = childIDs.filter { visibleContextIDs.contains($0) }
             let isContext = !matchingIssueIDs.contains(node.issueID)
@@ -540,13 +574,16 @@ struct BeadProjectIndex: Sendable {
     private func outlineVisibleIDs(
         matchingIssueIDs: Set<String>,
         expandedIssueIDs: Set<String>,
-        collapsedIssueIDs: Set<String>
+        collapsedIssueIDs: Set<String>,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> Set<String> {
         var visibleIDs = matchingIssueIDs
         var visitedAncestorIDs: Set<String> = []
         for issueID in matchingIssueIDs {
+            guard !shouldCancel() else { return [] }
             var nextID = parentID(for: issueID)
             while let currentID = nextID, visitedAncestorIDs.insert(currentID).inserted {
+                guard !shouldCancel() else { return [] }
                 visibleIDs.insert(currentID)
                 nextID = parentID(for: currentID)
             }
@@ -555,9 +592,11 @@ struct BeadProjectIndex: Sendable {
         var visitedExpandedIDs: Set<String> = []
         var expandedIDsToVisit = Array(visibleIDs.intersection(expandedIssueIDs).subtracting(collapsedIssueIDs))
         while let issueID = expandedIDsToVisit.popLast() {
+            guard !shouldCancel() else { return [] }
             guard visitedExpandedIDs.insert(issueID).inserted else { continue }
 
             for childID in childIDsByParentID[issueID] ?? [] {
+                guard !shouldCancel() else { return [] }
                 guard issueByID[childID] != nil else { continue }
                 let inserted = visibleIDs.insert(childID).inserted
                 if inserted, expandedIssueIDs.contains(childID), !collapsedIssueIDs.contains(childID) {

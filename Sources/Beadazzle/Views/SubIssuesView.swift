@@ -3,6 +3,7 @@ import SwiftUI
 struct SubIssuesView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let issue: BeadIssue
+    @State private var showingChildPicker = false
 
     var body: some View {
         let rows = store.subIssueRows(parentID: issue.id)
@@ -23,7 +24,7 @@ struct SubIssuesView: View {
                 Spacer()
 
                 Button {
-                    store.beginCreatingChildBead(parentID: issue.id)
+                    showingChildPicker = true
                 } label: {
                     Label("New Sub-issue", systemImage: "plus")
                         .labelStyle(.iconOnly)
@@ -33,6 +34,15 @@ struct SubIssuesView: View {
                 .disabled(!store.canCreateChildBead(parentID: issue.id))
                 .help("Create sub-issue")
                 .accessibilityLabel("Create sub-issue")
+                .popover(isPresented: $showingChildPicker, arrowEdge: .bottom) {
+                    BeadPickerPopover(
+                        configuration: .child(parent: issue),
+                        onApplied: { _ in },
+                        onDismiss: {
+                            showingChildPicker = false
+                        }
+                    )
+                }
             }
 
             if items.isEmpty {

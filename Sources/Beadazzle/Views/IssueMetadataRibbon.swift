@@ -36,10 +36,12 @@ struct IssueMetadataRibbon: View {
                     displayValue: { "P\($0)" }
                 )
 
-                if let issueID = draft.id, let parentIssue = store.parentIssue(for: issueID) {
-                    ParentBeadRibbonButton(parent: parentIssue) { parentID in
-                        store.openIssueFromDetail(issueID: parentID)
-                    }
+                if let issueID = draft.id, let issue = store.issue(with: issueID) {
+                    ParentBeadPickerControl(
+                        issue: issue,
+                        draft: $draft,
+                        presentation: .ribbonChip
+                    )
                 }
 
                 IssueMetadataLabelsControl(

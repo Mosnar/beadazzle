@@ -13,8 +13,18 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Added
+
+- Relationship fields now use a fast bead picker with search, filters, outline
+  mode, and a compact quick-create flow for parent, blocking, and sub-issue
+  workflows.
+
 ### Fixed
 
+- Bead picker quick-create labels now use the same label picker as the rest of
+  the app, label filters are searchable, and picker popovers use native
+  material/glass styling instead of a heavy gradient panel, with tighter form
+  spacing and smoother expansion.
 - Changing bead metadata from the detail pane now updates the app immediately
   while the write runs in the background; only title and body text remain
   draft-until-save.
