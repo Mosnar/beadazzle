@@ -57,6 +57,7 @@ enum BeadCompletionAction: Equatable, Sendable {
 
 enum BeadIssueWorkflowPolicy {
     static let reservedIssueTypeError = "The gate type is reserved for gate actions."
+    static let unsupportedEpicGateError = "Gate creation for epics is not supported by this Beads CLI yet."
 
     static func isReservedIssueType(_ type: String) -> Bool {
         normalizedIssueType(type) == BeadProjectIndex.gateIssueType
@@ -75,7 +76,45 @@ enum BeadIssueWorkflowPolicy {
     }
 
     static func canCreateGate(blocking issue: BeadIssue, isDone: Bool) -> Bool {
-        !isDone && !issue.isGate
+        gateCreationUnavailableMessage(blocking: issue, isDone: isDone) == nil
+    }
+
+    static func canAddBlockingDependency(blockedIssue: BeadIssue, blockerIssue: BeadIssue) -> Bool {
+        isEpicIssueType(blockedIssue.issueType) == isEpicIssueType(blockerIssue.issueType)
+    }
+
+    static func blockingDependencyUnavailableMessage(blockedIssue: BeadIssue, blockerIssue: BeadIssue) -> String? {
+        guard !canAddBlockingDependency(blockedIssue: blockedIssue, blockerIssue: blockerIssue) else {
+            return nil
+        }
+        if isEpicIssueType(blockedIssue.issueType) {
+            return "\(blockedIssue.id) is an epic, so it can only be blocked by another epic."
+        }
+        return "\(blockerIssue.id) is an epic, so it can only block other epics."
+    }
+
+    static func blockingCompatibleIssueTypes(with issueType: String, candidates: [String]) -> [String] {
+        let needsEpicPeer = isEpicIssueType(issueType)
+        return normalMutableIssueTypes(candidates).filter { candidate in
+            isEpicIssueType(candidate) == needsEpicPeer
+        }
+    }
+
+    static func gateCreationUnavailableMessage(blocking issue: BeadIssue, isDone: Bool) -> String? {
+        if isDone {
+            return "Reopen \(issue.id) before creating a gate."
+        }
+        if issue.isGate {
+            return reservedIssueTypeError
+        }
+        if normalizedIssueType(issue.issueType) == "epic" {
+            return unsupportedEpicGateError
+        }
+        return nil
+    }
+
+    private static func isEpicIssueType(_ type: String) -> Bool {
+        normalizedIssueType(type) == "epic"
     }
 
     private static func normalizedIssueType(_ type: String) -> String {

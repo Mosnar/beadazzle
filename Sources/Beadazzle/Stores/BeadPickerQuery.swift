@@ -69,6 +69,9 @@ struct BeadPickerQuery: Sendable {
             if !configuration.scope.includesDone, policy.isDone(issue) {
                 continue
             }
+            if !canSelect(issue: issue, index: index, action: configuration.action) {
+                continue
+            }
             baseIDs.insert(issueID)
         }
 
@@ -113,5 +116,24 @@ struct BeadPickerQuery: Sendable {
         }
 
         return excludedIDs
+    }
+
+    private static func canSelect(issue: BeadIssue, index: BeadProjectIndex, action: BeadPickerAction) -> Bool {
+        switch action {
+        case .setParent, .addChild:
+            return true
+        case .addBlockedBy(let issueID):
+            guard let blockedIssue = index.issue(with: issueID) else { return false }
+            return BeadIssueWorkflowPolicy.canAddBlockingDependency(
+                blockedIssue: blockedIssue,
+                blockerIssue: issue
+            )
+        case .addBlocks(let issueID):
+            guard let blockerIssue = index.issue(with: issueID) else { return false }
+            return BeadIssueWorkflowPolicy.canAddBlockingDependency(
+                blockedIssue: issue,
+                blockerIssue: blockerIssue
+            )
+        }
     }
 }

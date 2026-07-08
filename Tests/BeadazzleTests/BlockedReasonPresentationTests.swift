@@ -79,6 +79,50 @@ final class BlockedReasonPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.tint, .unexplained)
     }
 
+    func testResolvedGateAttentionPresentationOffersReopen() throws {
+        let gate = gate(.githubPR, status: "closed", reason: "PR merged", awaitID: "42")
+        let reason = try XCTUnwrap(BlockedReasonPresentation.resolvedGate(
+            gates: [gate],
+            now: Date(timeIntervalSince1970: 1_000)
+        ))
+
+        let presentation = try XCTUnwrap(BlockedActionPresentation.make(issueID: "bd-stale", reason: reason))
+
+        XCTAssertEqual(presentation.kind, .resolvedGate)
+        XCTAssertEqual(presentation.message, "Gate resolved; status still blocked.")
+        XCTAssertEqual(presentation.actions, [.reopen])
+    }
+
+    func testNoActiveGateAttentionPresentationOffersGateCreationAndReopen() throws {
+        let presentation = try XCTUnwrap(BlockedActionPresentation.make(
+            issueID: "bd-manual",
+            reason: .unexplained
+        ))
+
+        XCTAssertEqual(presentation.kind, .noActiveGate)
+        XCTAssertEqual(presentation.message, "Marked blocked with no active gate.")
+        XCTAssertEqual(presentation.actions, [.createTimer, .createDecision, .reopen])
+    }
+
+    func testNoActiveGateAttentionPresentationOmitsGateActionsWhenUnsupported() throws {
+        let presentation = try XCTUnwrap(BlockedActionPresentation.make(
+            issueID: "bd-epic",
+            reason: .unexplained,
+            canCreateGate: false
+        ))
+
+        XCTAssertEqual(presentation.kind, .noActiveGate)
+        XCTAssertEqual(presentation.message, "Marked blocked with no active gate.")
+        XCTAssertEqual(presentation.actions, [.reopen])
+    }
+
+    func testActiveBlockerPresentationDoesNotCreateAttentionPresentation() throws {
+        let blocker = BlockedReasonPresentation.Blocker.issue(issue("bd-blocker", title: "Fix crawler"))
+        let reason = try XCTUnwrap(BlockedReasonPresentation.active(blockers: [blocker]))
+
+        XCTAssertNil(BlockedActionPresentation.make(issueID: "bd-blocked", reason: reason))
+    }
+
     private func issue(_ id: String, title: String) -> BeadIssue {
         BeadIssue(
             id: id,

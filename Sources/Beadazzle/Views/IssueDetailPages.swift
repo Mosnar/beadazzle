@@ -157,7 +157,7 @@ struct IssueDetailContent: View {
         if usesInspectorRail {
             HStack(alignment: .top, spacing: 0) {
                 IssueMainColumn(draft: $draft) {
-                    IssueBodySections(
+                    IssueDetailBody(
                         documentIDPrefix: issue.id,
                         issue: issue,
                         draft: $draft
@@ -180,13 +180,65 @@ struct IssueDetailContent: View {
             VStack(alignment: .leading, spacing: 26) {
                 IssueTitleBlock(draft: $draft)
 
-                IssueBodySections(
+                IssueDetailBody(
                     documentIDPrefix: issue.id,
                     issue: issue,
                     draft: $draft
                 )
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+}
+
+private struct IssueDetailBody: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    let documentIDPrefix: String
+    let issue: BeadIssue
+    @Binding var draft: IssueDraft
+    @State private var isRunningBlockedAction = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let blockedActionPresentation {
+                BlockedActionBanner(
+                    presentation: blockedActionPresentation,
+                    isBusy: isRunningBlockedAction,
+                    perform: performBlockedAction
+                )
+                .id(blockedActionPresentation.id)
+            }
+
+            IssueBodySections(
+                documentIDPrefix: documentIDPrefix,
+                issue: issue,
+                draft: $draft
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var blockedActionPresentation: BlockedActionPresentation? {
+        BlockedActionPresentation.make(
+            issueID: issue.id,
+            reason: store.blockedReasonPresentation(for: issue.id, now: store.gateClock),
+            canCreateGate: store.canCreateGate(blocking: issue)
+        )
+    }
+
+    private func performBlockedAction(_ action: BlockedActionPresentation.Action) {
+        guard !isRunningBlockedAction else { return }
+        isRunningBlockedAction = true
+        Task { @MainActor in
+            defer { isRunningBlockedAction = false }
+            switch action {
+            case .createTimer:
+                await store.createGate(blocks: issue.id, type: .timer, reason: nil, timeout: "8h", awaitID: nil)
+            case .createDecision:
+                await store.createGate(blocks: issue.id, type: .human, reason: nil, timeout: nil, awaitID: nil)
+            case .reopen:
+                await store.reopenBlockedIssue(issueID: issue.id)
+            }
         }
     }
 }

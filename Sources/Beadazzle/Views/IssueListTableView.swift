@@ -462,18 +462,21 @@ struct IssueListTableView: NSViewRepresentable {
             ))
             menu.addItem(.separator())
 
-            let statusItem = NSMenuItem(title: "Set Status", action: nil, keyEquivalent: "")
-            let statusMenu = NSMenu()
-            for status in parent.store.availableStatuses {
-                statusMenu.addItem(contextMenuItem(
-                    title: status,
-                    action: #selector(setContextStatus(_:)),
-                    ids: ids,
-                    status: status
-                ))
+            let statusOptions = parent.store.statusChangeOptions(forIssueIDs: ids)
+            if !statusOptions.isEmpty {
+                let statusItem = NSMenuItem(title: "Set Status", action: nil, keyEquivalent: "")
+                let statusMenu = NSMenu()
+                for status in statusOptions {
+                    statusMenu.addItem(contextMenuItem(
+                        title: status,
+                        action: #selector(setContextStatus(_:)),
+                        ids: ids,
+                        status: status
+                    ))
+                }
+                menu.addItem(statusItem)
+                menu.setSubmenu(statusMenu, for: statusItem)
             }
-            menu.addItem(statusItem)
-            menu.setSubmenu(statusMenu, for: statusItem)
 
             if ids.count == 1, let id = ids.first, parent.store.issue(with: id) != nil {
                 menu.addItem(contextMenuItem(

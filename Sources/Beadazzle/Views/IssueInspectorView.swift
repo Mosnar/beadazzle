@@ -28,7 +28,7 @@ struct IssueInspector: View {
                     InspectorRowDivider()
                     ResolvedGateStatusRepairRow(
                         gates: resolvedGates,
-                        statusOptions: store.statusOptions(including: draft.status),
+                        statusOptions: store.statusChangeOptions(excluding: draft.status),
                         selectedStatus: $draft.status
                     )
                 }
@@ -143,6 +143,7 @@ struct ResolvedGateStatusRepairRow: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(statusOptions.isEmpty)
         .onHover { isHovered = $0 }
         .help(helpText)
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
@@ -173,6 +174,9 @@ struct ResolvedGateStatusRepairRow: View {
 
     private var helpText: String {
         let gateIDs = gates.map(\.id).joined(separator: ", ")
+        guard !statusOptions.isEmpty else {
+            return "Gate \(gateIDs) is closed, but no other statuses are available."
+        }
         return "Gate \(gateIDs) is closed; choose a status to update the bead."
     }
 }

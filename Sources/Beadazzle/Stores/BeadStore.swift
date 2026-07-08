@@ -646,8 +646,32 @@ final class BeadStore {
         )
     }
 
+    func beadPickerDefaultDraft(for configuration: BeadPickerConfiguration) -> IssueDraft {
+        var draft = blankDraft(parentID: configuration.quickCreate?.defaultParentID)
+        if configuration.quickCreate != nil {
+            draft.issueType = beadPickerQuickCreateTypeOptions(
+                action: configuration.action,
+                including: nil
+            ).first ?? ""
+        }
+        return draft
+    }
+
     func statusOptions(including currentStatus: String?) -> [String] {
         options(availableStatuses, including: currentStatus, fallback: index.semantics.statusNames)
+    }
+
+    func statusChangeOptions(excluding currentStatus: String?) -> [String] {
+        let currentStatus = currentStatus?.nilIfBlank
+        return availableStatuses.filter { $0 != currentStatus }
+    }
+
+    func statusChangeOptions(forIssueIDs issueIDs: Set<String>) -> [String] {
+        let selectedStatuses = issueIDs.compactMap { index.issue(with: $0)?.status }
+        guard !selectedStatuses.isEmpty else { return [] }
+        return availableStatuses.filter { option in
+            selectedStatuses.contains { $0 != option }
+        }
     }
 
     func typeOptions(including currentType: String?) -> [String] {
@@ -663,6 +687,21 @@ final class BeadStore {
             including: currentType,
             fallback: BeadIssueWorkflowPolicy.normalMutableIssueTypes(index.semantics.typeNames)
         )
+    }
+
+    func beadPickerQuickCreateTypeOptions(action: BeadPickerAction, including currentType: String?) -> [String] {
+        let options = mutableTypeOptions(including: currentType)
+        switch action {
+        case .setParent, .addChild:
+            return options
+        case .addBlockedBy(let issueID), .addBlocks(let issueID):
+            guard let issue = index.issue(with: issueID) else { return options }
+            let compatibleOptions = BeadIssueWorkflowPolicy.blockingCompatibleIssueTypes(
+                with: issue.issueType,
+                candidates: options
+            )
+            return compatibleOptions
+        }
     }
 
     private func options(_ choices: [String], including currentValue: String?, fallback: [String]) -> [String] {
@@ -1812,6 +1851,15 @@ final class BeadStore {
     }
 
     @discardableResult
+    func reopenBlockedIssue(issueID: String) async -> Bool {
+        guard let status = reopenStatusName else {
+            lastError = "No active status is configured for reopened beads."
+            return false
+        }
+        return await bulkSet(issueIDs: [issueID], status: status)
+    }
+
+    @discardableResult
     func deleteSelected() async -> Bool {
         await delete(issueIDs: Array(selectedIDs))
     }
@@ -2213,8 +2261,11 @@ final class BeadStore {
             lastError = "Bead \(blocks) was not found."
             return false
         }
-        guard canCreateGate(blocking: issue) else {
-            lastError = "Reopen \(blocks) before creating a gate."
+        if let unavailableMessage = BeadIssueWorkflowPolicy.gateCreationUnavailableMessage(
+            blocking: issue,
+            isDone: isDone(issue)
+        ) {
+            lastError = unavailableMessage
             return false
         }
         do {
@@ -2258,6 +2309,11 @@ final class BeadStore {
     func addDependency(issueID: String, dependsOnID: String, type: String) async -> Bool {
         guard let projectURL else { return false }
         guard guardHierarchyAllowsParentChildDependency(
+            issueID: issueID,
+            dependsOnID: dependsOnID,
+            type: type
+        ) else { return false }
+        guard guardWorkflowAllowsBlockingDependency(
             issueID: issueID,
             dependsOnID: dependsOnID,
             type: type

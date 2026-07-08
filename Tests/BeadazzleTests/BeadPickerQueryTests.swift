@@ -58,6 +58,61 @@ final class BeadPickerQueryTests: XCTestCase {
         XCTAssertFalse(ids.contains("bd-blocker"))
     }
 
+    func testRelationshipPickersExcludeEpicTierMismatches() {
+        let task = issue("bd-task", title: "Task")
+        let epic = issue("bd-epic", title: "Epic", type: "epic")
+        let index = BeadProjectIndex(
+            issues: [
+                task,
+                issue("bd-bug", title: "Bug", type: "bug"),
+                issue("bd-other-task", title: "Other task"),
+                epic,
+                issue("bd-other-epic", title: "Other epic", type: "epic")
+            ],
+            dependencies: [],
+            semantics: semantics()
+        )
+
+        let taskBlockers = Set(BeadPickerQuery.candidateIssueIDs(
+            index: index,
+            configuration: .blockedBy(issue: task),
+            filters: BeadPickerFilters(),
+            searchText: ""
+        ))
+        let epicBlockers = Set(BeadPickerQuery.candidateIssueIDs(
+            index: index,
+            configuration: .blockedBy(issue: epic),
+            filters: BeadPickerFilters(),
+            searchText: ""
+        ))
+        let taskBlockedBeads = Set(BeadPickerQuery.candidateIssueIDs(
+            index: index,
+            configuration: .blocks(issue: task),
+            filters: BeadPickerFilters(),
+            searchText: ""
+        ))
+        let epicBlockedBeads = Set(BeadPickerQuery.candidateIssueIDs(
+            index: index,
+            configuration: .blocks(issue: epic),
+            filters: BeadPickerFilters(),
+            searchText: ""
+        ))
+
+        XCTAssertTrue(taskBlockers.contains("bd-bug"))
+        XCTAssertTrue(taskBlockers.contains("bd-other-task"))
+        XCTAssertFalse(taskBlockers.contains("bd-epic"))
+        XCTAssertFalse(taskBlockers.contains("bd-other-epic"))
+
+        XCTAssertEqual(epicBlockers, ["bd-other-epic"])
+
+        XCTAssertTrue(taskBlockedBeads.contains("bd-bug"))
+        XCTAssertTrue(taskBlockedBeads.contains("bd-other-task"))
+        XCTAssertFalse(taskBlockedBeads.contains("bd-epic"))
+        XCTAssertFalse(taskBlockedBeads.contains("bd-other-epic"))
+
+        XCTAssertEqual(epicBlockedBeads, ["bd-other-epic"])
+    }
+
     func testOutlinePickerIncludesAncestorContextForSearchMatch() {
         let parent = issue("bd-parent", title: "Parent")
         let index = BeadProjectIndex(

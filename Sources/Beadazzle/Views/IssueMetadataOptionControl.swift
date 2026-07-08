@@ -30,9 +30,10 @@ struct IssueMetadataOptionControl<Option: Hashable>: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(options.isEmpty)
         .focused($isFocused)
         .onHover { isHovered = $0 }
-        .help("Change \(title.lowercased())")
+        .help(options.isEmpty ? "No other \(title.lowercased()) options" : "Change \(title.lowercased())")
         .accessibilityLabel(title)
         .accessibilityValue(value)
         .accessibilityHint("Opens a menu")

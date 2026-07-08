@@ -52,6 +52,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             """
             \(issueLine(id: "bd-open", title: "Open"))
             \(issueLine(id: "bd-blocked", title: "Blocked", status: "blocked"))
+            \(issueLine(id: "bd-epic", title: "Epic", issueType: "epic"))
             \(closedIssueLine(id: "bd-closed", title: "Closed"))
             \(closedIssueLine(id: "bd-done", title: "Done"))
             """
@@ -67,7 +68,36 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-open"))))
         XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-blocked"))))
+        XCTAssertFalse(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-epic"))))
         XCTAssertFalse(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-closed"))))
+    }
+
+    func testRelationshipQuickCreateTypeOptionsFollowEpicTier() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-task", title: "Task"))
+            \(issueLine(id: "bd-epic", title: "Epic", issueType: "epic"))
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-epic") != nil }
+
+        let taskOptions = store.beadPickerQuickCreateTypeOptions(
+            action: .addBlockedBy(issueID: "bd-task"),
+            including: nil
+        )
+        let epicOptions = store.beadPickerQuickCreateTypeOptions(
+            action: .addBlockedBy(issueID: "bd-epic"),
+            including: nil
+        )
+        let epicDefault = store.beadPickerDefaultDraft(
+            for: .blockedBy(issue: try XCTUnwrap(store.issue(with: "bd-epic")))
+        )
+
+        XCTAssertFalse(taskOptions.contains("epic"))
+        XCTAssertEqual(Set(epicOptions), ["epic"])
+        XCTAssertEqual(epicDefault.issueType, "epic")
     }
 
     func testReopenClosedIssueUsesOpenStatusAndClearsClosedAtOptimistically() async throws {
@@ -84,6 +114,22 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertNil(store.issue(with: "bd-1")?.closedAt)
         let calls = await commands.bulkUpdateCalls
         XCTAssertEqual(calls.map(\.ids), [["bd-1"]])
+        XCTAssertEqual(calls.map(\.status), ["open"])
+    }
+
+    func testReopenBlockedIssueUsesOpenStatusWithoutDoneFilter() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-blocked", title: "Blocked", status: "blocked"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-blocked") != nil }
+
+        let succeeded = await store.reopenBlockedIssue(issueID: "bd-blocked")
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-blocked")?.status, "open")
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-blocked"]])
         XCTAssertEqual(calls.map(\.status), ["open"])
     }
 
@@ -919,6 +965,27 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(createGateCalls.isEmpty)
     }
 
+    func testCreateGateRejectsEpicsBeforeInvokingCommand() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-epic", title: "Epic", issueType: "epic"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-epic") != nil }
+
+        let didCreate = await store.createGate(
+            blocks: "bd-epic",
+            type: .human,
+            reason: nil,
+            timeout: nil,
+            awaitID: nil
+        )
+
+        XCTAssertFalse(didCreate)
+        XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.unsupportedEpicGateError)
+        let createGateCalls = await commands.createGateCalls
+        XCTAssertTrue(createGateCalls.isEmpty)
+    }
+
     func testApprovingHumanGateOpensEligibleBlockedBeads() async throws {
         let projectURL = try makeProject(gateProjectJSONL(
             gateUpdatedAt: "2026-07-03T21:58:35Z",
@@ -1160,11 +1227,12 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         title: String,
         status: String = "open",
         priority: Int = 1,
-        parentID: String? = nil
+        parentID: String? = nil,
+        issueType: String = "task"
     ) -> String {
         let parentFragment = parentID.map { ",\"parent_id\":\"\($0)\"" } ?? ""
         return """
-        {"_type":"issue","id":"\(id)","title":"\(title)","status":"\(status)","priority":\(priority),"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"\(parentFragment)}
+        {"_type":"issue","id":"\(id)","title":"\(title)","status":"\(status)","priority":\(priority),"issue_type":"\(issueType)","updated_at":"2026-07-03T20:58:35Z"\(parentFragment)}
         """
     }
 

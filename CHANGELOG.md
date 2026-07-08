@@ -23,6 +23,8 @@ for users, not for the commit log.
 - Blocked rows now explain why each bead is blocked inline, including active
   blocker beads, gates, external references, resolved gates, and manually
   blocked beads with no active blocker.
+- Blocked bead detail pages now show an inline helper for stale blocked states,
+  and sub-issue rows surface the same blocker context as the main list.
 
 ### Changed
 
@@ -32,6 +34,12 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Blocked epic helpers no longer offer gate-creation actions that the current
+  Beads CLI cannot complete.
+- Blocker relationship pickers and quick-create now respect Beads' epic-only
+  blocking rule instead of offering relationships that fail after selection.
+- Status change menus no longer show the status already set on the selected
+  bead.
 - Selecting beads in the Gates list now keeps the active row highlight aligned
   with AppKit selection, including during fast keyboard navigation.
 - Bead picker quick-create labels now use the same label picker as the rest of

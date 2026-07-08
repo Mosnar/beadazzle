@@ -12,7 +12,7 @@ struct IssueInspectorProperties: View {
                 title: "Status",
                 systemImage: store.statusSymbol(for: draft.status),
                 tint: store.statusColor(for: draft.status),
-                options: store.statusOptions(including: draft.status),
+                options: store.statusChangeOptions(excluding: draft.status),
                 selected: $draft.status,
                 displayValue: { $0 }
             )

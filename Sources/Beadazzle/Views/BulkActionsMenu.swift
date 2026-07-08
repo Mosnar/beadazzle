@@ -7,20 +7,23 @@ struct BulkActionsMenu: View {
     let requestSetStatus: (String) -> Void
 
     var body: some View {
+        let statusOptions = store.statusChangeOptions(forIssueIDs: store.selectedIDs)
+
         Menu {
             Button(closeTitle) {
                 requestCloseSelected()
             }
             .disabled(store.selectedIDs.isEmpty)
 
-            Menu("Set Status") {
-                ForEach(store.availableStatuses, id: \.self) { status in
-                    Button(status) {
-                        requestSetStatus(status)
+            if !statusOptions.isEmpty {
+                Menu("Set Status") {
+                    ForEach(statusOptions, id: \.self) { status in
+                        Button(status) {
+                            requestSetStatus(status)
+                        }
                     }
                 }
             }
-            .disabled(store.selectedIDs.isEmpty)
 
             Menu("Set Type") {
                 ForEach(store.availableMutableTypes, id: \.self) { type in

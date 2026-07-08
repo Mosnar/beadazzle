@@ -239,6 +239,73 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
         XCTAssertEqual(addDependencyCalls.map(\.type), ["parent-child"])
     }
 
+    func testBlockingDependencyRejectsTaskBlockerForEpic() async throws {
+        let loaded = try await makeLoadedStore(
+            """
+            \(issueLine(id: "bd-task", title: "Task"))
+            \(issueLine(id: "bd-epic", title: "Epic", type: "epic"))
+            """
+        )
+
+        let didAdd = await loaded.store.addDependency(
+            issueID: "bd-epic",
+            dependsOnID: "bd-task",
+            type: "blocks"
+        )
+
+        XCTAssertFalse(didAdd)
+        XCTAssertEqual(
+            loaded.store.lastError,
+            "bd-epic is an epic, so it can only be blocked by another epic."
+        )
+        let addDependencyCalls = await loaded.commands.addDependencyCalls
+        XCTAssertTrue(addDependencyCalls.isEmpty)
+    }
+
+    func testBlockingDependencyRejectsEpicBlockerForTask() async throws {
+        let loaded = try await makeLoadedStore(
+            """
+            \(issueLine(id: "bd-task", title: "Task"))
+            \(issueLine(id: "bd-epic", title: "Epic", type: "epic"))
+            """
+        )
+
+        let didAdd = await loaded.store.addDependency(
+            issueID: "bd-task",
+            dependsOnID: "bd-epic",
+            type: "blocks"
+        )
+
+        XCTAssertFalse(didAdd)
+        XCTAssertEqual(
+            loaded.store.lastError,
+            "bd-epic is an epic, so it can only block other epics."
+        )
+        let addDependencyCalls = await loaded.commands.addDependencyCalls
+        XCTAssertTrue(addDependencyCalls.isEmpty)
+    }
+
+    func testBlockingDependencyAllowsEpicToEpic() async throws {
+        let loaded = try await makeLoadedStore(
+            """
+            \(issueLine(id: "bd-blocked", title: "Blocked epic", type: "epic"))
+            \(issueLine(id: "bd-blocker", title: "Blocker epic", type: "epic"))
+            """
+        )
+
+        let didAdd = await loaded.store.addDependency(
+            issueID: "bd-blocked",
+            dependsOnID: "bd-blocker",
+            type: "blocks"
+        )
+
+        XCTAssertTrue(didAdd)
+        let addDependencyCalls = await loaded.commands.addDependencyCalls
+        XCTAssertEqual(addDependencyCalls.map(\.issueID), ["bd-blocked"])
+        XCTAssertEqual(addDependencyCalls.map(\.dependsOnID), ["bd-blocker"])
+        XCTAssertEqual(addDependencyCalls.map(\.type), ["blocks"])
+    }
+
     func testTypePriorityAndNonParentDependencyMutationsRemainAllowed() async throws {
         let loaded = try await makeLoadedStore(
             """

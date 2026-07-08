@@ -17,7 +17,7 @@ struct BeadPickerPopover: View {
 
     var body: some View {
         @Bindable var model = model
-        let defaultDraft = store.blankDraft(parentID: configuration.quickCreate?.defaultParentID)
+        let defaultDraft = store.beadPickerDefaultDraft(for: configuration)
         let queryToken = model.queryToken(configuration: configuration, contentRevision: store.contentRevision)
 
         VStack(alignment: .leading, spacing: 0) {
@@ -288,7 +288,10 @@ struct BeadPickerPopover: View {
                         get: { model.quickCreateType },
                         set: { model.quickCreateType = $0 }
                     ),
-                    typeOptions: store.mutableTypeOptions(including: model.quickCreateType),
+                    typeOptions: store.beadPickerQuickCreateTypeOptions(
+                        action: configuration.action,
+                        including: model.quickCreateType
+                    ),
                     isDisabled: isApplying
                 )
                 .frame(minWidth: 118, idealWidth: 136, maxWidth: 154, alignment: .leading)

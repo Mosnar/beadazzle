@@ -81,6 +81,24 @@ extension BeadStore {
         return false
     }
 
+    func guardWorkflowAllowsBlockingDependency(
+        issueID: String,
+        dependsOnID: String,
+        type: String
+    ) -> Bool {
+        guard type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "blocks",
+              let blockedIssue = issue(with: issueID),
+              let blockerIssue = issue(with: dependsOnID),
+              let message = BeadIssueWorkflowPolicy.blockingDependencyUnavailableMessage(
+                  blockedIssue: blockedIssue,
+                  blockerIssue: blockerIssue
+              )
+        else { return true }
+
+        lastError = message
+        return false
+    }
+
     func hierarchyCompletionWriteOrder(_ issueIDs: [String]) -> [String] {
         hierarchyMutationPolicy.completionWriteOrder(issueIDs)
     }

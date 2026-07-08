@@ -50,6 +50,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.availableStatuses, [])
         XCTAssertEqual(store.availableTypes, [])
         XCTAssertEqual(store.statusOptions(including: "open"), ["open"])
+        XCTAssertEqual(store.statusChangeOptions(excluding: "open"), [])
         XCTAssertEqual(store.typeOptions(including: "task"), ["task"])
         XCTAssertEqual(store.statusCounts.map(\.0), ["open"])
         XCTAssertEqual(store.typeCounts.map(\.0), ["task"])
@@ -63,7 +64,28 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(reloadedStore.availableStatuses, [])
         XCTAssertEqual(reloadedStore.availableTypes, [])
         XCTAssertEqual(reloadedStore.statusOptions(including: "open"), ["open"])
+        XCTAssertEqual(reloadedStore.statusChangeOptions(excluding: "open"), [])
         XCTAssertEqual(reloadedStore.typeOptions(including: "task"), ["task"])
+    }
+
+    func testStatusChangeOptionsExcludeNoOpStatuses() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-open", status: "open", type: "task"))
+            \(issueLine(id: "bd-qa", status: "qa", type: "task"))
+            \(issueLine(id: "bd-open-2", status: "open", type: "task"))
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-qa") != nil }
+
+        XCTAssertEqual(store.statusChangeOptions(excluding: "open"), ["qa"])
+        XCTAssertEqual(store.statusChangeOptions(excluding: "qa"), ["open"])
+        XCTAssertEqual(store.statusChangeOptions(forIssueIDs: ["bd-open"]), ["qa"])
+        XCTAssertEqual(store.statusChangeOptions(forIssueIDs: ["bd-open", "bd-open-2"]), ["qa"])
+        XCTAssertEqual(store.statusChangeOptions(forIssueIDs: ["bd-open", "bd-qa"]), ["open", "qa"])
+        XCTAssertEqual(store.statusChangeOptions(forIssueIDs: []), [])
     }
 
     func testReadyParentRollUpPreferenceDefaultsOnPersistsPerProjectAndRecomputesReadyRows() async throws {

@@ -94,6 +94,7 @@ private struct SubIssueRow: View {
                 showsOwner: false,
                 showsAssignee: false,
                 showsDueDate: false,
+                blockedReason: store.blockedReasonPresentation(for: issue.id, now: store.gateClock),
                 showsDependencyCounts: false,
                 showsComments: false,
                 showsLabels: false
