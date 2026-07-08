@@ -16,6 +16,10 @@ enum BeadazzlePreferenceKeys {
     static func hiddenStatuses(projectURL: URL) -> String {
         "HiddenStatuses.\(projectURL.standardizedFileURL.path)"
     }
+
+    static func hidesParentsWithOnlyBlockedChildrenInReady(projectURL: URL) -> String {
+        "HidesParentsWithOnlyBlockedChildrenInReady.\(projectURL.standardizedFileURL.path)"
+    }
 }
 
 struct BeadListDisplayOptions: Equatable, Sendable {

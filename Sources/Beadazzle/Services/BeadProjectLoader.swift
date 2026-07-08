@@ -34,6 +34,7 @@ struct BeadProjectLoader: Sendable {
     func loadProject(
         projectURL: URL,
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
         let loadedSnapshot = try await Task.detached(priority: .userInitiated) {
@@ -61,7 +62,8 @@ struct BeadProjectLoader: Sendable {
                     issues: loadedSnapshot.snapshot.issues,
                     dependencies: loadedSnapshot.snapshot.dependencies,
                     semantics: semantics,
-                    staleCutoffDays: staleCutoffDays
+                    staleCutoffDays: staleCutoffDays,
+                    hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
                 )
             }
             return LoadedProject(
@@ -76,22 +78,33 @@ struct BeadProjectLoader: Sendable {
     func initializeAndLoadProject(
         projectURL: URL,
         options: BeadsInitOptions,
-        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays
+        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true
     ) async throws -> LoadedProject {
         try await commands.initialize(projectURL: projectURL, options: options)
-        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+        return try await loadProject(
+            projectURL: projectURL,
+            staleCutoffDays: staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+        )
     }
 
     func exportAndLoadProject(
         projectURL: URL,
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
         guard Self.beadsDirectoryExists(at: projectURL) else {
             throw BeadError.projectMissingDataSource(projectURL)
         }
         try await commands.exportReadableSnapshot(projectURL: projectURL)
-        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: cachedDefinitions)
+        return try await loadProject(
+            projectURL: projectURL,
+            staleCutoffDays: staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+            cachedDefinitions: cachedDefinitions
+        )
     }
 
     /// Re-exports the readable JSONL snapshot before reading, then loads.
@@ -107,12 +120,18 @@ struct BeadProjectLoader: Sendable {
     func refreshSnapshotAndLoadProject(
         projectURL: URL,
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
         if Self.beadsDirectoryExists(at: projectURL) {
             try? await commands.exportReadableSnapshot(projectURL: projectURL)
         }
-        return try await loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: cachedDefinitions)
+        return try await loadProject(
+            projectURL: projectURL,
+            staleCutoffDays: staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+            cachedDefinitions: cachedDefinitions
+        )
     }
 
     /// Reads status/type definitions from `bd`. Returns `nil` if the read fails, so the

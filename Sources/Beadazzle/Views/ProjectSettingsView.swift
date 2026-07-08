@@ -1,6 +1,7 @@
 import SwiftUI
 
 private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
+    case workflow
     case types
     case statuses
 
@@ -8,6 +9,8 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .workflow:
+            "Workflow"
         case .types:
             "Types"
         case .statuses:
@@ -17,6 +20,8 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
 
     var systemImage: String {
         switch self {
+        case .workflow:
+            "checklist"
         case .types:
             "tag"
         case .statuses:
@@ -70,6 +75,8 @@ private struct ProjectSettingsDetail: View {
     var body: some View {
         if isActiveProject {
             switch pane {
+            case .workflow:
+                ProjectWorkflowSettingsPane()
             case .types:
                 ProjectTypesSettingsPane()
             case .statuses:
@@ -79,6 +86,21 @@ private struct ProjectSettingsDetail: View {
             ContentUnavailableView("Active Project Required", systemImage: "folder")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct ProjectWorkflowSettingsPane: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+
+    var body: some View {
+        @Bindable var store = store
+
+        Form {
+            Section("Ready") {
+                Toggle("Hide parents whose unfinished children are all blocked", isOn: $store.hidesParentsWithOnlyBlockedChildrenInReady)
+            }
+        }
+        .settingsGroupedForm()
     }
 }
 

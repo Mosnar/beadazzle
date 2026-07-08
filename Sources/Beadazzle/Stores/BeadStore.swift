@@ -117,7 +117,14 @@ final class BeadStore {
                 return
             }
             persistStaleCutoffDays()
-            rebuildIndexForStaleCutoffChange()
+            rebuildIndexForProjectIndexPreferenceChange()
+        }
+    }
+    var hidesParentsWithOnlyBlockedChildrenInReady = true {
+        didSet {
+            guard oldValue != hidesParentsWithOnlyBlockedChildrenInReady else { return }
+            persistReadyParentRollUpPreference()
+            rebuildIndexForProjectIndexPreferenceChange()
         }
     }
     var showsOwnerInBeadList = false {
@@ -719,6 +726,7 @@ final class BeadStore {
             rememberRecentProject(url)
         }
         clearLoadedProjectData()
+        loadReadyParentRollUpPreference(for: url)
         selectedBookmark = .ready
         resetWorkspaceHistory()
         if isMissingDataSourceProject(url) {
@@ -803,10 +811,26 @@ final class BeadStore {
         hiddenStatusNames = Set(userDefaults.stringArray(forKey: BeadazzlePreferenceKeys.hiddenStatuses(projectURL: url)) ?? [])
     }
 
+    private func loadReadyParentRollUpPreference(for url: URL) {
+        hidesParentsWithOnlyBlockedChildrenInReady = Self.boolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.hidesParentsWithOnlyBlockedChildrenInReady(projectURL: url),
+            defaultValue: true
+        )
+    }
+
     private func persistProjectVisibility() {
         guard let projectURL else { return }
         userDefaults.set(hiddenTypeNames.sorted(), forKey: BeadazzlePreferenceKeys.hiddenTypes(projectURL: projectURL))
         userDefaults.set(hiddenStatusNames.sorted(), forKey: BeadazzlePreferenceKeys.hiddenStatuses(projectURL: projectURL))
+    }
+
+    private func persistReadyParentRollUpPreference() {
+        guard let projectURL else { return }
+        userDefaults.set(
+            hidesParentsWithOnlyBlockedChildrenInReady,
+            forKey: BeadazzlePreferenceKeys.hidesParentsWithOnlyBlockedChildrenInReady(projectURL: projectURL)
+        )
     }
 
     func isTypeHidden(_ name: String) -> Bool {
@@ -857,13 +881,15 @@ final class BeadStore {
         lastError = nil
         let projectLoader = projectLoader
         let staleCutoffDays = staleCutoffDays
+        let hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
 
         Task { @MainActor [weak self] in
             do {
                 let loadedProject = try await projectLoader.initializeAndLoadProject(
                     projectURL: projectURL,
                     options: options,
-                    staleCutoffDays: staleCutoffDays
+                    staleCutoffDays: staleCutoffDays,
+                    hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
                 )
                 guard let self, self.projectURL == projectURL else { return }
                 self.isInitializingBeads = false
@@ -995,6 +1021,7 @@ final class BeadStore {
         }
         let projectLoader = projectLoader
         let staleCutoffDays = staleCutoffDays
+        let hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
 
         // Mutations and explicit user refreshes must re-export the readable JSONL
         // snapshot first: Dolt-backed (embedded) projects only back it up on a
@@ -1012,9 +1039,19 @@ final class BeadStore {
             do {
                 let snapshotTask = Task {
                     if forcesSnapshotExport {
-                        return try await projectLoader.refreshSnapshotAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: definitionsForLoad)
+                        return try await projectLoader.refreshSnapshotAndLoadProject(
+                            projectURL: projectURL,
+                            staleCutoffDays: staleCutoffDays,
+                            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+                            cachedDefinitions: definitionsForLoad
+                        )
                     }
-                    return try await projectLoader.loadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays, cachedDefinitions: definitionsForLoad)
+                    return try await projectLoader.loadProject(
+                        projectURL: projectURL,
+                        staleCutoffDays: staleCutoffDays,
+                        hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+                        cachedDefinitions: definitionsForLoad
+                    )
                 }
                 let loadedProject = try await withTaskCancellationHandler {
                     try await snapshotTask.value
@@ -1040,7 +1077,12 @@ final class BeadStore {
                     return
                 }
                 let recoveryTask = Task {
-                    try await projectLoader.exportAndLoadProject(projectURL: projectURL, staleCutoffDays: self.staleCutoffDays, cachedDefinitions: definitionsForLoad)
+                    try await projectLoader.exportAndLoadProject(
+                        projectURL: projectURL,
+                        staleCutoffDays: self.staleCutoffDays,
+                        hidesParentsWithOnlyBlockedChildrenInReady: self.hidesParentsWithOnlyBlockedChildrenInReady,
+                        cachedDefinitions: definitionsForLoad
+                    )
                 }
                 do {
                     let recoveredProject = try await withTaskCancellationHandler(operation: {
@@ -1304,7 +1346,8 @@ final class BeadStore {
             issues: issues,
             dependencies: dependencies,
             semantics: index.semantics,
-            staleCutoffDays: staleCutoffDays
+            staleCutoffDays: staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
         )
         self.issues = issues
         contentRevision &+= 1
@@ -1610,12 +1653,20 @@ final class BeadStore {
 
     private func loadProjectRecoveringMissingDataSource(projectURL: URL) async throws -> LoadedProject {
         do {
-            return try await projectLoader.refreshSnapshotAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+            return try await projectLoader.refreshSnapshotAndLoadProject(
+                projectURL: projectURL,
+                staleCutoffDays: staleCutoffDays,
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+            )
         } catch BeadError.projectMissingDataSource(let missingURL) {
             guard Self.beadsDirectoryExists(at: projectURL) else {
                 throw BeadError.projectMissingDataSource(missingURL)
             }
-            return try await projectLoader.exportAndLoadProject(projectURL: projectURL, staleCutoffDays: staleCutoffDays)
+            return try await projectLoader.exportAndLoadProject(
+                projectURL: projectURL,
+                staleCutoffDays: staleCutoffDays,
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+            )
         }
     }
 
@@ -2660,13 +2711,14 @@ final class BeadStore {
         await recomputeTask?.value
     }
 
-    private func rebuildIndexForStaleCutoffChange() {
+    private func rebuildIndexForProjectIndexPreferenceChange() {
         guard !index.issues.isEmpty || !index.dependencies.isEmpty || index.semantics != .empty else { return }
         index = BeadProjectIndex(
             issues: index.issues,
             dependencies: index.dependencies,
             semantics: index.semantics,
-            staleCutoffDays: staleCutoffDays
+            staleCutoffDays: staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
         )
         contentRevision &+= 1
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
@@ -2674,6 +2726,22 @@ final class BeadStore {
         applyFilters()
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
+    }
+
+    private func indexMatchingCurrentProjectPreferences(from loadedIndex: BeadProjectIndex) -> BeadProjectIndex {
+        guard loadedIndex.staleCutoffDays != staleCutoffDays
+            || loadedIndex.hidesParentsWithOnlyBlockedChildrenInReady != hidesParentsWithOnlyBlockedChildrenInReady
+        else {
+            return loadedIndex
+        }
+
+        return BeadProjectIndex(
+            issues: loadedIndex.issues,
+            dependencies: loadedIndex.dependencies,
+            semantics: loadedIndex.semantics,
+            staleCutoffDays: staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+        )
     }
 
     private func expandAncestorsForSelection(rebuildRows: Bool) {
@@ -2695,7 +2763,7 @@ final class BeadStore {
     private func applyLoadedProject(_ loadedProject: LoadedProject, projectURL: URL) {
         isReconcileInFlight = false
         projectReadiness = .ready
-        index = loadedProject.index
+        index = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
         issues = loadedProject.snapshot.issues
         contentRevision &+= 1
         if let definitions = loadedProject.definitions {

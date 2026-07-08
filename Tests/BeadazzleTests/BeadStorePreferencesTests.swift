@@ -66,6 +66,68 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(reloadedStore.typeOptions(including: "task"), ["task"])
     }
 
+    func testReadyParentRollUpPreferenceDefaultsOnPersistsPerProjectAndRecomputesReadyRows() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"blocked","priority":1,"issue_type":"task","parent_id":"bd-parent","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let store = BeadStore(userDefaults: defaults, commands: readyRollUpCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.count(for: .all) == 2 }
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertTrue(store.hidesParentsWithOnlyBlockedChildrenInReady)
+        XCTAssertEqual(store.count(for: .ready), 0)
+        XCTAssertEqual(store.filteredIssueIDs, [])
+
+        store.hidesParentsWithOnlyBlockedChildrenInReady = false
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.count(for: .ready), 1)
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-parent"])
+
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: readyRollUpCommands())
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.count(for: .all) == 2 }
+        await reloadedStore.waitForPendingQueryRecompute()
+
+        XCTAssertFalse(reloadedStore.hidesParentsWithOnlyBlockedChildrenInReady)
+        XCTAssertEqual(reloadedStore.count(for: .ready), 1)
+        XCTAssertEqual(reloadedStore.filteredIssueIDs, ["bd-parent"])
+
+        let otherProjectURL = try makeProject(issueLine(id: "bd-other", status: "open", type: "task"))
+        let otherStore = BeadStore(userDefaults: defaults, commands: readyRollUpCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.count(for: .all) == 1 }
+
+        XCTAssertTrue(otherStore.hidesParentsWithOnlyBlockedChildrenInReady)
+    }
+
+    func testReadyParentRollUpPreferenceChangeDuringLoadWinsOverLoadedIndexPreference() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"blocked","priority":1,"issue_type":"task","parent_id":"bd-parent","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let store = BeadStore(
+            userDefaults: defaults,
+            commands: readyRollUpCommands(definitionReadDelay: .milliseconds(200))
+        )
+        store.openProject(projectURL)
+        store.hidesParentsWithOnlyBlockedChildrenInReady = false
+        try await waitUntil { !store.isLoading && store.count(for: .all) == 2 }
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertFalse(store.hidesParentsWithOnlyBlockedChildrenInReady)
+        XCTAssertEqual(store.count(for: .ready), 1)
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-parent"])
+    }
+
     func testMutableTypeOptionsExcludeGateWithoutHidingExistingGateType() async throws {
         let projectURL = try makeProject(
             """
@@ -213,6 +275,20 @@ final class BeadStorePreferencesTests: XCTestCase {
         """
     }
 
+    private func readyRollUpCommands(definitionReadDelay: Duration? = nil) -> PreferenceTestCommands {
+        PreferenceTestCommands(
+            statusDefinitions: [
+                BeadStatusDefinition(name: "open", category: .active, icon: nil, description: nil, isBuiltIn: true, source: .builtIn),
+                BeadStatusDefinition(name: "blocked", category: .wip, icon: nil, description: nil, isBuiltIn: true, source: .builtIn),
+                BeadStatusDefinition(name: "closed", category: .done, icon: nil, description: nil, isBuiltIn: true, source: .builtIn)
+            ],
+            typeDefinitions: [
+                BeadTypeDefinition(name: "task", description: nil, source: .core)
+            ],
+            definitionReadDelay: definitionReadDelay
+        )
+    }
+
     private func makeUserDefaults() -> UserDefaults {
         let suiteName = "BeadStorePreferencesTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -244,6 +320,7 @@ private actor PreferenceTestCommands: BeadsCommanding {
     private var customStatusDefinitions: [BeadStatusDefinition]
     private var customTypeDefinitions: [BeadTypeDefinition]
     private let customReadError: Error?
+    private let definitionReadDelay: Duration?
     private(set) var savedStatusSnapshots: [[BeadStatusDefinition]] = []
     private(set) var savedTypeSnapshots: [[BeadTypeDefinition]] = []
 
@@ -258,13 +335,15 @@ private actor PreferenceTestCommands: BeadsCommanding {
         ],
         customStatusDefinitions: [BeadStatusDefinition]? = nil,
         customTypeDefinitions: [BeadTypeDefinition]? = nil,
-        customReadError: Error? = nil
+        customReadError: Error? = nil,
+        definitionReadDelay: Duration? = nil
     ) {
         self.statusDefinitions = statusDefinitions
         self.typeDefinitions = typeDefinitions
         self.customStatusDefinitions = customStatusDefinitions ?? statusDefinitions.filter(\.isCustom)
         self.customTypeDefinitions = customTypeDefinitions ?? typeDefinitions.filter(\.isCustom)
         self.customReadError = customReadError
+        self.definitionReadDelay = definitionReadDelay
     }
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
@@ -297,11 +376,13 @@ private actor PreferenceTestCommands: BeadsCommanding {
     func addComment(projectURL: URL, issueID: String, text: String) async throws {}
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
-        statusDefinitions
+        await delayDefinitionReadIfNeeded()
+        return statusDefinitions
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
-        typeDefinitions
+        await delayDefinitionReadIfNeeded()
+        return typeDefinitions
     }
 
     func loadCustomStatuses(projectURL: URL) async throws -> [BeadStatusDefinition] {
@@ -328,6 +409,12 @@ private actor PreferenceTestCommands: BeadsCommanding {
         savedTypeSnapshots.append(types)
         customTypeDefinitions = types
         typeDefinitions = typeDefinitions.filter { !$0.isCustom } + types
+    }
+
+    private func delayDefinitionReadIfNeeded() async {
+        if let definitionReadDelay {
+            try? await Task.sleep(for: definitionReadDelay)
+        }
     }
 }
 

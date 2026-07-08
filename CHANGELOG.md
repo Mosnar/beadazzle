@@ -15,6 +15,8 @@ for users, not for the commit log.
 
 ### Added
 
+- Project settings now include a Ready workflow preference that can hide parent
+  beads when all unfinished child beads are blocked.
 - Relationship fields now use a fast bead picker with search, filters, outline
   mode, and a compact quick-create flow for parent, blocking, and sub-issue
   workflows.

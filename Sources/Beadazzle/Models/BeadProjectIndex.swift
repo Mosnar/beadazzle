@@ -49,6 +49,7 @@ struct BeadProjectIndex: Sendable {
     let dependencies: [BeadDependency]
     let semantics: BeadProjectSemantics
     let staleCutoffDays: Int
+    let hidesParentsWithOnlyBlockedChildrenInReady: Bool
     let issueByID: [String: BeadIssue]
     /// All issue ids, precomputed once so hot paths (e.g. per-recompute outline pruning)
     /// don't rebuild this set on the main thread.
@@ -79,11 +80,13 @@ struct BeadProjectIndex: Sendable {
         issues: [BeadIssue],
         dependencies: [BeadDependency],
         semantics: BeadProjectSemantics,
-        staleCutoffDays: Int = Self.defaultStaleCutoffDays
+        staleCutoffDays: Int = Self.defaultStaleCutoffDays,
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true
     ) {
         self.issues = issues
         self.dependencies = dependencies
         self.semantics = semantics
+        self.hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
         let normalizedStaleCutoffDays = max(1, staleCutoffDays)
         self.staleCutoffDays = normalizedStaleCutoffDays
 
@@ -178,6 +181,8 @@ struct BeadProjectIndex: Sendable {
                     issueIDsByType: issueIDsByType,
                     issueByID: issueByID,
                     dependenciesByIssueID: dependenciesByIssueID,
+                    childIDsByParentID: childIDsByParentID,
+                    hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
                     staleCutoffDays: normalizedStaleCutoffDays
                 )
                 return (bookmark, ids)
@@ -825,6 +830,8 @@ struct BeadProjectIndex: Sendable {
         issueIDsByType: [String: Set<String>],
         issueByID: [String: BeadIssue],
         dependenciesByIssueID: [String: [BeadDependency]],
+        childIDsByParentID: [String: [String]],
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool,
         staleCutoffDays: Int
     ) -> Set<String> {
         if bookmark == .gates {
@@ -851,6 +858,8 @@ struct BeadProjectIndex: Sendable {
             from: statusIDs,
             issueByID: issueByID,
             dependenciesByIssueID: dependenciesByIssueID,
+            childIDsByParentID: childIDsByParentID,
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
             semantics: semantics
         )
     }
@@ -887,6 +896,8 @@ struct BeadProjectIndex: Sendable {
         from candidateIDs: Set<String>,
         issueByID: [String: BeadIssue],
         dependenciesByIssueID: [String: [BeadDependency]],
+        childIDsByParentID: [String: [String]],
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool,
         semantics: BeadProjectSemantics
     ) -> Set<String> {
         let now = Date()
@@ -898,6 +909,14 @@ struct BeadProjectIndex: Sendable {
                 issueID: issueID,
                 issueByID: issueByID,
                 dependenciesByIssueID: dependenciesByIssueID,
+                semantics: semantics
+            )
+            && !shouldHideReadyParent(
+                issueID: issueID,
+                issueByID: issueByID,
+                dependenciesByIssueID: dependenciesByIssueID,
+                childIDsByParentID: childIDsByParentID,
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
                 semantics: semantics
             )
         }
@@ -923,6 +942,37 @@ struct BeadProjectIndex: Sendable {
             }
         }
         return false
+    }
+
+    private static func shouldHideReadyParent(
+        issueID: String,
+        issueByID: [String: BeadIssue],
+        dependenciesByIssueID: [String: [BeadDependency]],
+        childIDsByParentID: [String: [String]],
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool,
+        semantics: BeadProjectSemantics
+    ) -> Bool {
+        guard hidesParentsWithOnlyBlockedChildrenInReady else { return false }
+        let unfinishedChildren = (childIDsByParentID[issueID] ?? [])
+            .compactMap { issueByID[$0] }
+            .filter { !semantics.isDone($0) }
+        guard !unfinishedChildren.isEmpty else { return false }
+
+        return unfinishedChildren.allSatisfy { child in
+            isBuiltInBlockedStatus(child.status, semantics: semantics)
+                || hasActiveBlocker(
+                    issueID: child.id,
+                    issueByID: issueByID,
+                    dependenciesByIssueID: dependenciesByIssueID,
+                    semantics: semantics
+                )
+        }
+    }
+
+    private static func isBuiltInBlockedStatus(_ statusName: String, semantics: BeadProjectSemantics) -> Bool {
+        semantics.statuses.contains { status in
+            status.name == statusName && status.isBuiltIn && status.name == "blocked"
+        }
     }
 
     private static func isBlockingDependency(_ dependency: BeadDependency) -> Bool {

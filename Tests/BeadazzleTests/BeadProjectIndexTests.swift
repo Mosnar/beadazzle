@@ -189,6 +189,80 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(index.issueIDs(for: .gates), ["bd-gate"])
     }
 
+    func testReadyBookmarkHidesParentWhenAllUnfinishedImmediateChildrenAreBlocked() {
+        let issues = [
+            issue("bd-parent", status: "open", type: "task"),
+            issue("bd-status-blocked", status: "blocked", type: "task", parentID: "bd-parent"),
+            issue("bd-dependency-blocked", status: "open", type: "task", parentID: "bd-parent"),
+            issue("bd-blocker", status: "open", type: "task"),
+            issue("bd-closed-child", status: "closed", type: "task", closedAt: Date(), parentID: "bd-parent")
+        ]
+        let dependencies = [
+            BeadDependency(issueID: "bd-dependency-blocked", dependsOnID: "bd-blocker", type: "blocks", createdAt: nil)
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: dependencies, semantics: staleSemantics())
+
+        XCTAssertFalse(index.issueIDs(for: .ready).contains("bd-parent"))
+        XCTAssertTrue(index.issueIDs(for: .ready).contains("bd-blocker"))
+    }
+
+    func testReadyBookmarkKeepsParentWhenAnyUnfinishedImmediateChildIsReady() {
+        let issues = [
+            issue("bd-parent", status: "open", type: "task"),
+            issue("bd-status-blocked", status: "blocked", type: "task", parentID: "bd-parent"),
+            issue("bd-ready-child", status: "open", type: "task", parentID: "bd-parent")
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: staleSemantics())
+
+        XCTAssertTrue(index.issueIDs(for: .ready).contains("bd-parent"))
+    }
+
+    func testReadyBookmarkKeepsParentWhenUnfinishedImmediateChildrenAreDeferredOrInProgress() {
+        let issues = [
+            issue("bd-parent", status: "open", type: "task"),
+            issue("bd-in-progress-child", status: "in_progress", type: "task", parentID: "bd-parent"),
+            issue("bd-deferred-child", status: "deferred", type: "task", parentID: "bd-parent")
+        ]
+        let semantics = BeadProjectSemantics(
+            statuses: [
+                BeadStatusDefinition(name: "open", category: .active, icon: nil, description: nil, isBuiltIn: true),
+                BeadStatusDefinition(name: "in_progress", category: .wip, icon: nil, description: nil, isBuiltIn: true),
+                BeadStatusDefinition(name: "deferred", category: .frozen, icon: nil, description: nil, isBuiltIn: true),
+                BeadStatusDefinition(name: "blocked", category: .wip, icon: nil, description: nil, isBuiltIn: true),
+                BeadStatusDefinition(name: "closed", category: .done, icon: nil, description: nil, isBuiltIn: true)
+            ],
+            types: [
+                BeadTypeDefinition(name: "task", description: nil)
+            ]
+        )
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics)
+
+        XCTAssertTrue(index.issueIDs(for: .ready).contains("bd-parent"))
+    }
+
+    func testReadyBookmarkCanKeepParentsWhoseChildrenAreAllBlockedWhenRollUpIsDisabled() {
+        let issues = [
+            issue("bd-parent", status: "open", type: "task"),
+            issue("bd-status-blocked", status: "blocked", type: "task", parentID: "bd-parent"),
+            issue("bd-missing-blocked", status: "open", type: "task", parentID: "bd-parent")
+        ]
+        let dependencies = [
+            BeadDependency(issueID: "bd-missing-blocked", dependsOnID: "external:blocked", type: "blocks", createdAt: nil)
+        ]
+
+        let index = BeadProjectIndex(
+            issues: issues,
+            dependencies: dependencies,
+            semantics: staleSemantics(),
+            hidesParentsWithOnlyBlockedChildrenInReady: false
+        )
+
+        XCTAssertTrue(index.issueIDs(for: .ready).contains("bd-parent"))
+    }
+
     func testStatusAndTypeFiltersIntersectWithinAllIssues() {
         let semantics = BeadProjectSemantics(
             statuses: [
