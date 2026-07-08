@@ -7,6 +7,9 @@ struct SidebarView: View {
         List(selection: bookmarkSelection) {
             Section("Project") {
                 ProjectPickerButton()
+                if store.snapshotFreshness.state == .possiblyStale {
+                    SnapshotFreshnessSidebarRow(freshness: store.snapshotFreshness)
+                }
             }
 
             Section {
@@ -33,6 +36,23 @@ struct SidebarView: View {
                 }
             }
         )
+    }
+}
+
+private struct SnapshotFreshnessSidebarRow: View {
+    let freshness: ProjectSnapshotFreshness
+
+    var body: some View {
+        Label {
+            Text(freshness.message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: "clock.badge.exclamationmark")
+                .foregroundStyle(.orange)
+        }
+        .help(freshness.detail ?? freshness.message)
     }
 }
 

@@ -161,6 +161,16 @@ struct ProjectStorageSettingsPane: View {
                     )
                 }
             }
+            LabeledContent("Freshness") {
+                HStack(spacing: 8) {
+                    ProjectHealthValueText(store.snapshotFreshness.message)
+                    ProjectHealthBadge(
+                        title: freshnessBadgeTitle,
+                        style: freshnessBadgeStyle
+                    )
+                }
+                .help(store.snapshotFreshness.detail ?? store.snapshotFreshness.message)
+            }
             LabeledContent("Path") {
                 ProjectHealthPathText(snapshotFile?.url.path)
             }
@@ -322,6 +332,30 @@ struct ProjectStorageSettingsPane: View {
 
     private static func formattedBool(_ value: Bool?) -> String? {
         value.map { $0 ? "Enabled" : "Disabled" }
+    }
+
+    private var freshnessBadgeTitle: String {
+        switch store.snapshotFreshness.state {
+        case .current:
+            "Current"
+        case .refreshing:
+            "Refreshing"
+        case .possiblyStale:
+            "Check"
+        case .unknown:
+            "Unknown"
+        }
+    }
+
+    private var freshnessBadgeStyle: ProjectHealthBadge.Style {
+        switch store.snapshotFreshness.state {
+        case .current:
+            .ok
+        case .refreshing, .unknown:
+            .info
+        case .possiblyStale:
+            .warning
+        }
     }
 }
 

@@ -250,7 +250,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         callbackExpectation.expectedFulfillmentCount = 1
         callbackExpectation.assertForOverFulfill = true
 
-        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source, debounce: 0.15) {
+        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source, debounce: 0.15) { _ in
             callbackExpectation.fulfill()
         }
         monitor.start()
@@ -368,6 +368,54 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         )
 
         try await waitUntil(timeout: 4.0) { store.count(for: .all) == 2 }
+    }
+
+    @MainActor
+    func testStoreMarksSnapshotPossiblyStaleWhenOnlyExportMarkerChanges() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = projectURL.appendingPathComponent(".beads/export-state.json")
+        try #"{"timestamp":"old"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { _ in })
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading && store.snapshotFreshness.state == .current && store.count(for: .all) == 1
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        try #"{"timestamp":"new","issues":1}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+
+        try await waitUntil(timeout: 4.0) {
+            store.snapshotFreshness.state == .possiblyStale
+        }
+        XCTAssertEqual(store.count(for: .all), 1)
+        XCTAssertFalse(store.isLoading)
+    }
+
+    @MainActor
+    func testStoreAutoRefreshSwitchesWhenPreferredJSONLSnapshotAppears() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "beads.jsonl": issueLine(id: "bd-legacy", title: "Legacy")
+        ])
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading
+                && store.currentDataSource?.url.lastPathComponent == "beads.jsonl"
+                && store.issue(with: "bd-legacy") != nil
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        try writeJSONL(
+            issueLine(id: "bd-current", title: "Current"),
+            to: projectURL.appendingPathComponent(".beads/issues.jsonl")
+        )
+
+        try await waitUntil(timeout: 4.0) {
+            store.currentDataSource?.url.lastPathComponent == "issues.jsonl"
+                && store.issue(with: "bd-current")?.title == "Current"
+        }
     }
 
     @MainActor

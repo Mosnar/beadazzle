@@ -2,23 +2,47 @@ import Darwin
 import Foundation
 
 final class BeadsDataSourceMonitor {
-    private let watchedURLs: [URL]
+    enum Role: Hashable, Sendable {
+        case activeSource
+        case legacySQLite
+        case beadsDirectory
+        case exportState
+        case lastTouched
+    }
+
+    struct Event: Equatable, Sendable {
+        var roles: Set<Role>
+    }
+
+    fileprivate struct WatchedPath {
+        var url: URL
+        var role: Role
+    }
+
+    private let watchedPaths: [WatchedPath]
     private let debounce: TimeInterval
-    private let callback: () -> Void
+    private let callback: (Event) -> Void
     private let queue = DispatchQueue(label: "com.beadazzle.data-source-monitor")
     private var watches: [PathWatch] = []
     private var pendingCallback: DispatchWorkItem?
+    private var pendingRoles: Set<Role> = []
     private var isStopped = false
 
     init(
         projectURL: URL,
         source: BeadsDataSource,
         debounce: TimeInterval = 0.35,
-        callback: @escaping () -> Void
+        callback: @escaping (Event) -> Void
     ) {
         let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
         let sqliteURL = beadsURL.appendingPathComponent("beads.db")
-        self.watchedURLs = Self.uniqueURLs([source.url, sqliteURL, beadsURL])
+        self.watchedPaths = Self.uniquePaths([
+            WatchedPath(url: source.url, role: .activeSource),
+            WatchedPath(url: sqliteURL, role: .legacySQLite),
+            WatchedPath(url: beadsURL, role: .beadsDirectory),
+            WatchedPath(url: beadsURL.appendingPathComponent("export-state.json"), role: .exportState),
+            WatchedPath(url: beadsURL.appendingPathComponent("last-touched"), role: .lastTouched)
+        ])
         self.debounce = debounce
         self.callback = callback
     }
@@ -30,9 +54,7 @@ final class BeadsDataSourceMonitor {
     func start() {
         queue.async { [weak self] in
             guard let self, self.watches.isEmpty, !self.isStopped else { return }
-            for url in self.watchedURLs {
-                self.watch(url)
-            }
+            self.watchExistingPaths()
         }
     }
 
@@ -42,6 +64,7 @@ final class BeadsDataSourceMonitor {
             self.isStopped = true
             self.pendingCallback?.cancel()
             self.pendingCallback = nil
+            self.pendingRoles = []
             for watch in self.watches {
                 watch.cancel()
             }
@@ -68,11 +91,22 @@ final class BeadsDataSourceMonitor {
     /// we must re-open a fresh watch on the path.
     private static let replacementEvents: DispatchSource.FileSystemEvent = [.delete, .rename, .revoke]
 
-    private func watch(_ url: URL) {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return }
+    private func watchExistingPaths() {
+        for path in watchedPaths where !isWatching(path.url) {
+            watch(path)
+        }
+    }
 
-        let descriptor = open(url.path, O_EVTONLY)
+    private func isWatching(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        return watches.contains { $0.url.standardizedFileURL.path == path }
+    }
+
+    private func watch(_ path: WatchedPath) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path.url.path, isDirectory: &isDirectory) else { return }
+
+        let descriptor = open(path.url.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
 
         let source = DispatchSource.makeFileSystemObjectSource(
@@ -80,11 +114,14 @@ final class BeadsDataSourceMonitor {
             eventMask: Self.eventMask,
             queue: queue
         )
-        let watch = PathWatch(source: source, url: url)
+        let watch = PathWatch(source: source, path: path)
         source.setEventHandler { [weak self, weak watch] in
             guard let self else { return }
             let flags = source.data
-            self.scheduleCallback()
+            if watch?.role == .beadsDirectory {
+                self.watchExistingPaths()
+            }
+            self.scheduleCallback(role: watch?.role)
             if !flags.isDisjoint(with: Self.replacementEvents), let watch {
                 self.rearm(watch)
             }
@@ -103,39 +140,44 @@ final class BeadsDataSourceMonitor {
         guard !isStopped, !watch.isCancelled else { return }
         watch.cancel()
         watches.removeAll { $0 === watch }
-        scheduleReopen(url: watch.url, attempt: 0)
+        scheduleReopen(path: WatchedPath(url: watch.url, role: watch.role), attempt: 0)
     }
 
-    private func scheduleReopen(url: URL, attempt: Int) {
+    private func scheduleReopen(path: WatchedPath, attempt: Int) {
         guard !isStopped, attempt < 6 else { return }
         queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self, !self.isStopped else { return }
-            if FileManager.default.fileExists(atPath: url.path) {
-                self.watch(url)
+            if FileManager.default.fileExists(atPath: path.url.path) {
+                self.watch(path)
             } else {
-                self.scheduleReopen(url: url, attempt: attempt + 1)
+                self.scheduleReopen(path: path, attempt: attempt + 1)
             }
         }
     }
 
-    private func scheduleCallback() {
+    private func scheduleCallback(role: Role?) {
         guard !isStopped else { return }
+        if let role {
+            pendingRoles.insert(role)
+        }
         pendingCallback?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self, !self.isStopped else { return }
-            self.callback()
+            let roles = self.pendingRoles
+            self.pendingRoles = []
+            self.callback(Event(roles: roles))
         }
         pendingCallback = item
         queue.asyncAfter(deadline: .now() + debounce, execute: item)
     }
 
-    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
+    private static func uniquePaths(_ paths: [WatchedPath]) -> [WatchedPath] {
         var seen: Set<String> = []
-        var result: [URL] = []
-        for url in urls {
-            let path = url.standardizedFileURL.path
+        var result: [WatchedPath] = []
+        for watchedPath in paths {
+            let path = watchedPath.url.standardizedFileURL.path
             guard seen.insert(path).inserted else { continue }
-            result.append(url)
+            result.append(watchedPath)
         }
         return result
     }
@@ -144,11 +186,13 @@ final class BeadsDataSourceMonitor {
 private final class PathWatch {
     private let source: DispatchSourceFileSystemObject
     let url: URL
+    let role: BeadsDataSourceMonitor.Role
     private(set) var isCancelled = false
 
-    init(source: DispatchSourceFileSystemObject, url: URL) {
+    init(source: DispatchSourceFileSystemObject, path: BeadsDataSourceMonitor.WatchedPath) {
         self.source = source
-        self.url = url
+        self.url = path.url
+        self.role = path.role
     }
 
     deinit {

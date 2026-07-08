@@ -24,7 +24,7 @@ final class BeadsDataSourceMonitorTests: XCTestCase {
         )
 
         let callbacks = CallbackCounter()
-        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source, debounce: 0.05) {
+        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source, debounce: 0.05) { _ in
             callbacks.increment()
         }
         monitor.start()
@@ -53,6 +53,45 @@ final class BeadsDataSourceMonitorTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(callbacks.value, 1, "a content write must trigger a reload")
     }
+
+    func testReportsExportStateMarkerEventsWithoutTouchingActiveSnapshot() throws {
+        let projectURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MonitorTests-\(UUID().uuidString)", isDirectory: true)
+        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
+        try FileManager.default.createDirectory(at: beadsURL, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: projectURL) }
+
+        let fileURL = beadsURL.appendingPathComponent("issues.jsonl")
+        try "initial\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        let markerURL = beadsURL.appendingPathComponent("export-state.json")
+        try #"{"timestamp":"old"}"#.write(to: markerURL, atomically: true, encoding: .utf8)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let source = BeadsDataSource(
+            kind: .jsonl,
+            url: fileURL,
+            size: (attributes[.size] as? NSNumber)?.int64Value ?? 0,
+            modifiedAt: attributes[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
+        )
+
+        let events = MonitorEventRecorder()
+        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source, debounce: 0.05) { event in
+            events.append(event)
+        }
+        monitor.start()
+        addTeardownBlock { monitor.stop() }
+
+        Thread.sleep(forTimeInterval: 0.3)
+        try #"{"timestamp":"new","issues":1}"#.write(to: markerURL, atomically: true, encoding: .utf8)
+
+        let deadline = Date().addingTimeInterval(2)
+        while !events.containsRole(.exportState), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        XCTAssertTrue(events.containsRole(.exportState), "export marker changes should report marker-only freshness events")
+        XCTAssertFalse(events.containsRole(.activeSource), "marker-only changes must not be reported as active snapshot changes")
+    }
 }
 
 private final class CallbackCounter: @unchecked Sendable {
@@ -67,5 +106,22 @@ private final class CallbackCounter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return count
+    }
+}
+
+private final class MonitorEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [BeadsDataSourceMonitor.Event] = []
+
+    func append(_ event: BeadsDataSourceMonitor.Event) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func containsRole(_ role: BeadsDataSourceMonitor.Role) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return events.contains { $0.roles.contains(role) }
     }
 }

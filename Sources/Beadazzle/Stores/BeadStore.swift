@@ -49,6 +49,7 @@ final class BeadStore {
     /// selection change.
     private(set) var contentRevision = 0
     private(set) var currentDataSource: BeadsDataSource?
+    private(set) var snapshotFreshness = ProjectSnapshotFreshness.unknown
     private(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     private(set) var isLoadingProjectHealth = false
     private(set) var projectHealthAction: ProjectHealthAction?
@@ -1151,6 +1152,7 @@ final class BeadStore {
         gateDetailTask = nil
         gatesByID = [:]
         currentDataSource = nil
+        snapshotFreshness = .unknown
         cachedDefinitions = nil
         selectedIDs.removeAll()
         fullPageDetailIssueID = nil
@@ -1341,6 +1343,9 @@ final class BeadStore {
         // otherwise every routine reload would re-run `bd`.
         let reloadsDefinitions = reason == .initial || reason == .manual || cachedDefinitions == nil
         let definitionsForLoad = reloadsDefinitions ? nil : cachedDefinitions
+        if let currentDataSource {
+            snapshotFreshness = snapshotFreshness.refreshing(projectURL: projectURL, source: currentDataSource)
+        }
 
         refreshTask = Task { @MainActor [weak self] in
             do {
@@ -1370,6 +1375,7 @@ final class BeadStore {
                     if showsLoadingIndicator {
                         self?.isLoading = false
                     }
+                    self?.markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
                     self?.finishCommentRefreshIfNeeded(projectURL: projectURL)
                     return
                 }
@@ -1406,12 +1412,14 @@ final class BeadStore {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return }
                     self.setMissingDataSource(missingURL)
                     self.lastError = error.localizedDescription
+                    self.markSnapshotFreshnessFailed(error.localizedDescription)
                     self.finishCommentRefreshIfNeeded(projectURL: projectURL)
                 }
             } catch {
                 guard !Task.isCancelled, self?.projectURL == projectURL else { return }
                 self?.lastError = error.localizedDescription
                 self?.isLoading = false
+                self?.markSnapshotFreshnessFailed(error.localizedDescription)
                 self?.finishCommentRefreshIfNeeded(projectURL: projectURL)
             }
         }
@@ -3098,6 +3106,7 @@ final class BeadStore {
             cachedDefinitions = definitions
         }
         currentDataSource = loadedProject.source
+        markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
@@ -3163,14 +3172,14 @@ final class BeadStore {
         stopDataSourceMonitor()
         let expectedProjectURL = projectURL
         let expectedSourceFingerprint = source.fingerprint
-        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source) { [weak self] in
+        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source) { [weak self] event in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.projectURL == expectedProjectURL,
                       self.monitoredSourceFingerprint == expectedSourceFingerprint else {
                     return
                 }
-                self.refreshAfterDataSourceChange()
+                self.handleDataSourceMonitorEvent(event, projectURL: expectedProjectURL)
             }
         }
         dataSourceMonitor = monitor
@@ -3182,6 +3191,33 @@ final class BeadStore {
         dataSourceMonitor?.stop()
         dataSourceMonitor = nil
         monitoredSourceFingerprint = nil
+    }
+
+    private func handleDataSourceMonitorEvent(_ event: BeadsDataSourceMonitor.Event, projectURL: URL) {
+        guard !event.roles.isEmpty, self.projectURL == projectURL, let currentDataSource else { return }
+        if currentDataSource.kind == .jsonl,
+           event.roles.contains(.beadsDirectory),
+           let discoveredSource = try? BeadsDataSourceDiscovery().discover(projectURL: projectURL),
+           discoveredSource != currentDataSource {
+            snapshotFreshness = snapshotFreshness.refreshing(projectURL: projectURL, source: currentDataSource)
+            refreshAfterDataSourceChange()
+            return
+        }
+        let evaluation = snapshotFreshness.evaluatingCurrentFiles(
+            projectURL: projectURL,
+            source: currentDataSource
+        )
+        snapshotFreshness = evaluation.freshness
+        guard evaluation.requiresReload else { return }
+        refreshAfterDataSourceChange()
+    }
+
+    private func markSnapshotFreshnessLoaded(projectURL: URL, source: BeadsDataSource) {
+        snapshotFreshness = .loaded(projectURL: projectURL, source: source)
+    }
+
+    private func markSnapshotFreshnessFailed(_ message: String) {
+        snapshotFreshness = snapshotFreshness.failed(message)
     }
 
     private func mergeCommentCache(from snapshotComments: [String: [BeadComment]]) {
