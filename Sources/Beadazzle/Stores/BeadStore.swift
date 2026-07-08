@@ -49,6 +49,10 @@ final class BeadStore {
     /// selection change.
     private(set) var contentRevision = 0
     private(set) var currentDataSource: BeadsDataSource?
+    private(set) var projectHealthSnapshot: ProjectHealthSnapshot?
+    private(set) var isLoadingProjectHealth = false
+    private(set) var projectHealthAction: ProjectHealthAction?
+    private(set) var projectHealthActionError: String?
     /// Gate detail cache keyed by gate bead id. The issue snapshot is the source of truth
     /// for display fields; `bd gate show` only enriches the selected gate with waiters.
     private(set) var gatesByID: [String: BeadGate] = [:]
@@ -175,6 +179,7 @@ final class BeadStore {
     @ObservationIgnored private var queryGeneration = 0
     @ObservationIgnored private var selectionSideDataTask: Task<Void, Never>?
     @ObservationIgnored private var gateDetailTask: Task<Void, Never>?
+    @ObservationIgnored private var projectHealthTask: Task<Void, Never>?
     @ObservationIgnored private var dataSourceMonitor: BeadsDataSourceMonitor?
     @ObservationIgnored private var monitoredSourceFingerprint: String?
     /// Cached status/type definitions, reused across reloads so routine reloads don't
@@ -924,6 +929,7 @@ final class BeadStore {
         recomputeTask?.cancel()
         stopDataSourceMonitor()
         projectURL = url
+        resetProjectHealthStatus()
         loadProjectVisibility(for: url)
         isInitializingBeads = false
         if projectDirectoryExists(at: url) {
@@ -1203,8 +1209,105 @@ final class BeadStore {
         refresh(reason: .manual, showsLoadingIndicator: true)
     }
 
+    func loadProjectHealthStatus() {
+        guard let projectURL else {
+            resetProjectHealthStatus()
+            return
+        }
+
+        projectHealthTask?.cancel()
+        isLoadingProjectHealth = true
+        projectHealthActionError = nil
+
+        let commands = commands
+        let activeDataSource = currentDataSource
+        projectHealthTask = Task { @MainActor [weak self] in
+            let snapshot = await ProjectHealthSnapshot.load(
+                projectURL: projectURL,
+                activeDataSource: activeDataSource,
+                commands: commands
+            )
+            guard !Task.isCancelled, let self, self.projectURL == projectURL else { return }
+            self.projectHealthSnapshot = snapshot
+            self.isLoadingProjectHealth = false
+        }
+    }
+
+    @discardableResult
+    func exportProjectSnapshotNow() async -> Bool {
+        guard let projectURL = beginProjectHealthAction(.exportingSnapshot) else { return false }
+        defer { finishProjectHealthAction(for: projectURL) }
+
+        do {
+            try await commands.exportReadableSnapshot(projectURL: projectURL)
+            guard self.projectURL == projectURL else { return false }
+            refresh(reason: .dataSourceChanged, showsLoadingIndicator: true)
+            return true
+        } catch {
+            setProjectHealthActionError(error, projectURL: projectURL)
+            return false
+        }
+    }
+
+    @discardableResult
+    func installProjectHooks() async -> Bool {
+        guard projectHealthSnapshot?.hooks.value?.hasMissingHooks == true else { return false }
+        guard let projectURL = beginProjectHealthAction(.installingHooks) else { return false }
+        defer { finishProjectHealthAction(for: projectURL) }
+
+        do {
+            try await commands.installHooks(projectURL: projectURL)
+            return self.projectURL == projectURL
+        } catch {
+            setProjectHealthActionError(error, projectURL: projectURL)
+            return false
+        }
+    }
+
+    @discardableResult
+    func syncProjectBackup() async -> Bool {
+        guard projectHealthSnapshot?.backup.value?.isConfigured == true else { return false }
+        guard let projectURL = beginProjectHealthAction(.syncingBackup) else { return false }
+        defer { finishProjectHealthAction(for: projectURL) }
+
+        do {
+            try await commands.syncBackup(projectURL: projectURL)
+            return self.projectURL == projectURL
+        } catch {
+            setProjectHealthActionError(error, projectURL: projectURL)
+            return false
+        }
+    }
+
     private func refreshAfterDataSourceChange() {
         refresh(reason: .dataSourceChanged, showsLoadingIndicator: false)
+    }
+
+    private func resetProjectHealthStatus() {
+        projectHealthTask?.cancel()
+        projectHealthTask = nil
+        projectHealthSnapshot = nil
+        isLoadingProjectHealth = false
+        projectHealthAction = nil
+        projectHealthActionError = nil
+    }
+
+    private func beginProjectHealthAction(_ action: ProjectHealthAction) -> URL? {
+        guard let projectURL, projectHealthAction == nil else { return nil }
+        projectHealthAction = action
+        projectHealthActionError = nil
+        return projectURL
+    }
+
+    private func finishProjectHealthAction(for actionProjectURL: URL) {
+        guard projectURL == actionProjectURL else { return }
+        projectHealthAction = nil
+        loadProjectHealthStatus()
+    }
+
+    private func setProjectHealthActionError(_ error: Error, projectURL actionProjectURL: URL) {
+        guard projectURL == actionProjectURL else { return }
+        projectHealthActionError = error.localizedDescription
     }
 
     private func refresh(reason: RefreshReason, showsLoadingIndicator: Bool) {
@@ -2930,6 +3033,10 @@ final class BeadStore {
     /// Intended for tests; production UI simply re-renders when the recompute lands.
     func waitForPendingQueryRecompute() async {
         await recomputeTask?.value
+    }
+
+    func waitForPendingProjectHealthLoad() async {
+        await projectHealthTask?.value
     }
 
     private func rebuildIndexForProjectIndexPreferenceChange() {

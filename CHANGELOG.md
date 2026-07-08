@@ -15,6 +15,8 @@ for users, not for the commit log.
 
 ### Added
 
+- Project settings now include a Storage pane that explains the active Beads
+  backend, JSONL snapshot, sync model, hooks, and backup status.
 - Project settings now include a Ready workflow preference that can hide parent
   beads when all unfinished child beads are blocked.
 - Relationship fields now use a fast bead picker with search, filters, outline

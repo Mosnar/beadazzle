@@ -1,6 +1,7 @@
 import SwiftUI
 
 private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
+    case storage
     case workflow
     case types
     case statuses
@@ -9,6 +10,8 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .storage:
+            "Storage"
         case .workflow:
             "Workflow"
         case .types:
@@ -20,6 +23,8 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
 
     var systemImage: String {
         switch self {
+        case .storage:
+            "externaldrive"
         case .workflow:
             "checklist"
         case .types:
@@ -34,7 +39,7 @@ struct ProjectSettingsView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let projectURL: URL?
 
-    @SceneStorage("Beadazzle.ProjectSettings.SelectedPane") private var selectedPaneRawValue = ProjectSettingsPane.types.rawValue
+    @SceneStorage("Beadazzle.ProjectSettings.SelectedPane") private var selectedPaneRawValue = ProjectSettingsPane.storage.rawValue
 
     private var selectedPane: Binding<ProjectSettingsPane> {
         Binding {
@@ -75,6 +80,8 @@ private struct ProjectSettingsDetail: View {
     var body: some View {
         if isActiveProject {
             switch pane {
+            case .storage:
+                ProjectStorageSettingsPane()
             case .workflow:
                 ProjectWorkflowSettingsPane()
             case .types:

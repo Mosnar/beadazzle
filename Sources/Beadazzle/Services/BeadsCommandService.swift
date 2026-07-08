@@ -26,6 +26,12 @@ protocol BeadsCommanding: Sendable {
     func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition]
     func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext
+    func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig
+    func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus
+    func loadBackupStatus(projectURL: URL) async throws -> BeadsBackupStatus
+    func installHooks(projectURL: URL) async throws
+    func syncBackup(projectURL: URL) async throws
 
     func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate?
     func resolveGate(projectURL: URL, id: String, reason: String?) async throws
@@ -41,6 +47,30 @@ extension BeadsCommanding {
 
     func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition] {
         try await loadTypeDefinitions(projectURL: projectURL).filter(\.isCustom)
+    }
+
+    func loadProjectContext(projectURL _: URL) async throws -> BeadsProjectContext {
+        throw BeadError.commandFailed(command: "bd context --json", output: "Project context is not supported by this command service.")
+    }
+
+    func loadProjectStorageConfig(projectURL _: URL) async throws -> ProjectStorageConfig {
+        throw BeadError.commandFailed(command: "bd config get", output: "Project storage config is not supported by this command service.")
+    }
+
+    func loadHooksStatus(projectURL _: URL) async throws -> BeadsHooksStatus {
+        throw BeadError.commandFailed(command: "bd hooks list", output: "Hook status is not supported by this command service.")
+    }
+
+    func loadBackupStatus(projectURL _: URL) async throws -> BeadsBackupStatus {
+        throw BeadError.commandFailed(command: "bd backup status --json", output: "Backup status is not supported by this command service.")
+    }
+
+    func installHooks(projectURL _: URL) async throws {
+        throw BeadError.commandFailed(command: "bd hooks install", output: "Hook installation is not supported by this command service.")
+    }
+
+    func syncBackup(projectURL _: URL) async throws {
+        throw BeadError.commandFailed(command: "bd backup sync", output: "Backup sync is not supported by this command service.")
     }
 
     // Gate support is optional: conformers that don't shell out to `bd` (test doubles) get
@@ -227,6 +257,62 @@ struct BeadsCommandService {
         try await run(projectURL: projectURL, arguments: BeadsCommandArguments.saveCustomTypes(types))
     }
 
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "context", "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
+        return try BeadsProjectContext.decode(from: text)
+    }
+
+    func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig {
+        async let exportAuto = configBoolSetting(projectURL: projectURL, key: "export.auto")
+        async let exportPath = configSetting(projectURL: projectURL, key: "export.path")
+        async let exportInterval = configSetting(projectURL: projectURL, key: "export.interval")
+        async let exportGitAdd = configBoolSetting(projectURL: projectURL, key: "export.git-add")
+        async let importAuto = configBoolSetting(projectURL: projectURL, key: "import.auto")
+        async let federationRemote = configSetting(projectURL: projectURL, key: "federation.remote")
+
+        return ProjectStorageConfig(
+            exportAutoStatus: await exportAuto,
+            exportPathStatus: await exportPath,
+            exportIntervalStatus: await exportInterval,
+            exportGitAddStatus: await exportGitAdd,
+            importAutoStatus: await importAuto,
+            federationRemoteStatus: await federationRemote
+        )
+    }
+
+    func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus {
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "hooks", "list"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
+        return BeadsHooksStatus.parse(from: text)
+    }
+
+    func loadBackupStatus(projectURL: URL) async throws -> BeadsBackupStatus {
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "backup", "status", "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
+        return try BeadsBackupStatus.decode(from: text)
+    }
+
+    func installHooks(projectURL: URL) async throws {
+        try await run(projectURL: projectURL, arguments: ["hooks", "install"])
+    }
+
+    func syncBackup(projectURL: URL) async throws {
+        try await run(projectURL: projectURL, arguments: ["backup", "sync"])
+    }
+
     private func run(projectURL: URL, arguments: [String], standardInput: String? = nil) async throws {
         _ = try await runOutput(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
     }
@@ -273,8 +359,23 @@ struct BeadsCommandService {
             terminatesOnCancel: true,
             timeout: readOnlyCommandTimeout
         )
-        guard !text.hasSuffix(" (not set)") else { return nil }
-        return text.isEmpty ? nil : text
+        return ProjectStorageConfig.configValue(from: text, key: key)
+    }
+
+    private func configSetting(projectURL: URL, key: String) async -> ProjectStorageConfigValue<String> {
+        do {
+            return .available(try await configValue(projectURL: projectURL, key: key))
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    private func configBoolSetting(projectURL: URL, key: String) async -> ProjectStorageConfigValue<Bool> {
+        let setting = await configSetting(projectURL: projectURL, key: key)
+        guard setting.errorMessage == nil else {
+            return .unavailable(setting.errorMessage ?? "Unavailable")
+        }
+        return .available(ProjectStorageConfig.bool(from: setting.value))
     }
 
     private static func runOutputSynchronously(

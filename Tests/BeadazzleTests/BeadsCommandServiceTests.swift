@@ -147,6 +147,128 @@ final class BeadsCommandServiceTests: XCTestCase {
         }
     }
 
+    func testProjectContextDecodesEmbeddedDoltAsCurrentStorage() throws {
+        let context = try BeadsProjectContext.decode(from: """
+        {
+          "backend": "dolt",
+          "bd_version": "1.0.4",
+          "beads_dir": "/tmp/project/.beads",
+          "cwd_repo_root": "/tmp/project",
+          "database": "project",
+          "dolt_mode": "embedded",
+          "is_redirected": false,
+          "is_worktree": false,
+          "project_id": "project-id",
+          "repo_root": "/tmp/project",
+          "role": "maintainer",
+          "schema_version": 1
+        }
+        """)
+
+        XCTAssertEqual(context.backend, "dolt")
+        XCTAssertEqual(context.doltMode, "embedded")
+        XCTAssertTrue(context.usesCurrentEmbeddedDolt)
+        XCTAssertEqual(context.databasePath(projectURL: URL(fileURLWithPath: "/tmp/project")), "/tmp/project/.beads/embeddeddolt")
+    }
+
+    func testHooksStatusParsesMissingHooksAsActionable() {
+        let hooks = BeadsHooksStatus.parse(from: """
+        Git hooks status:
+          ✗ pre-commit: not installed
+          ✗ post-merge: not installed
+          ✓ pre-push: installed
+        """)
+
+        XCTAssertEqual(hooks.hooks.map(\.name), ["pre-commit", "post-merge", "pre-push"])
+        XCTAssertEqual(hooks.missingHooks.map(\.name), ["pre-commit", "post-merge"])
+        XCTAssertTrue(hooks.hasMissingHooks)
+        XCTAssertEqual(hooks.summary, "2 missing")
+    }
+
+    func testBackupStatusDecodesLastBackupAndLocalOnlyDestination() throws {
+        let backup = try BeadsBackupStatus.decode(from: """
+        {
+          "backup": {
+            "last_dolt_commit": "ilalaudvusuhf22fghtkv04g7g5ekpqo",
+            "timestamp": "2026-07-08T13:35:44.99568Z"
+          },
+          "database_size": {
+            "bytes": 0,
+            "human": "0 B"
+          },
+          "dolt": {
+            "configured": false
+          }
+        }
+        """)
+
+        XCTAssertFalse(backup.isConfigured)
+        XCTAssertTrue(backup.hasBackupHistory)
+        XCTAssertEqual(backup.backup?.lastDoltCommit, "ilalaudvusuhf22fghtkv04g7g5ekpqo")
+        XCTAssertNotNil(backup.lastBackupDate)
+        XCTAssertEqual(backup.databaseSize?.human, "0 B")
+        XCTAssertNil(backup.databaseSize?.displayValue)
+        XCTAssertEqual(backup.dolt?.configured, false)
+    }
+
+    func testProjectStorageConfigKeepsPerKeyFailures() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        key=""
+        for arg in "$@"; do
+          key="$arg"
+        done
+        case "$key" in
+          export.auto)
+            printf 'true\\n'
+            ;;
+          export.path)
+            printf 'issues.jsonl\\n'
+            ;;
+          export.interval)
+            printf 'failed to read export interval\\n' >&2
+            exit 2
+            ;;
+          export.git-add)
+            printf 'false\\n'
+            ;;
+          import.auto)
+            printf 'off\\n'
+            ;;
+          federation.remote)
+            printf 'federation.remote (not set in config.yaml)\\n'
+            ;;
+          *)
+            printf 'unexpected key: %s\\n' "$key" >&2
+            exit 3
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let config = try await service.loadProjectStorageConfig(projectURL: projectURL)
+
+        XCTAssertEqual(config.exportAuto, true)
+        XCTAssertEqual(config.exportPath, "issues.jsonl")
+        XCTAssertNil(config.exportInterval)
+        XCTAssertNotNil(config.exportIntervalStatus.errorMessage)
+        XCTAssertEqual(config.exportGitAdd, false)
+        XCTAssertEqual(config.importAuto, false)
+        XCTAssertNil(config.federationRemote)
+        XCTAssertNil(config.federationRemoteStatus.errorMessage)
+    }
+
+    func testUnsetConfigOutputParsesAsNil() {
+        XCTAssertNil(ProjectStorageConfig.configValue(
+            from: "federation.remote (not set in config.yaml)",
+            key: "federation.remote"
+        ))
+        XCTAssertEqual(ProjectStorageConfig.configValue(from: "issues.jsonl", key: "export.path"), "issues.jsonl")
+        XCTAssertEqual(ProjectStorageConfig.bool(from: "true"), true)
+        XCTAssertEqual(ProjectStorageConfig.bool(from: "off"), false)
+    }
+
     private func makeExecutableScript(in projectURL: URL, contents: String) throws -> URL {
         let stubURL = projectURL.appendingPathComponent("bd-stub-\(UUID().uuidString)")
         try contents.write(to: stubURL, atomically: true, encoding: .utf8)
