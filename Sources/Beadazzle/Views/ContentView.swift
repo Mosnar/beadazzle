@@ -12,19 +12,7 @@ struct ContentView: View {
     var body: some View {
         @Bindable var store = store
 
-        Group {
-            if let missingDataSourceURL = store.missingDataSourceURL {
-                MissingDatabaseView(
-                    projectURL: missingDataSourceURL,
-                    isInitializing: store.isInitializingBeads,
-                    isRecovering: store.isLoading && !store.isInitializingBeads,
-                    onInitialize: store.initializeBeads,
-                    onOpenProject: openProject
-                )
-            } else {
-                workspaceView(searchText: $store.searchText)
-            }
-        }
+        workspaceView(searchText: $store.searchText)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
@@ -116,12 +104,17 @@ struct ContentView: View {
         } action: { width in
             workspaceWidth = width
             updateColumnVisibility(
-                showsSidebar: ContentLayout.showsSidebar(for: width, showsDetail: showsWorkspaceDetail)
+                showsSidebar: shouldShowSidebar(for: width)
             )
         }
         .onChange(of: showsWorkspaceDetail) {
             updateColumnVisibility(
-                showsSidebar: ContentLayout.showsSidebar(for: workspaceWidth, showsDetail: showsWorkspaceDetail)
+                showsSidebar: shouldShowSidebar(for: workspaceWidth)
+            )
+        }
+        .onChange(of: keepsProjectSelectorVisible) {
+            updateColumnVisibility(
+                showsSidebar: shouldShowSidebar(for: workspaceWidth)
             )
         }
         .searchable(text: searchText, isPresented: $searchPresented, placement: .toolbar, prompt: "Search beads")
@@ -160,8 +153,19 @@ struct ContentView: View {
             }
 
             if showsWorkspaceDetail {
-                DetailView(requestClose: requestClose)
+                if let missingDataSourceURL = store.missingDataSourceURL {
+                    MissingDatabaseView(
+                        projectURL: missingDataSourceURL,
+                        isInitializing: store.isInitializingBeads,
+                        isRecovering: store.isLoading && !store.isInitializingBeads,
+                        onInitialize: store.initializeBeads,
+                        onOpenProject: openProject
+                    )
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                } else {
+                    DetailView(requestClose: requestClose)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                }
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
@@ -171,14 +175,28 @@ struct ContentView: View {
         ContentLayout.showsWorkspaceDetail(
             selectionCount: store.selectedIDs.count,
             isFullPageDetailPresented: store.fullPageDetailIssueID != nil,
-            hasCreationDraft: store.creationDraft != nil
+            hasCreationDraft: store.creationDraft != nil,
+            hasMissingDataSource: store.missingDataSourceURL != nil
         )
     }
 
     private var showsIssueListPane: Bool {
         ContentLayout.showsIssueList(
             isFullPageDetailPresented: store.fullPageDetailIssueID != nil,
-            hasCreationDraft: store.creationDraft != nil
+            hasCreationDraft: store.creationDraft != nil,
+            hasMissingDataSource: store.missingDataSourceURL != nil
+        )
+    }
+
+    private var keepsProjectSelectorVisible: Bool {
+        store.missingDataSourceURL != nil
+    }
+
+    private func shouldShowSidebar(for width: CGFloat) -> Bool {
+        ContentLayout.showsSidebar(
+            for: width,
+            showsDetail: showsWorkspaceDetail,
+            keepsProjectSelectorVisible: keepsProjectSelectorVisible
         )
     }
 
@@ -360,17 +378,30 @@ enum ContentLayout {
     static func showsWorkspaceDetail(
         selectionCount: Int,
         isFullPageDetailPresented: Bool,
-        hasCreationDraft: Bool
+        hasCreationDraft: Bool,
+        hasMissingDataSource: Bool = false
     ) -> Bool {
-        hasCreationDraft || isFullPageDetailPresented || selectionCount == 1
+        hasMissingDataSource || hasCreationDraft || isFullPageDetailPresented || selectionCount == 1
     }
 
-    static func showsSidebar(for width: CGFloat, showsDetail: Bool) -> Bool {
+    static func showsSidebar(
+        for width: CGFloat,
+        showsDetail: Bool,
+        keepsProjectSelectorVisible: Bool = false
+    ) -> Bool {
+        if keepsProjectSelectorVisible {
+            return true
+        }
+
         let breakpoint = showsDetail ? detailSidebarCollapseBreakpoint : listOnlySidebarCollapseBreakpoint
         return width >= breakpoint
     }
 
-    static func showsIssueList(isFullPageDetailPresented: Bool, hasCreationDraft: Bool) -> Bool {
-        !isFullPageDetailPresented && !hasCreationDraft
+    static func showsIssueList(
+        isFullPageDetailPresented: Bool,
+        hasCreationDraft: Bool,
+        hasMissingDataSource: Bool = false
+    ) -> Bool {
+        !hasMissingDataSource && !isFullPageDetailPresented && !hasCreationDraft
     }
 }

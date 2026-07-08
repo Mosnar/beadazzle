@@ -51,6 +51,8 @@ for users, not for the commit log.
 - Changing bead metadata from the detail pane now updates the app immediately
   while the write runs in the background; only title and body text remain
   draft-until-save.
+- Opening a folder before Beads is initialized now keeps the project selector
+  visible so you can switch projects without initializing that folder first.
 
 ## [0.1.0-beta.3] - 2026-07-07
 

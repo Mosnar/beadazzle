@@ -27,6 +27,31 @@ final class ContentLayoutTests: XCTestCase {
         XCTAssertTrue(ContentLayout.showsWorkspaceDetail(selectionCount: 0, isFullPageDetailPresented: false, hasCreationDraft: true))
     }
 
+    func testMissingDataSourceUsesDetailPaneWithoutHidingProjectSelector() {
+        XCTAssertTrue(
+            ContentLayout.showsWorkspaceDetail(
+                selectionCount: 0,
+                isFullPageDetailPresented: false,
+                hasCreationDraft: false,
+                hasMissingDataSource: true
+            )
+        )
+        XCTAssertFalse(
+            ContentLayout.showsIssueList(
+                isFullPageDetailPresented: false,
+                hasCreationDraft: false,
+                hasMissingDataSource: true
+            )
+        )
+        XCTAssertTrue(
+            ContentLayout.showsSidebar(
+                for: ContentLayout.detailSidebarCollapseBreakpoint - 1,
+                showsDetail: true,
+                keepsProjectSelectorVisible: true
+            )
+        )
+    }
+
     func testSidebarCollapsesBeforeDetailInspectorRailIsLost() {
         let detailWidthWithSidebar = ContentLayout.detailSidebarCollapseBreakpoint
             - ContentLayout.sidebarIdealWidth
