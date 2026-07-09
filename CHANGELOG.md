@@ -17,6 +17,12 @@ for users, not for the commit log.
 
 - The app menu now includes Project Settings beneath Settings when a project is open.
 
+### Fixed
+
+- Local builds without Sparkle signing keys no longer show update controls that
+  can offer the current release as if it were newer than the running build.
+- Auto-update setup docs now point to the `public-release` GitHub environment.
+
 ## [1.0.0] - 2026-07-08
 
 ### Added

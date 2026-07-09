@@ -31,6 +31,7 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct SettingsView: View {
+    @EnvironmentObject private var updater: UpdaterController
     @SceneStorage("Beadazzle.Settings.SelectedPane") private var selectedPaneRawValue = AppSettingsPane.general.rawValue
 
     private var selectedPane: Binding<AppSettingsPane> {
@@ -42,12 +43,19 @@ struct SettingsView: View {
     }
 
     private var activePane: AppSettingsPane {
-        AppSettingsPane(rawValue: selectedPaneRawValue) ?? .general
+        let requestedPane = AppSettingsPane(rawValue: selectedPaneRawValue) ?? .general
+        return availablePanes.contains(requestedPane) ? requestedPane : .general
+    }
+
+    private var availablePanes: [AppSettingsPane] {
+        AppSettingsPane.allCases.filter { pane in
+            pane != .updates || updater.isUpdateCheckingAvailable
+        }
     }
 
     var body: some View {
         SettingsPaneContainer(
-            panes: Array(AppSettingsPane.allCases),
+            panes: availablePanes,
             selection: selectedPane,
             title: \.title,
             minDetailWidth: 560,

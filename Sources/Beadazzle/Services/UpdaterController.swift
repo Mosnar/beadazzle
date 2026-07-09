@@ -9,30 +9,42 @@ import Sparkle
 /// `build_app_bundle.sh`). The "receive beta updates" preference is bridged into
 /// Sparkle's channel selection through `UpdaterChannelDelegate`, which Sparkle
 /// consults on every check — no restart or re-registration needed when it flips.
+/// Local builds without a baked-in Sparkle public key do not start Sparkle; the
+/// matching menu and settings controls are hidden because those builds cannot
+/// verify or install release updates.
 @MainActor
 final class UpdaterController: ObservableObject {
-    let standardUpdaterController: SPUStandardUpdaterController
-    private let channelDelegate: UpdaterChannelDelegate
+    let standardUpdaterController: SPUStandardUpdaterController?
+    private let channelDelegate: UpdaterChannelDelegate?
     private let userDefaults: UserDefaults
 
-    init(userDefaults: UserDefaults = .standard) {
+    init(userDefaults: UserDefaults = .standard, infoDictionary: [String: Any]? = Bundle.main.infoDictionary) {
         self.userDefaults = userDefaults
-        let channelDelegate = UpdaterChannelDelegate(userDefaults: userDefaults)
-        self.channelDelegate = channelDelegate
-        // startingUpdater: true begins scheduled background checks immediately.
-        self.standardUpdaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: channelDelegate,
-            userDriverDelegate: nil
-        )
+
+        if SparkleUpdateConfiguration(infoDictionary: infoDictionary) != nil {
+            let channelDelegate = UpdaterChannelDelegate(userDefaults: userDefaults)
+            self.channelDelegate = channelDelegate
+            // startingUpdater: true begins scheduled background checks immediately.
+            self.standardUpdaterController = SPUStandardUpdaterController(
+                startingUpdater: true,
+                updaterDelegate: channelDelegate,
+                userDriverDelegate: nil
+            )
+        } else {
+            self.channelDelegate = nil
+            self.standardUpdaterController = nil
+        }
     }
 
-    var updater: SPUUpdater { standardUpdaterController.updater }
+    var updater: SPUUpdater? { standardUpdaterController?.updater }
+
+    var isUpdateCheckingAvailable: Bool { updater != nil }
 
     /// Bound by the Updates settings pane. Sparkle persists this itself.
     var automaticallyChecksForUpdates: Bool {
-        get { updater.automaticallyChecksForUpdates }
+        get { updater?.automaticallyChecksForUpdates ?? false }
         set {
+            guard let updater else { return }
             objectWillChange.send()
             updater.automaticallyChecksForUpdates = newValue
         }
@@ -45,6 +57,33 @@ final class UpdaterController: ObservableObject {
             objectWillChange.send()
             userDefaults.set(newValue, forKey: BeadazzlePreferenceKeys.receivesBetaUpdates)
         }
+    }
+}
+
+struct SparkleUpdateConfiguration: Equatable {
+    let feedURL: URL
+    let publicKey: String
+
+    init?(infoDictionary: [String: Any]?) {
+        guard
+            let feedURLString = infoDictionary?.trimmedString(forKey: "SUFeedURL"),
+            let feedURL = URL(string: feedURLString),
+            feedURL.scheme != nil,
+            let publicKey = infoDictionary?.trimmedString(forKey: "SUPublicEDKey")
+        else {
+            return nil
+        }
+
+        self.feedURL = feedURL
+        self.publicKey = publicKey
+    }
+}
+
+private extension Dictionary where Key == String, Value == Any {
+    func trimmedString(forKey key: String) -> String? {
+        guard let value = self[key] as? String else { return nil }
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 }
 

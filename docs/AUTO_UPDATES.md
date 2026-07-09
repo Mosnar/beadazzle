@@ -49,7 +49,7 @@ Set it as a **repository variable** so the build can bake it into `Info.plist`:
 
 Set it as a **secret** in the same environment as the Apple signing secrets:
 
-- GitHub → Settings → Environments → **public-beta-release** → Add secret
+- GitHub → Settings → Environments → **public-release** → Add secret
 - `SPARKLE_ED_PRIVATE_KEY` = the full contents of `private-key.txt`
 
 Then `rm private-key.txt`.
@@ -81,6 +81,9 @@ The workflow then:
 - **The current `v0.1.0-beta.1` build predates Sparkle**, so already-installed
   copies can't self-update to the first Sparkle release — that one is a manual
   download. Every release after it updates automatically.
+- Local source builds only show update controls when `SUPublicEDKey` is baked
+  into the bundle. Without that key, the app does not start Sparkle, so a debug
+  build cannot mistake the published release feed for an installable update.
 - The app is **not sandboxed**, so the build strips Sparkle's `XPCServices` and
   signs the framework inside-out (see `beadazzle_release_sign_sparkle`). Don't
   reintroduce `codesign --deep` on the app bundle.

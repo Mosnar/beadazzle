@@ -123,7 +123,7 @@ PLIST
 if [[ -n "$BEADAZZLE_SPARKLE_PUBLIC_KEY" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $BEADAZZLE_SPARKLE_PUBLIC_KEY" "$info_plist" >/dev/null
 else
-  printf 'warning: BEADAZZLE_SPARKLE_PUBLIC_KEY is unset; built app cannot verify updates\n' >&2
+  printf 'warning: BEADAZZLE_SPARKLE_PUBLIC_KEY is unset; built app will hide update controls\n' >&2
 fi
 
 beadazzle_release_embed_sparkle "$app_contents"

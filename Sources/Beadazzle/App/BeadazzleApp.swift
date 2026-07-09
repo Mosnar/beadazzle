@@ -16,7 +16,9 @@ struct BeadazzleApp: App {
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(after: .appInfo) {
-                CheckForUpdatesView(updater: updaterController.updater)
+                if let updater = updaterController.updater {
+                    CheckForUpdatesView(updater: updater)
+                }
             }
 
             CommandGroup(replacing: .newItem) {
