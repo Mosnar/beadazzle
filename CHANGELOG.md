@@ -17,6 +17,8 @@ for users, not for the commit log.
 
 - Project settings now include a Storage pane that explains the active Beads
   backend, JSONL snapshot, sync model, hooks, and backup status.
+- Project settings now show a pre-flight health check for bd, readable Beads
+  data, snapshot freshness, export configuration, hooks, and backup status.
 - Beadazzle now watches lightweight Beads export markers and warns when the
   readable JSONL snapshot may lag embedded Dolt, without polling the database.
 - Project settings now include a Ready workflow preference that can hide parent

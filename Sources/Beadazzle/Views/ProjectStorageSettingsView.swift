@@ -5,6 +5,7 @@ struct ProjectStorageSettingsPane: View {
 
     var body: some View {
         Form {
+            preflightSection
             actionsSection
 
             if let actionError = store.projectHealthActionError {
@@ -27,6 +28,25 @@ struct ProjectStorageSettingsPane: View {
         .settingsGroupedForm()
         .task(id: store.projectURL) {
             store.loadProjectHealthStatus()
+        }
+    }
+
+    private var preflightSection: some View {
+        Section("Pre-flight") {
+            let preflight = ProjectPreflightHealth.evaluate(
+                projectURL: store.projectURL,
+                missingDataSourceURL: store.missingDataSourceURL,
+                activeDataSource: store.currentDataSource,
+                snapshotFreshness: store.snapshotFreshness,
+                health: store.projectHealthSnapshot,
+                isLoading: store.isLoading || store.isLoadingProjectHealth || store.projectHealthSnapshot == nil
+            )
+
+            ProjectPreflightSummaryView(preflight: preflight)
+
+            ForEach(preflight.checks) { check in
+                ProjectPreflightCheckRow(check: check)
+            }
         }
     }
 
@@ -359,6 +379,88 @@ struct ProjectStorageSettingsPane: View {
     }
 }
 
+private struct ProjectPreflightSummaryView: View {
+    let preflight: ProjectPreflightHealth
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: preflight.status.systemImage)
+                .font(.title3)
+                .foregroundStyle(preflight.status.tint)
+                .frame(width: 24)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(preflight.title)
+                    .font(.headline)
+                Text(preflight.summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            ProjectHealthBadge(
+                title: preflight.status.badgeTitle,
+                style: preflight.status.badgeStyle
+            )
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(preflight.title)
+        .accessibilityValue(preflight.summary)
+    }
+}
+
+private struct ProjectPreflightCheckRow: View {
+    let check: ProjectPreflightHealth.Check
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: check.status.systemImage)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(check.status.tint)
+                .frame(width: 18)
+                .padding(.top, 2)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(check.title)
+                        .font(.callout.weight(.semibold))
+                    Text(check.summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+
+                if let detail = check.detail?.nilIfBlank {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+
+                if let actionHint = check.actionHint?.nilIfBlank {
+                    Label(actionHint, systemImage: "arrow.turn.down.right")
+                        .font(.caption)
+                        .foregroundStyle(check.status.tint)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(check.title), \(check.status.accessibilityLabel)")
+        .accessibilityValue(check.summary)
+        .accessibilityHint([check.detail, check.actionHint].compactMap { $0?.nilIfBlank }.joined(separator: " "))
+    }
+}
+
 private struct ProjectHealthStatusSummary: View {
     let action: ProjectHealthAction?
     let isLoading: Bool
@@ -498,6 +600,7 @@ private struct ProjectHealthBadge: View {
         case ok
         case info
         case warning
+        case critical
     }
 
     let title: String
@@ -521,10 +624,87 @@ private struct ProjectHealthBadge: View {
             Color.accentColor
         case .warning:
             Color.orange
+        case .critical:
+            Color.red
         }
     }
 
     private var backgroundStyle: Color {
         foregroundStyle.opacity(0.14)
+    }
+}
+
+private extension ProjectPreflightHealth.Status {
+    var systemImage: String {
+        switch self {
+        case .ready:
+            "checkmark.circle.fill"
+        case .info:
+            "info.circle.fill"
+        case .warning:
+            "exclamationmark.triangle.fill"
+        case .blocked:
+            "xmark.octagon.fill"
+        case .checking:
+            "clock.arrow.circlepath"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .ready:
+            .green
+        case .info:
+            .accentColor
+        case .warning:
+            .orange
+        case .blocked:
+            .red
+        case .checking:
+            .secondary
+        }
+    }
+
+    var badgeTitle: String {
+        switch self {
+        case .ready:
+            "Ready"
+        case .info:
+            "Info"
+        case .warning:
+            "Check"
+        case .blocked:
+            "Blocked"
+        case .checking:
+            "Checking"
+        }
+    }
+
+    var badgeStyle: ProjectHealthBadge.Style {
+        switch self {
+        case .ready:
+            .ok
+        case .info, .checking:
+            .info
+        case .warning:
+            .warning
+        case .blocked:
+            .critical
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .ready:
+            "ready"
+        case .info:
+            "informational"
+        case .warning:
+            "needs attention"
+        case .blocked:
+            "blocked"
+        case .checking:
+            "checking"
+        }
     }
 }

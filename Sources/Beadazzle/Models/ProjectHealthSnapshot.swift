@@ -59,6 +59,440 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
     }
 }
 
+struct ProjectPreflightHealth: Equatable, Sendable {
+    enum Status: Equatable, Sendable {
+        case ready
+        case info
+        case warning
+        case blocked
+        case checking
+    }
+
+    enum CheckID: String, Equatable, Sendable {
+        case bdCLI
+        case readableData
+        case snapshotFreshness
+        case exportConfiguration
+        case gitHooks
+        case backup
+    }
+
+    struct Check: Identifiable, Equatable, Sendable {
+        var id: CheckID
+        var title: String
+        var status: Status
+        var summary: String
+        var detail: String?
+        var actionHint: String?
+    }
+
+    var status: Status
+    var title: String
+    var summary: String
+    var checks: [Check]
+
+    static func evaluate(
+        projectURL: URL?,
+        missingDataSourceURL: URL?,
+        activeDataSource: BeadsDataSource?,
+        snapshotFreshness: ProjectSnapshotFreshness,
+        health: ProjectHealthSnapshot?,
+        isLoading: Bool
+    ) -> ProjectPreflightHealth {
+        let checks = [
+            bdCLICheck(health: health, isLoading: isLoading),
+            readableDataCheck(projectURL: projectURL, missingDataSourceURL: missingDataSourceURL, activeDataSource: activeDataSource, isLoading: isLoading),
+            snapshotFreshnessCheck(missingDataSourceURL: missingDataSourceURL, activeDataSource: activeDataSource, freshness: snapshotFreshness, health: health, isLoading: isLoading),
+            exportConfigurationCheck(health: health, isLoading: isLoading),
+            gitHooksCheck(health: health, isLoading: isLoading),
+            backupCheck(health: health, isLoading: isLoading)
+        ]
+        let status = overallStatus(for: checks)
+        return ProjectPreflightHealth(
+            status: status,
+            title: title(for: status),
+            summary: summary(for: status),
+            checks: checks
+        )
+    }
+
+    private static func overallStatus(for checks: [Check]) -> Status {
+        if checks.contains(where: { $0.status == .blocked }) {
+            return .blocked
+        }
+        if checks.contains(where: { $0.status == .checking }) {
+            return .checking
+        }
+        if checks.contains(where: { $0.status == .warning }) {
+            return .warning
+        }
+        return .ready
+    }
+
+    private static func title(for status: Status) -> String {
+        switch status {
+        case .ready, .info:
+            "Ready for Beadazzle"
+        case .warning:
+            "Pre-flight Needs Attention"
+        case .blocked:
+            "Pre-flight Blocked"
+        case .checking:
+            "Checking Project Setup"
+        }
+    }
+
+    private static func summary(for status: Status) -> String {
+        switch status {
+        case .ready, .info:
+            "Beadazzle can read this project and route writes through bd."
+        case .warning:
+            "The project is usable, but one or more setup checks could cause stale data or rough edges."
+        case .blocked:
+            "Beadazzle needs setup before this project can be used safely."
+        case .checking:
+            "Beadazzle is checking bd, data, snapshots, hooks, and backup state."
+        }
+    }
+
+    private static func bdCLICheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+        if let context = health?.context.value {
+            let version = context.bdVersion?.nilIfBlank.map { "bd \($0)" } ?? "bd available"
+            return Check(
+                id: .bdCLI,
+                title: "bd CLI",
+                status: .ready,
+                summary: version,
+                detail: context.repoRoot?.nilIfBlank.map { "Project context loaded for \($0)." },
+                actionHint: nil
+            )
+        }
+        if let errorMessage = health?.context.errorMessage {
+            return Check(
+                id: .bdCLI,
+                title: "bd CLI",
+                status: .blocked,
+                summary: "Cannot run bd for this project",
+                detail: errorMessage,
+                actionHint: "Choose a bd executable in Settings."
+            )
+        }
+        return pendingCheck(
+            id: .bdCLI,
+            title: "bd CLI",
+            isLoading: isLoading,
+            unloadedSummary: "bd status has not loaded"
+        )
+    }
+
+    private static func readableDataCheck(
+        projectURL: URL?,
+        missingDataSourceURL: URL?,
+        activeDataSource: BeadsDataSource?,
+        isLoading: Bool
+    ) -> Check {
+        guard projectURL != nil else {
+            return Check(
+                id: .readableData,
+                title: "Beads Data",
+                status: .blocked,
+                summary: "No project selected",
+                detail: nil,
+                actionHint: "Open a project folder."
+            )
+        }
+        if missingDataSourceURL != nil {
+            return Check(
+                id: .readableData,
+                title: "Beads Data",
+                status: .blocked,
+                summary: "Beads is not initialized",
+                detail: "The selected folder does not have a readable .beads data source.",
+                actionHint: "Initialize Beads for this project."
+            )
+        }
+        if let activeDataSource {
+            switch activeDataSource.kind {
+            case .jsonl:
+                return Check(
+                    id: .readableData,
+                    title: "Beads Data",
+                    status: .ready,
+                    summary: "Reading JSONL snapshot",
+                    detail: activeDataSource.displayPath,
+                    actionHint: nil
+                )
+            case .sqlite:
+                return Check(
+                    id: .readableData,
+                    title: "Beads Data",
+                    status: .warning,
+                    summary: "Reading legacy SQLite data",
+                    detail: activeDataSource.displayPath,
+                    actionHint: "Export a JSONL snapshot for the current embedded-Dolt flow."
+                )
+            }
+        }
+        return pendingCheck(
+            id: .readableData,
+            title: "Beads Data",
+            isLoading: isLoading,
+            unloadedSummary: "No readable Beads data source found",
+            unloadedStatus: .blocked,
+            unloadedActionHint: "Initialize Beads or export a snapshot."
+        )
+    }
+
+    private static func snapshotFreshnessCheck(
+        missingDataSourceURL: URL?,
+        activeDataSource: BeadsDataSource?,
+        freshness: ProjectSnapshotFreshness,
+        health: ProjectHealthSnapshot?,
+        isLoading: Bool
+    ) -> Check {
+        if missingDataSourceURL != nil {
+            return Check(
+                id: .snapshotFreshness,
+                title: "Readable Snapshot",
+                status: .blocked,
+                summary: "No snapshot yet",
+                detail: "Beadazzle has no Beads data to read for this folder.",
+                actionHint: "Initialize Beads for this project."
+            )
+        }
+        if activeDataSource?.kind == .sqlite {
+            return Check(
+                id: .snapshotFreshness,
+                title: "Readable Snapshot",
+                status: .warning,
+                summary: "Using SQLite instead of JSONL",
+                detail: "The app can read this project, but the current embedded-Dolt setup works best with .beads/issues.jsonl.",
+                actionHint: "Export Snapshot"
+            )
+        }
+        switch freshness.state {
+        case .current:
+            return Check(
+                id: .snapshotFreshness,
+                title: "Readable Snapshot",
+                status: .ready,
+                summary: freshness.message,
+                detail: health?.snapshotFile.url.path,
+                actionHint: nil
+            )
+        case .refreshing:
+            return Check(
+                id: .snapshotFreshness,
+                title: "Readable Snapshot",
+                status: .checking,
+                summary: freshness.message,
+                detail: freshness.detail,
+                actionHint: nil
+            )
+        case .possiblyStale:
+            return Check(
+                id: .snapshotFreshness,
+                title: "Readable Snapshot",
+                status: .warning,
+                summary: freshness.message,
+                detail: freshness.detail,
+                actionHint: "Export Snapshot"
+            )
+        case .unknown:
+            let snapshotExists = health?.snapshotFile.exists == true
+            return Check(
+                id: .snapshotFreshness,
+                title: "Readable Snapshot",
+                status: isLoading ? .checking : (snapshotExists ? .warning : .blocked),
+                summary: isLoading ? "Checking snapshot freshness" : (snapshotExists ? freshness.message : "JSONL snapshot missing"),
+                detail: freshness.detail ?? health?.snapshotFile.url.path,
+                actionHint: snapshotExists ? "Refresh Status" : "Export Snapshot"
+            )
+        }
+    }
+
+    private static func exportConfigurationCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+        if let config = health?.storageConfig.value {
+            if let errorMessage = config.exportAutoStatus.errorMessage {
+                return configWarning(
+                    id: .exportConfiguration,
+                    title: "Export Config",
+                    summary: "Cannot read export.auto",
+                    detail: errorMessage
+                )
+            }
+            if config.exportAuto == false {
+                return Check(
+                    id: .exportConfiguration,
+                    title: "Export Config",
+                    status: .warning,
+                    summary: "Automatic export is disabled",
+                    detail: "Beadazzle can export manually, but external bd writes may not refresh the readable JSONL snapshot automatically.",
+                    actionHint: "Enable export.auto in bd config."
+                )
+            }
+            if let errorMessage = config.exportPathStatus.errorMessage {
+                return configWarning(
+                    id: .exportConfiguration,
+                    title: "Export Config",
+                    summary: "Cannot read export.path",
+                    detail: errorMessage
+                )
+            }
+            guard let exportPath = config.exportPath?.nilIfBlank else {
+                return Check(
+                    id: .exportConfiguration,
+                    title: "Export Config",
+                    status: .warning,
+                    summary: "Export path is not configured",
+                    detail: "Beadazzle expects a readable JSONL snapshot such as .beads/issues.jsonl.",
+                    actionHint: "Set export.path in bd config."
+                )
+            }
+            return Check(
+                id: .exportConfiguration,
+                title: "Export Config",
+                status: .ready,
+                summary: "Auto export to \(exportPath)",
+                detail: nil,
+                actionHint: nil
+            )
+        }
+        if let errorMessage = health?.storageConfig.errorMessage {
+            return configWarning(
+                id: .exportConfiguration,
+                title: "Export Config",
+                summary: "Storage config unavailable",
+                detail: errorMessage
+            )
+        }
+        return pendingCheck(
+            id: .exportConfiguration,
+            title: "Export Config",
+            isLoading: isLoading,
+            unloadedSummary: "Storage config has not loaded"
+        )
+    }
+
+    private static func gitHooksCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+        if let hooks = health?.hooks.value {
+            guard !hooks.hooks.isEmpty else {
+                return Check(
+                    id: .gitHooks,
+                    title: "Git Hooks",
+                    status: .warning,
+                    summary: "Hook status unavailable",
+                    detail: nil,
+                    actionHint: "Refresh Status"
+                )
+            }
+            if hooks.hasMissingHooks {
+                return Check(
+                    id: .gitHooks,
+                    title: "Git Hooks",
+                    status: .warning,
+                    summary: hooks.summary,
+                    detail: hooks.missingHooks.map(\.name).joined(separator: ", "),
+                    actionHint: "Install Hooks"
+                )
+            }
+            return Check(
+                id: .gitHooks,
+                title: "Git Hooks",
+                status: .ready,
+                summary: "Installed",
+                detail: nil,
+                actionHint: nil
+            )
+        }
+        if let errorMessage = health?.hooks.errorMessage {
+            return Check(
+                id: .gitHooks,
+                title: "Git Hooks",
+                status: .warning,
+                summary: "Hook status unavailable",
+                detail: errorMessage,
+                actionHint: "Refresh Status"
+            )
+        }
+        return pendingCheck(
+            id: .gitHooks,
+            title: "Git Hooks",
+            isLoading: isLoading,
+            unloadedSummary: "Hook status has not loaded"
+        )
+    }
+
+    private static func backupCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+        if let backup = health?.backup.value {
+            if backup.isConfigured {
+                return Check(
+                    id: .backup,
+                    title: "Backup",
+                    status: .ready,
+                    summary: backup.hasBackupHistory ? "Configured with backup history" : "Configured",
+                    detail: backup.backup?.timestamp,
+                    actionHint: nil
+                )
+            }
+            return Check(
+                id: .backup,
+                title: "Backup",
+                status: .info,
+                summary: "Not configured",
+                detail: "Backups are optional for Beadazzle, but useful before large tracker changes.",
+                actionHint: nil
+            )
+        }
+        if let errorMessage = health?.backup.errorMessage {
+            return Check(
+                id: .backup,
+                title: "Backup",
+                status: .info,
+                summary: "Backup status unavailable",
+                detail: errorMessage,
+                actionHint: nil
+            )
+        }
+        return pendingCheck(
+            id: .backup,
+            title: "Backup",
+            isLoading: isLoading,
+            unloadedSummary: "Backup status has not loaded",
+            unloadedStatus: .info
+        )
+    }
+
+    private static func configWarning(id: CheckID, title: String, summary: String, detail: String?) -> Check {
+        Check(
+            id: id,
+            title: title,
+            status: .warning,
+            summary: summary,
+            detail: detail,
+            actionHint: "Refresh Status"
+        )
+    }
+
+    private static func pendingCheck(
+        id: CheckID,
+        title: String,
+        isLoading: Bool,
+        unloadedSummary: String,
+        unloadedStatus: Status = .warning,
+        unloadedActionHint: String? = "Refresh Status"
+    ) -> Check {
+        Check(
+            id: id,
+            title: title,
+            status: isLoading ? .checking : unloadedStatus,
+            summary: isLoading ? "Checking \(title.lowercased())" : unloadedSummary,
+            detail: nil,
+            actionHint: isLoading ? nil : unloadedActionHint
+        )
+    }
+}
+
 struct ProjectHealthValue<Value: Equatable & Sendable>: Equatable, Sendable {
     var value: Value?
     var errorMessage: String?
