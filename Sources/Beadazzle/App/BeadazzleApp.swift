@@ -27,6 +27,7 @@ struct BeadazzleApp: App {
             }
 
             BeadSaveCommands()
+            ProjectSettingsCommands(store: store)
 
             CommandGroup(after: .importExport) {
                 Button("Open Beads Project...") {

@@ -13,6 +13,10 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Added
+
+- The app menu now includes Project Settings beneath Settings when a project is open.
+
 ## [1.0.0] - 2026-07-08
 
 ### Added
