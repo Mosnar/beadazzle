@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-08
+
 ### Added
 
 - Project settings now include a Storage pane that explains the active Beads
@@ -142,7 +144,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v0.1.0-beta.3...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.0.0
 [0.1.0-beta.1]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.1
 [0.1.0-beta.2]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.2
 [0.1.0-beta.3]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.3

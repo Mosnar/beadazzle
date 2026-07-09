@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Version tag to publish, such as v0.1.0-beta.1
+        description: Version tag to publish, such as v1.0.0
         required: true
         type: string
       target_ref:

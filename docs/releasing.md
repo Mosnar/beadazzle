@@ -4,7 +4,7 @@ This guide describes the release path implemented in the repository scripts and 
 
 ## Release Goals
 
-Each public beta release should produce:
+Each public release should produce:
 
 - a signed `Beadazzle.app`,
 - a notarized and stapled `Beadazzle-<version>.dmg`,
@@ -13,7 +13,7 @@ Each public beta release should produce:
 
 ## Required GitHub Environment
 
-The release workflow now expects a protected GitHub Actions environment named `public-beta-release`.
+The release workflow expects a protected GitHub Actions environment named `public-beta-release`.
 
 Configure that environment before the first public release:
 
@@ -78,7 +78,7 @@ rtk ./script/build_and_run.sh --verify
 
 ```bash
 ./script/build_app_bundle.sh \
-  --release-tag v0.1.0-beta.1 \
+  --release-tag v1.0.0 \
   --build-number 100 \
   --codesign-identity "Developer ID Application: Example Name (TEAMID)" \
   --configuration release
@@ -97,7 +97,7 @@ APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 
 ```bash
 ./script/create_release_dmg.sh \
-  --release-tag v0.1.0-beta.1 \
+  --release-tag v1.0.0 \
   --build-number 100 \
   --codesign-identity "Developer ID Application: Example Name (TEAMID)" \
   --configuration release \
@@ -139,6 +139,7 @@ The workflow does the following, in order:
 
 Use version tags such as:
 
+- `v1.0.0`
 - `v0.1.0-beta.1`
 - `v0.1.0`
 

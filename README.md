@@ -1,12 +1,26 @@
 # Beadazzle
 
+<p align="center">
+  <img src="Resources/AppIcon.png" alt="Beadazzle app icon" width="96">
+</p>
+
 Beadazzle is a native macOS app for working with Beads issue trackers, especially repositories that use Beads in embedded mode.
 
-The goal is a faster, more human-friendly desktop UI for large Beads projects: quick browsing, search, filtering, sorting, CRUD operations, dependency management, bulk actions, and type/status management without forcing users through a slow or awkward web UI.
+The goal is a faster, more human-friendly desktop UI for large Beads projects: quick browsing, search, filtering, sorting, CRUD operations, dependency management, bulk actions, and type/status management without forcing every inspection through the CLI.
 
-Beadazzle is now set up for public beta distribution through GitHub Releases, including a signed and notarized macOS `.dmg` release path.
+Beadazzle is set up for stable distribution through GitHub Releases, including a signed and notarized macOS `.dmg` release path and Sparkle-powered updates.
 
-## Public Beta Install
+## Screenshots
+
+These screenshots use a freshly generated synthetic Beads project; they do not contain private project data.
+
+![Beadazzle structure view with parent and child beads](docs/assets/beadazzle-demo-structure.png)
+
+![Beadazzle detail screen rendering markdown, code, checklists, and metadata](docs/assets/beadazzle-demo-detail.png)
+
+![Beadazzle gates queue showing a gate and its blocked waiter](docs/assets/beadazzle-demo-gates-blockers.png)
+
+## Install
 
 1. Download the latest `Beadazzle-<version>.dmg` from [GitHub Releases](../../releases).
 2. Open the disk image and drag `Beadazzle.app` into `/Applications`.
@@ -19,12 +33,18 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 - Native macOS SwiftUI app with a sidebar, issue list, and detail pane.
 - Opens a repository containing a populated `.beads/beads.db` or a supported Beads JSONL source.
 - Reopens the last selected Beads project when available.
-- Fast issue browsing with search, filters, sort menu, and multi-selection.
-- Detail view for description, design, acceptance criteria, notes, labels, dependencies, and metadata.
-- CRUD and bulk actions routed through the `bd` CLI.
-- Dependency add/remove plus clickable related beads.
+- Fast issue browsing with search, filters, outline mode, sort controls, and multi-selection.
+- Split list/detail navigation with a full-page detail mode, Back/Forward support, and native context menus.
+- Detail editing for title, description, design, acceptance criteria, notes, labels, status, priority, assignee, and dates.
+- Live metadata updates for status, priority, labels, assignee, parent, blockers, blocked-by relationships, and deferral dates.
+- Dedicated gate queue with approve/reject workflows, gate-aware blockers, and guarded close/reopen actions.
+- Parent and sub-issue workflows with breadcrumbs, inline child creation, child-close confirmation, and hierarchy safety checks.
+- Fast relationship pickers with search, filters, outline mode, and quick-create flows.
+- Project settings for storage, snapshot freshness, readable export health, hooks, backups, and Ready workflow preferences.
+- CRUD, bulk actions, comments, dependencies, gates, and workflow mutations routed through the `bd` CLI.
 - Source-oriented snapshot reads: populated SQLite first, then JSONL fallback.
-- Live reload for local Beads source changes.
+- Live reload for local Beads source changes without polling idle projects.
+- Sparkle automatic updates with stable and beta channels.
 - Local app-bundle and DMG packaging scripts plus GitHub release automation.
 
 ## Requirements
@@ -35,6 +55,30 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 - A Beads project with either:
   - a populated `.beads/beads.db`, or
   - `.beads/issues.jsonl`, `.beads/beads.jsonl`, or `.beads/beads.base.jsonl`.
+
+## Supported Beads Modes
+
+Beadazzle is a local desktop client for one local Beads project at a time. It is best with current embedded-Dolt Beads projects that export a readable `.beads/issues.jsonl` snapshot, and it also supports direct reads from a populated legacy `.beads/beads.db`.
+
+Read support:
+
+- `.beads/issues.jsonl`
+- `.beads/beads.jsonl`
+- `.beads/beads.base.jsonl`
+- populated legacy `.beads/beads.db`
+
+Write support goes through `bd`, not direct file or database writes. Beadazzle currently covers create, edit, close, reopen, delete, bulk status/type/priority updates, labels, assignee, due/defer dates, comments, dependencies, parent/child relationships, custom status/type definitions, hooks install, backup sync, and common gate workflows.
+
+Embedded-Dolt projects are handled by asking `bd` to export a fresh readable JSONL snapshot after mutations and manual refreshes. The app then reloads that snapshot so Beads remains the source of truth for validation, hooks, history, and storage semantics.
+
+Generally not implemented in v1:
+
+- Full Beads administration for every `bd config`, storage, migration, import, export, federation, or recovery command.
+- Direct editing of `.beads` internals, Dolt tables, Beads history, or generated JSONL snapshots.
+- Built-in `bd` distribution, remote workers, agent orchestration, or hosted/team/cloud Beads service features.
+- Git, GitHub, pull request, or CI management beyond displaying and acting on Beads data that already exists locally.
+- Comment editing/deletion and advanced gate maintenance beyond the common create, check, approve/reject, resolve, and waiter flows.
+- Multi-project dashboards, cross-repository search, and multi-user collaboration surfaces.
 
 ## Build, Test, and Run
 
@@ -67,8 +111,8 @@ Local release helpers live under `script/`:
 
 ```bash
 ./script/test_release_common.sh
-./script/build_app_bundle.sh --release-tag v0.1.0-beta.1 --build-number 100
-./script/create_release_dmg.sh --release-tag v0.1.0-beta.1 --build-number 100
+./script/build_app_bundle.sh --release-tag v1.0.0 --build-number 100
+./script/create_release_dmg.sh --release-tag v1.0.0 --build-number 100
 ```
 
 - `build_app_bundle.sh` assembles `dist/Beadazzle.app` with tag-derived bundle metadata.
@@ -88,6 +132,12 @@ Beadazzle is designed around local repository data.
 - Beadazzle does not ship with `bd`; you must install it separately for write actions.
 - The app does not enable remote telemetry, analytics, or crash reporting by default.
 - Optional diagnostics are local-only: `--logs` and `--telemetry` stream macOS unified logs on your machine, and the performance signposts are only visible if you intentionally inspect them with Apple developer tools.
+
+## Credits and Inspiration
+
+- Architectural inspiration: [`beads_viewer`](https://github.com/Dicklesworthstone/beads_viewer) by Dicklesworthstone.
+- Design inspiration: [Linear](https://linear.app), especially its focused issue-tracking workflows and calm, dense interface patterns.
+- Open-source dependencies and bundled license notes are tracked in [Third-Party Notices](THIRD_PARTY_NOTICES.md).
 
 ## Governance and Policies
 
