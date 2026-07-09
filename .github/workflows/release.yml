@@ -88,7 +88,7 @@ jobs:
   publish:
     needs: validate
     runs-on: macos-26
-    environment: public-beta-release
+    environment: public-release
     permissions:
       contents: write
     env:

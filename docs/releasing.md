@@ -13,11 +13,11 @@ Each public release should produce:
 
 ## Required GitHub Environment
 
-The release workflow expects a protected GitHub Actions environment named `public-beta-release`.
+The release workflow expects a protected GitHub Actions environment named `public-release`.
 
 Configure that environment before the first public release:
 
-1. Go to `Settings` → `Environments` → `New environment` and create `public-beta-release`.
+1. Go to `Settings` → `Environments` → `New environment` and create `public-release`.
 2. Add at least one required reviewer so the publish job cannot access signing credentials without a human approval.
 3. Add the signing and notarization values below as **environment secrets**, not plain repository secrets.
 4. If your GitHub plan supports deployment branch or tag restrictions, limit the environment to your release tags such as `v*` and trusted branches only.
@@ -44,7 +44,7 @@ Once your Apple Developer Program membership is active, the shortest path is:
 base64 -i ~/path/to/DeveloperID.p12 | pbcopy
 ```
 
-5. Save the copied value as `APPLE_DEVELOPER_ID_P12_BASE64` in the `public-beta-release` environment.
+5. Save the copied value as `APPLE_DEVELOPER_ID_P12_BASE64` in the `public-release` environment.
 6. Save the `.p12` export password as `APPLE_DEVELOPER_ID_P12_PASSWORD`.
 7. Save the full signing identity string, such as `Developer ID Application: Your Name (TEAMID)`, as `APPLE_DEVELOPER_ID_APPLICATION`.
 8. Create an app-specific password for the Apple ID you will use with notarization and save it as `APPLE_NOTARY_APP_PASSWORD`.
@@ -126,7 +126,7 @@ The workflow does the following, in order:
 
 1. Resolve the release tag, checkout ref, and bundle build number.
 2. Run `swift test` and `./script/test_release_common.sh` before any signing secrets are exposed.
-3. Pause at the protected `public-beta-release` environment until a reviewer approves the publish job.
+3. Pause at the protected `public-release` environment until a reviewer approves the publish job.
 4. Fail early if any signing or notarization secret is missing.
 5. Import the `Developer ID Application` certificate into a temporary keychain.
 6. Build the signed app bundle.
