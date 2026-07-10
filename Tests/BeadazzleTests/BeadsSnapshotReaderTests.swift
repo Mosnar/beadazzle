@@ -150,10 +150,11 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(BeadFormatters.commandDate(issue.dueAt), "2026-07-09")
         XCTAssertNotNil(issue.deferUntil)
         XCTAssertEqual(loaded.snapshot.dependencies.map(\.type), ["parent-child"])
-        XCTAssertEqual(loaded.snapshot.commentsByIssueID["bd-jsonl"]?.first?.text, "Body field")
+        XCTAssertEqual(issue.commentCount, 1)
+        XCTAssertTrue(loaded.snapshot.commentsByIssueID.isEmpty)
     }
 
-    func testJSONLSnapshotSkipsMalformedLines() throws {
+    func testJSONLSnapshotReportsMalformedLines() throws {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": """
             not-json
@@ -161,9 +162,10 @@ final class BeadsSnapshotReaderTests: XCTestCase {
             """
         ])
 
-        let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
-
-        XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-good"])
+        XCTAssertThrowsError(try BeadsSnapshotReader().loadProject(projectURL: projectURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("line 1"))
+            XCTAssertTrue(error.localizedDescription.contains("Invalid JSON"))
+        }
     }
 
     func testJSONLStreamingHandlesFinalLineWithoutTrailingNewline() throws {
@@ -181,7 +183,8 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-first", "bd-final"])
         XCTAssertEqual(loaded.snapshot.dependencies.first?.issueID, "bd-final")
         XCTAssertEqual(loaded.snapshot.dependencies.first?.dependsOnID, "bd-first")
-        XCTAssertEqual(loaded.snapshot.commentsByIssueID["bd-final"]?.first?.text, "final comment")
+        XCTAssertEqual(loaded.snapshot.issues.last?.commentCount, 1)
+        XCTAssertTrue(loaded.snapshot.commentsByIssueID.isEmpty)
     }
 
     func testJSONLStreamingReadsLargeFilesLineByLine() throws {
@@ -209,7 +212,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-good"])
     }
 
-    func testSQLiteSnapshotLoadsDependenciesCommentsAndLabels() throws {
+    func testSQLiteSnapshotLoadsDependenciesCommentCountsAndLabels() throws {
         let projectURL = try makeProject(jsonlFiles: [:])
         try createSQLiteDatabase(
             at: projectURL.appendingPathComponent(".beads/beads.db"),
@@ -225,7 +228,21 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(issue.dependencyCount, 1)
         XCTAssertEqual(issue.commentCount, 1)
         XCTAssertEqual(loaded.snapshot.dependencies.first?.dependsOnID, "bd-blocker")
-        XCTAssertEqual(loaded.snapshot.commentsByIssueID["bd-sqlite"]?.first?.text, "SQLite comment")
+        XCTAssertTrue(loaded.snapshot.commentsByIssueID.isEmpty)
+    }
+
+    func testSQLiteSnapshotUsesIssueCommentCountWhenCommentsTableIsUnavailable() throws {
+        let projectURL = try makeProject(jsonlFiles: [:])
+        try createSQLiteDatabaseWithIssueCommentCount(
+            at: projectURL.appendingPathComponent(".beads/beads.db"),
+            issueID: "bd-sqlite-count",
+            commentCount: 4
+        )
+
+        let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
+
+        XCTAssertEqual(loaded.snapshot.issues.first?.commentCount, 4)
+        XCTAssertTrue(loaded.snapshot.commentsByIssueID.isEmpty)
     }
 
     func testSourceDiscoverySwitchesFromJSONLToPopulatedSQLite() throws {
@@ -613,6 +630,34 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         defer { sqlite3_close(database) }
 
         try insertSQLiteIssue(issueID: issueID, database: database)
+    }
+
+    private func createSQLiteDatabaseWithIssueCommentCount(
+        at url: URL,
+        issueID: String,
+        commentCount: Int
+    ) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(url.path, &database) == SQLITE_OK else {
+            throw TestSQLiteError.openFailed
+        }
+        defer { sqlite3_close(database) }
+
+        try executeSQL(
+            """
+            CREATE TABLE issues (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                priority INTEGER,
+                issue_type TEXT,
+                comment_count INTEGER
+            );
+            INSERT INTO issues (id, title, status, priority, issue_type, comment_count)
+            VALUES ('\(issueID)', 'Counted comments', 'open', 1, 'task', \(commentCount));
+            """,
+            database: database
+        )
     }
 
     private func insertSQLiteIssue(issueID: String, database: OpaquePointer?) throws {

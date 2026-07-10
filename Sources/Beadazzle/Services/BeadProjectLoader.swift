@@ -14,6 +14,7 @@ struct LoadedProject: Sendable {
     var source: BeadsDataSource
     var snapshot: BeadsSnapshot
     var index: BeadProjectIndex
+    var snapshotRefreshWarning: String?
     /// The definitions used to build `index.semantics`, so the caller can cache them and
     /// pass them back on subsequent reloads. `nil` when the `bd` read failed (built-in
     /// fallbacks were used) — the caller should not cache a failure.
@@ -70,6 +71,7 @@ struct BeadProjectLoader: Sendable {
                 source: loadedSnapshot.source,
                 snapshot: loadedSnapshot.snapshot,
                 index: index,
+                snapshotRefreshWarning: nil,
                 definitions: definitions
             )
         }.value
@@ -123,15 +125,22 @@ struct BeadProjectLoader: Sendable {
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
+        var snapshotRefreshWarning: String?
         if Self.beadsDirectoryExists(at: projectURL) {
-            try? await commands.exportReadableSnapshot(projectURL: projectURL)
+            do {
+                try await commands.exportReadableSnapshot(projectURL: projectURL)
+            } catch {
+                snapshotRefreshWarning = error.localizedDescription
+            }
         }
-        return try await loadProject(
+        var loadedProject = try await loadProject(
             projectURL: projectURL,
             staleCutoffDays: staleCutoffDays,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
             cachedDefinitions: cachedDefinitions
         )
+        loadedProject.snapshotRefreshWarning = snapshotRefreshWarning
+        return loadedProject
     }
 
     /// Reads status/type definitions from `bd`. Returns `nil` if the read fails, so the

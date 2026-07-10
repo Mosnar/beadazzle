@@ -43,10 +43,6 @@ struct BeadsSnapshotReader {
         }
     }
 
-    func loadComments(projectURL: URL, issueID: String) throws -> [BeadComment] {
-        try loadSnapshot(projectURL: projectURL).commentsByIssueID[issueID] ?? []
-    }
-
     func loadJSONLIssuesForTesting(records: [[String: Any]]) -> [BeadIssue] {
         jsonlReader.loadIssuesForTesting(records: records)
     }

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct BulkActionsMenu: View {
     @Environment(BeadStore.self) private var store: BeadStore
-    @Binding var showingDeleteConfirmation: Bool
+    let requestDeleteSelected: () -> Void
     let requestCloseSelected: () -> Void
     let requestSetStatus: (String) -> Void
 
@@ -50,7 +50,7 @@ struct BulkActionsMenu: View {
             Divider()
 
             Button("Delete Selected", role: .destructive) {
-                showingDeleteConfirmation = true
+                requestDeleteSelected()
             }
             .disabled(store.selectedIDs.isEmpty)
         } label: {

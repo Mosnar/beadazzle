@@ -6,7 +6,7 @@ struct BeadsJSONLSnapshotReader {
         return BeadsSnapshot(
             issues: loadIssues(records: records),
             dependencies: loadAllDependencies(records: records),
-            commentsByIssueID: loadComments(records: records)
+            commentsByIssueID: [:]
         )
     }
 
@@ -81,45 +81,13 @@ struct BeadsJSONLSnapshotReader {
         }
     }
 
-    private func loadComments(records: [[String: Any]]) -> [String: [BeadComment]] {
-        var commentsByIssueID: [String: [BeadComment]] = [:]
-
-        for record in records {
-            let sourceIssueID = record.string("id")
-            for (offset, commentRecord) in record.array("comments").enumerated() {
-                let issueID = commentRecord.optionalString("issue_id")
-                    ?? commentRecord.optionalString("issueId")
-                    ?? sourceIssueID
-                guard !issueID.isEmpty else { continue }
-
-                let comment = BeadComment(
-                    id: commentRecord.string("id", default: "\(issueID)-comment-\(offset)"),
-                    issueID: issueID,
-                    author: commentRecord.optionalString("author"),
-                    text: commentRecord.optionalString("text")
-                        ?? commentRecord.optionalString("body")
-                        ?? commentRecord.optionalString("content")
-                        ?? "",
-                    createdAt: parseDate(commentRecord.optionalString("created_at") ?? commentRecord.optionalString("createdAt")),
-                    updatedAt: parseDate(commentRecord.optionalString("updated_at") ?? commentRecord.optionalString("updatedAt"))
-                )
-                commentsByIssueID[issueID, default: []].append(comment)
-            }
-        }
-
-        return commentsByIssueID.mapValues { comments in
-            comments.sorted { lhs, rhs in
-                (lhs.createdAt ?? .distantPast) < (rhs.createdAt ?? .distantPast)
-            }
-        }
-    }
-
     private func loadRecords(url: URL) throws -> [[String: Any]] {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
         var records: [[String: Any]] = []
         var lineBuffer = Data()
+        var lineNumber = 0
         lineBuffer.reserveCapacity(64 * 1024)
 
         while true {
@@ -130,7 +98,8 @@ struct BeadsJSONLSnapshotReader {
             var start = chunk.startIndex
             while let newlineIndex = chunk[start...].firstIndex(of: 10) {
                 lineBuffer.append(contentsOf: chunk[start..<newlineIndex])
-                appendRecord(from: lineBuffer, into: &records)
+                lineNumber += 1
+                try appendRecord(from: lineBuffer, lineNumber: lineNumber, path: url.path, into: &records)
                 lineBuffer.removeAll(keepingCapacity: true)
                 start = chunk.index(after: newlineIndex)
             }
@@ -141,20 +110,32 @@ struct BeadsJSONLSnapshotReader {
         }
 
         if !lineBuffer.isEmpty {
-            appendRecord(from: lineBuffer, into: &records)
+            lineNumber += 1
+            try appendRecord(from: lineBuffer, lineNumber: lineNumber, path: url.path, into: &records)
         }
 
         return records
     }
 
-    private func appendRecord(from rawLineData: Data, into records: inout [[String: Any]]) {
+    private func appendRecord(
+        from rawLineData: Data,
+        lineNumber: Int,
+        path: String,
+        into records: inout [[String: Any]]
+    ) throws {
         var lineData = rawLineData
         if lineData.last == 13 {
             lineData.removeLast()
         }
-        guard !lineData.isEmpty,
-              let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-            return
+        guard !lineData.isEmpty else { return }
+        let value: Any
+        do {
+            value = try JSONSerialization.jsonObject(with: lineData)
+        } catch {
+            throw BeadError.invalidSnapshot(path: path, line: lineNumber, message: "Invalid JSON.")
+        }
+        guard let object = value as? [String: Any] else {
+            throw BeadError.invalidSnapshot(path: path, line: lineNumber, message: "Expected a JSON object.")
         }
         let recordType = object.optionalString("_type")
         guard recordType == nil || recordType == "issue" else {

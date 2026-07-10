@@ -234,20 +234,8 @@ extension BeadGate {
         return nil
     }
 
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    private static let isoFractionalFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
     static func date(from value: Any?) -> Date? {
         guard let string = value as? String, !string.isEmpty else { return nil }
-        return isoFormatter.date(from: string) ?? isoFractionalFormatter.date(from: string)
+        return BeadFormatters.parseDate(string)
     }
 }

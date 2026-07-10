@@ -34,11 +34,11 @@ struct WorkspaceMouseNavigationBridge: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            installMonitorIfNeeded()
-        }
-
-        deinit {
-            removeMonitor()
+            if window == nil {
+                removeMonitor()
+            } else {
+                installMonitorIfNeeded()
+            }
         }
 
         func installMonitorIfNeeded() {

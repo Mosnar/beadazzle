@@ -18,6 +18,7 @@ struct IssueListTableView: NSViewRepresentable {
     let store: BeadStore
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
+    let requestDelete: (Set<String>) -> Void
     let openDetail: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -533,8 +534,7 @@ struct IssueListTableView: NSViewRepresentable {
 
         @objc private func deleteContextBeads(_ sender: NSMenuItem) {
             guard let action = sender.representedObject as? ContextMenuAction else { return }
-            let ids = action.ids
-            Task { await parent.store.delete(issueIDs: ids) }
+            parent.requestDelete(Set(action.ids))
         }
     }
 }

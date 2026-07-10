@@ -14,25 +14,132 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.beadListDisplayOptions, .compact)
     }
 
-    func testPreferencesPersistThroughInjectedUserDefaults() {
+    func testAppPreferencesPersistThroughInjectedUserDefaults() {
         let defaults = makeUserDefaults()
         let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
 
         store.bdCLIPath = "/tmp/custom-bd"
-        store.staleCutoffDays = 30
+
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+
+        XCTAssertEqual(reloadedStore.bdCLIPath, "/tmp/custom-bd")
+        XCTAssertEqual(reloadedStore.staleCutoffDays, 14)
+        XCTAssertEqual(reloadedStore.beadListDisplayOptions, .compact)
+    }
+
+    func testProjectListDisplayOptionsPersistPerProject() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let otherProjectURL = try makeProject(issueLine(id: "bd-2", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(store.beadListDisplayOptions, .compact)
+
         store.showsOwnerInBeadList = true
         store.showsAssigneeInBeadList = true
         store.showsDueDateInBeadList = true
         store.showsCommentsInBeadList = false
 
-        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        XCTAssertEqual(
+            store.beadListDisplayOptions,
+            BeadListDisplayOptions(showsOwner: true, showsAssignee: true, showsDueDate: true, showsComments: false)
+        )
 
-        XCTAssertEqual(reloadedStore.bdCLIPath, "/tmp/custom-bd")
-        XCTAssertEqual(reloadedStore.staleCutoffDays, 30)
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+
         XCTAssertTrue(reloadedStore.showsOwnerInBeadList)
         XCTAssertTrue(reloadedStore.showsAssigneeInBeadList)
         XCTAssertTrue(reloadedStore.showsDueDateInBeadList)
         XCTAssertFalse(reloadedStore.showsCommentsInBeadList)
+
+        let otherStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "bd-2") != nil }
+
+        XCTAssertEqual(otherStore.beadListDisplayOptions, .compact)
+    }
+
+    func testLegacyGlobalPreferencesSeedProjectScopedPreferences() async throws {
+        let defaults = makeUserDefaults()
+        defaults.set(30, forKey: BeadazzlePreferenceKeys.legacyStaleCutoffDays)
+        defaults.set(true, forKey: BeadazzlePreferenceKeys.legacyShowsOwnerInBeadList)
+        defaults.set(true, forKey: BeadazzlePreferenceKeys.legacyShowsAssigneeInBeadList)
+        defaults.set(true, forKey: BeadazzlePreferenceKeys.legacyShowsDueDateInBeadList)
+        defaults.set(false, forKey: BeadazzlePreferenceKeys.legacyShowsCommentsInBeadList)
+        let projectURL = try makeProject(issueLine(id: "bd-legacy", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-legacy") != nil }
+
+        XCTAssertEqual(store.staleCutoffDays, 30)
+        XCTAssertEqual(
+            store.beadListDisplayOptions,
+            BeadListDisplayOptions(showsOwner: true, showsAssignee: true, showsDueDate: true, showsComments: false)
+        )
+        XCTAssertEqual(
+            defaults.integer(forKey: BeadazzlePreferenceKeys.staleCutoffDays(projectURL: projectURL)),
+            30
+        )
+        XCTAssertTrue(defaults.bool(forKey: BeadazzlePreferenceKeys.showsOwnerInBeadList(projectURL: projectURL)))
+        XCTAssertTrue(defaults.bool(forKey: BeadazzlePreferenceKeys.showsAssigneeInBeadList(projectURL: projectURL)))
+        XCTAssertTrue(defaults.bool(forKey: BeadazzlePreferenceKeys.showsDueDateInBeadList(projectURL: projectURL)))
+        XCTAssertFalse(defaults.bool(forKey: BeadazzlePreferenceKeys.showsCommentsInBeadList(projectURL: projectURL)))
+    }
+
+    func testProjectScopedPreferencesOverrideLegacyGlobalPreferences() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-scoped", status: "open", type: "task"))
+        defaults.set(30, forKey: BeadazzlePreferenceKeys.legacyStaleCutoffDays)
+        defaults.set(true, forKey: BeadazzlePreferenceKeys.legacyShowsOwnerInBeadList)
+        defaults.set(7, forKey: BeadazzlePreferenceKeys.staleCutoffDays(projectURL: projectURL))
+        defaults.set(false, forKey: BeadazzlePreferenceKeys.showsOwnerInBeadList(projectURL: projectURL))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-scoped") != nil }
+
+        XCTAssertEqual(store.staleCutoffDays, 7)
+        XCTAssertFalse(store.showsOwnerInBeadList)
+    }
+
+    func testStaleCutoffPersistsPerProjectAndRecomputesStaleRows() async throws {
+        let defaults = makeUserDefaults()
+        let tenDaysAgo = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-10 * 24 * 60 * 60))
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task", updatedAt: tenDaysAgo))
+        let otherProjectURL = try makeProject(issueLine(id: "bd-2", status: "open", type: "task", updatedAt: tenDaysAgo))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(store.staleCutoffDays, 14)
+        XCTAssertEqual(store.count(for: .stale), 0)
+
+        store.staleCutoffDays = 7
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.staleCutoffDays, 7)
+        XCTAssertEqual(store.count(for: .stale), 1)
+
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+        await reloadedStore.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(reloadedStore.staleCutoffDays, 7)
+        XCTAssertEqual(reloadedStore.count(for: .stale), 1)
+
+        let otherStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "bd-2") != nil }
+        await otherStore.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(otherStore.staleCutoffDays, 14)
+        XCTAssertEqual(otherStore.count(for: .stale), 0)
     }
 
     func testProjectVisibilityPersistsAndKeepsUsedHiddenValuesReachableWithoutOfferingThemForNewChoices() async throws {
@@ -291,9 +398,42 @@ final class BeadStorePreferencesTests: XCTestCase {
         return projectURL
     }
 
-    private func issueLine(id: String, status: String, type: String) -> String {
+    func testOptionInventoryDocumentsPersistentOptionOwnership() {
+        let entries = BeadazzleOptionInventory.entries
+        let expectedIDs: Set<String> = [
+            "bdCLIPath",
+            "automaticallyChecksForUpdates",
+            "receivesBetaUpdates",
+            "staleCutoffDays",
+            "hidesParentsWithOnlyBlockedChildrenInReady",
+            "hiddenTypes",
+            "hiddenStatuses",
+            "showsOwnerInBeadList",
+            "showsAssigneeInBeadList",
+            "showsDueDateInBeadList",
+            "showsCommentsInBeadList"
+        ]
+
+        XCTAssertEqual(Set(entries.map(\.id)), expectedIDs)
+        XCTAssertEqual(entries.map(\.id).count, Set(entries.map(\.id)).count)
+        XCTAssertTrue(entries.allSatisfy { !$0.persistence.isEmpty })
+        XCTAssertTrue(entries.allSatisfy { !$0.defaultValue.isEmpty })
+        XCTAssertTrue(entries.allSatisfy { !$0.uiLocation.isEmpty })
+        XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
+        XCTAssertEqual(
+            Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
+            Set(["Issue List > View Options"])
+        )
+    }
+
+    private func issueLine(
+        id: String,
+        status: String,
+        type: String,
+        updatedAt: String = "2026-07-03T20:58:35Z"
+    ) -> String {
         """
-        {"_type":"issue","id":"\(id)","title":"Example","status":"\(status)","priority":1,"issue_type":"\(type)","updated_at":"2026-07-03T20:58:35Z"}
+        {"_type":"issue","id":"\(id)","title":"Example","status":"\(status)","priority":1,"issue_type":"\(type)","updated_at":"\(updatedAt)"}
         """
     }
 

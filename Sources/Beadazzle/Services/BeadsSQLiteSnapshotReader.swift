@@ -8,24 +8,21 @@ struct BeadsSQLiteSnapshotReader {
 
         SQLiteDatabase.applyReadPragmas(database)
         let dependencies = try loadAllDependencies(database: database)
-        let commentsByIssueID = try loadAllComments(database: database)
         let labelsByIssueID = try loadAllLabels(database: database)
         return BeadsSnapshot(
             issues: try loadIssues(
                 database: database,
                 dependencies: dependencies,
-                commentsByIssueID: commentsByIssueID,
                 labelsByIssueID: labelsByIssueID
             ),
             dependencies: dependencies,
-            commentsByIssueID: commentsByIssueID
+            commentsByIssueID: [:]
         )
     }
 
     private func loadIssues(
         database: OpaquePointer?,
         dependencies: [BeadDependency],
-        commentsByIssueID: [String: [BeadComment]],
         labelsByIssueID: [String: [String]]
     ) throws -> [BeadIssue] {
         guard SQLiteDatabase.tableExists("issues", in: database) else { return [] }
@@ -39,13 +36,21 @@ struct BeadsSQLiteSnapshotReader {
             : (issueColumns.contains("gate_type") ? "i.gate_type" : "NULL")
         let whereClause = issueColumns.contains("deleted_at") ? "WHERE i.deleted_at IS NULL" : ""
         let updatedOrder = issueColumns.contains("updated_at") ? "i.updated_at DESC" : "i.id ASC"
+        let commentCountExpression: String
+        if issueColumns.contains("comment_count") {
+            commentCountExpression = "i.comment_count"
+        } else if SQLiteDatabase.tableExists("comments", in: database),
+                  SQLiteDatabase.columns(in: "comments", database: database).contains("issue_id") {
+            commentCountExpression = "(SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id)"
+        } else {
+            commentCountExpression = "0"
+        }
         let dependencyCounts = dependencies.reduce(into: [String: Int]()) { counts, dependency in
             counts[dependency.issueID, default: 0] += 1
         }
         let dependentCounts = dependencies.reduce(into: [String: Int]()) { counts, dependency in
             counts[dependency.dependsOnID, default: 0] += 1
         }
-        let commentCounts = commentsByIssueID.mapValues(\.count)
         let sql = """
         SELECT
           i.id,
@@ -71,7 +76,8 @@ struct BeadsSQLiteSnapshotReader {
           \(column("parent_id", fallback: "NULL")) AS parent_id,
           \(column("pinned", fallback: "0")),
           \(column("ephemeral", fallback: "0")),
-          \(column("is_template", fallback: "0"))
+          \(column("is_template", fallback: "0")),
+          \(commentCountExpression)
         FROM issues i
         \(whereClause)
         ORDER BY \(column("priority", fallback: "2")) ASC, \(updatedOrder)
@@ -120,7 +126,7 @@ struct BeadsSQLiteSnapshotReader {
                     labels: labelsByIssueID[id, default: []],
                     dependencyCount: dependencyCounts[id, default: 0],
                     dependentCount: dependentCounts[id, default: 0],
-                    commentCount: commentCounts[id, default: 0],
+                    commentCount: SQLiteDatabase.int(statement, 24),
                     pinned: SQLiteDatabase.int(statement, 21) == 1,
                     ephemeral: SQLiteDatabase.int(statement, 22) == 1,
                     isTemplate: SQLiteDatabase.int(statement, 23) == 1
@@ -213,63 +219,6 @@ struct BeadsSQLiteSnapshotReader {
             labelsByIssueID[issueID, default: []].append(label)
         }
         return labelsByIssueID
-    }
-
-    private func loadAllComments(database: OpaquePointer?) throws -> [String: [BeadComment]] {
-        guard SQLiteDatabase.tableExists("comments", in: database) else { return [:] }
-        let columns = SQLiteDatabase.columns(in: "comments", database: database)
-        guard columns.contains("id"), columns.contains("issue_id") else { return [:] }
-
-        let authorExpression = columns.contains("author") ? "author" : "NULL"
-        let textExpression = sqliteCommentTextExpression(columns: columns)
-        let createdAtExpression = columns.contains("created_at") ? "created_at" : "NULL"
-        let updatedAtExpression = columns.contains("updated_at") ? "updated_at" : "NULL"
-        let sql = """
-        SELECT id, issue_id, \(authorExpression), \(textExpression), \(createdAtExpression), \(updatedAtExpression)
-        FROM comments
-        ORDER BY \(createdAtExpression) ASC
-        """
-
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw BeadError.sqlitePrepare(SQLiteDatabase.lastError(database))
-        }
-        defer { sqlite3_finalize(statement) }
-
-        var commentsByIssueID: [String: [BeadComment]] = [:]
-        while true {
-            let result = sqlite3_step(statement)
-            if result == SQLITE_DONE {
-                break
-            }
-            guard result == SQLITE_ROW else {
-                throw BeadError.sqliteStep(SQLiteDatabase.lastError(database))
-            }
-
-            let comment = BeadComment(
-                id: SQLiteDatabase.text(statement, 0),
-                issueID: SQLiteDatabase.text(statement, 1),
-                author: SQLiteDatabase.optionalText(statement, 2),
-                text: SQLiteDatabase.text(statement, 3),
-                createdAt: parseDate(SQLiteDatabase.optionalText(statement, 4)),
-                updatedAt: parseDate(SQLiteDatabase.optionalText(statement, 5))
-            )
-            commentsByIssueID[comment.issueID, default: []].append(comment)
-        }
-        return commentsByIssueID
-    }
-
-    private func sqliteCommentTextExpression(columns: Set<String>) -> String {
-        if columns.contains("text") {
-            return "text"
-        }
-        if columns.contains("body") {
-            return "body"
-        }
-        if columns.contains("content") {
-            return "content"
-        }
-        return "''"
     }
 
     private func parseDate(_ value: String?) -> Date? {

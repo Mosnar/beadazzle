@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 
+@MainActor
 enum PanelService {
     static func chooseProjectFolder() -> URL? {
         let panel = NSOpenPanel()

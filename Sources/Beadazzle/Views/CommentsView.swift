@@ -9,6 +9,7 @@ struct CommentsView: View {
     var body: some View {
         let comments = store.comments(for: issue.id)
         let isLoadingComments = store.isLoadingComments(for: issue.id)
+        let commentLoadError = store.commentLoadError(for: issue.id)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -36,6 +37,11 @@ struct CommentsView: View {
             if isLoadingComments && comments.isEmpty {
                 Text("Loading comments...")
                     .foregroundStyle(.secondary)
+            } else if let commentLoadError {
+                Label(commentLoadError, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if comments.isEmpty {
                 Text("No comments.")
                     .foregroundStyle(.secondary)
@@ -79,12 +85,11 @@ struct CommentsView: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .onAppear {
+        .task(id: CommentLoadTaskID(issueID: issue.id, commentCount: issue.commentCount)) {
             store.loadCommentsForSelection()
         }
         .onChange(of: issue.id) {
             draftText = ""
-            store.loadCommentsForSelection()
         }
     }
 
@@ -99,6 +104,11 @@ struct CommentsView: View {
         draftText = ""
         composerFocused = false
     }
+}
+
+private struct CommentLoadTaskID: Hashable {
+    let issueID: String
+    let commentCount: Int
 }
 
 private struct CommentRow: View {

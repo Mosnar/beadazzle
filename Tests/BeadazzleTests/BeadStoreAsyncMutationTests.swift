@@ -475,6 +475,22 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
     }
 
+    func testManualRefreshPreservesSnapshotAndWarnsWhenExportFails() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await commands.setExportError(StoreMutationTestError.commandFailed)
+
+        store.refresh()
+
+        try await waitUntil { !store.isLoading && store.snapshotFreshness.state == .possiblyStale }
+        XCTAssertNotNil(store.issue(with: "bd-1"))
+        XCTAssertTrue(store.snapshotFreshness.detail?.contains("Mutation command failed") == true)
+        XCTAssertNil(store.lastError)
+    }
+
     func testBulkSetReturnsFalseAndSetsLastErrorOnCommandFailure() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -741,12 +757,13 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
     }
 
     func testForcedCommentRefreshSetsAndClearsLoadingStateOnSuccess() async throws {
-        let projectURL = try makeProject(
-            """
-            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","comments":[{"id":"comment-1","body":"Cached comment"}]}
-            """
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setComments(
+            [BeadComment(id: "comment-1", issueID: "bd-1", author: nil, text: "Fresh comment", createdAt: nil, updatedAt: nil)],
+            for: "bd-1"
         )
-        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         store.select(["bd-1"])
@@ -755,25 +772,25 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         XCTAssertTrue(store.isLoadingComments)
         try await waitUntil { !store.isLoadingComments }
-        XCTAssertEqual(store.comments.map(\.text), ["Cached comment"])
+        XCTAssertEqual(store.comments.map(\.text), ["Fresh comment"])
         XCTAssertNil(store.lastError)
+        XCTAssertNil(store.commentLoadError(for: "bd-1"))
     }
 
     func testForcedCommentRefreshClearsLoadingStateOnFailure() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
-        await commands.setExportError(StoreMutationTestError.commandFailed)
+        await commands.setCommentLoadError(StoreMutationTestError.commandFailed)
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         store.select(["bd-1"])
-        try FileManager.default.removeItem(at: projectURL.appendingPathComponent(".beads/issues.jsonl"))
-
         store.loadCommentsForSelection(force: true)
 
         XCTAssertTrue(store.isLoadingComments)
-        try await waitUntil { !store.isLoadingComments && store.lastError != nil }
-        XCTAssertEqual(store.lastError, StoreMutationTestError.commandFailed.localizedDescription)
+        try await waitUntil { !store.isLoadingComments && store.commentLoadError(for: "bd-1") != nil }
+        XCTAssertEqual(store.commentLoadError(for: "bd-1"), StoreMutationTestError.commandFailed.localizedDescription)
+        XCTAssertNil(store.lastError)
     }
 
     func testRapidSelectionOnlyAppliesLatestSelectionSideData() async throws {
@@ -785,21 +802,36 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             {"_type":"issue","id":"bd-other","title":"Other","status":"open","priority":1,"issue_type":"task"}
             """
         )
-        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        let commands = RecordingBeadsCommands()
+        await commands.setComments(
+            [BeadComment(id: "comment-a", issueID: "bd-a", author: nil, text: "A comment", createdAt: nil, updatedAt: nil)],
+            for: "bd-a"
+        )
+        await commands.setComments(
+            [BeadComment(id: "comment-b", issueID: "bd-b", author: nil, text: "B comment", createdAt: nil, updatedAt: nil)],
+            for: "bd-b"
+        )
+        await commands.setCommentLoadDelay(.milliseconds(100))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-a") != nil && store.issue(with: "bd-b") != nil }
 
         store.select(["bd-a"])
+        store.loadCommentsForSelection()
         store.select(["bd-b"])
+        store.loadCommentsForSelection()
 
         try await waitUntil {
-            store.dependencyIssueID == "bd-b" && store.commentsIssueID == "bd-b"
+            store.dependencyIssueID == "bd-b"
+                && store.commentsIssueID == "bd-b"
+                && !store.isLoadingComments
+                && store.comments.map(\.id) == ["comment-b"]
         }
         XCTAssertEqual(store.selectedIDs, Set(["bd-b"]))
         XCTAssertEqual(store.dependencies.map(\.issueID), ["bd-b"])
         XCTAssertEqual(store.dependencies.map(\.dependsOnID), ["bd-other"])
         XCTAssertEqual(store.comments.map(\.id), ["comment-b"])
-        XCTAssertEqual(store.comments(for: "bd-a").map(\.id), ["comment-a"])
+        XCTAssertTrue(store.comments(for: "bd-a").isEmpty)
     }
 
     func testGatePresentationComesFromSnapshotWithoutGateRoster() async throws {
@@ -1537,6 +1569,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         (projectURL: URL, blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?)
     ] = []
     private(set) var addGateWaiterCalls: [(projectURL: URL, id: String, waiter: String)] = []
+    private(set) var loadCommentsCalls: [(projectURL: URL, issueID: String)] = []
     private(set) var exportCallCount = 0
     private var createIssueID = "bd-created"
     private var createError: Error?
@@ -1546,6 +1579,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var bulkUpdateError: Error?
     private var bulkUpdateDelay: Duration?
     private var exportError: Error?
+    private var commentsByIssueID: [String: [BeadComment]] = [:]
+    private var commentLoadError: Error?
+    private var commentLoadDelay: Duration?
     private var gateDetail: BeadGate?
     private var checkGatesOutput = ""
 
@@ -1579,6 +1615,18 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setExportError(_ error: Error?) {
         exportError = error
+    }
+
+    func setComments(_ comments: [BeadComment], for issueID: String) {
+        commentsByIssueID[issueID] = comments
+    }
+
+    func setCommentLoadError(_ error: Error?) {
+        commentLoadError = error
+    }
+
+    func setCommentLoadDelay(_ delay: Duration?) {
+        commentLoadDelay = delay
     }
 
     func setGateDetail(_ gate: BeadGate?) {
@@ -1693,6 +1741,17 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     }
 
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws {}
+
+    func loadComments(projectURL: URL, issueID: String) async throws -> [BeadComment] {
+        loadCommentsCalls.append((projectURL: projectURL, issueID: issueID))
+        if let commentLoadDelay {
+            try await Task.sleep(for: commentLoadDelay)
+        }
+        if let commentLoadError {
+            throw commentLoadError
+        }
+        return commentsByIssueID[issueID] ?? []
+    }
 
     func addComment(projectURL: URL, issueID: String, text: String) async throws {}
 

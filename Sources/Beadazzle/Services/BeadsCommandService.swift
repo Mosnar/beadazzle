@@ -26,6 +26,7 @@ protocol BeadsCommanding: Sendable {
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws
+    func loadComments(projectURL: URL, issueID: String) async throws -> [BeadComment]
     func addComment(projectURL: URL, issueID: String, text: String) async throws
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition]
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition]
@@ -48,6 +49,8 @@ protocol BeadsCommanding: Sendable {
 }
 
 extension BeadsCommanding {
+    func loadComments(projectURL _: URL, issueID _: String) async throws -> [BeadComment] { [] }
+
     func loadCustomStatuses(projectURL: URL) async throws -> [BeadStatusDefinition] {
         try await loadStatusDefinitions(projectURL: projectURL).filter(\.isCustom)
     }
@@ -213,6 +216,16 @@ struct BeadsCommandService {
 
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws {
         try await run(projectURL: projectURL, arguments: ["dep", "remove", issueID, dependsOnID])
+    }
+
+    func loadComments(projectURL: URL, issueID: String) async throws -> [BeadComment] {
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "comments", issueID, "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
+        return try Self.decodeComments(from: Data(text.utf8), issueID: issueID)
     }
 
     func addComment(projectURL: URL, issueID: String, text: String) async throws {
@@ -683,6 +696,56 @@ struct BeadsCommandService {
             throw BeadError.commandFailed(command: "bd create --silent", output: "Expected created bead ID but bd returned no output.")
         }
         return issueID
+    }
+
+    static func decodeComments(from data: Data, issueID: String) throws -> [BeadComment] {
+        let value = try JSONSerialization.jsonObject(with: data)
+        let records: [[String: Any]]
+        if let array = value as? [[String: Any]] {
+            records = array
+        } else if let object = value as? [String: Any], let comments = object["comments"] as? [[String: Any]] {
+            records = comments
+        } else {
+            throw BeadError.commandFailed(
+                command: "bd comments \(issueID) --json",
+                output: "Expected a JSON array of comments."
+            )
+        }
+
+        return records.enumerated().map { offset, record in
+            let resolvedIssueID = stringValue(record["issue_id"])
+                ?? stringValue(record["issueId"])
+                ?? issueID
+            return BeadComment(
+                id: stringValue(record["id"]) ?? "\(resolvedIssueID)-comment-\(offset)",
+                issueID: resolvedIssueID,
+                author: stringValue(record["author"]),
+                text: stringValue(record["text"])
+                    ?? stringValue(record["body"])
+                    ?? stringValue(record["content"])
+                    ?? "",
+                createdAt: BeadFormatters.parseDate(
+                    stringValue(record["created_at"]) ?? stringValue(record["createdAt"])
+                ),
+                updatedAt: BeadFormatters.parseDate(
+                    stringValue(record["updated_at"]) ?? stringValue(record["updatedAt"])
+                )
+            )
+        }
+        .sorted { lhs, rhs in
+            (lhs.createdAt ?? .distantPast) < (rhs.createdAt ?? .distantPast)
+        }
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let string = value as? String {
+            return string.nilIfBlank
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
     }
 }
 

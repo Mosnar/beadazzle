@@ -33,6 +33,7 @@ final class BeadStore {
     private(set) var comments: [BeadComment] = []
     private(set) var commentsIssueID: String?
     private(set) var commentRefreshIssueID: String?
+    private(set) var commentLoadError: String?
     private(set) var selectedIDs: Set<String> = []
     private(set) var fullPageDetailIssueID: String?
     private(set) var selectedBookmark: BeadBookmark = .ready
@@ -121,6 +122,7 @@ final class BeadStore {
                 staleCutoffDays = normalizedValue
                 return
             }
+            guard !isLoadingProjectPreferences else { return }
             persistStaleCutoffDays()
             rebuildIndexForProjectIndexPreferenceChange()
         }
@@ -128,6 +130,7 @@ final class BeadStore {
     var hidesParentsWithOnlyBlockedChildrenInReady = true {
         didSet {
             guard oldValue != hidesParentsWithOnlyBlockedChildrenInReady else { return }
+            guard !isLoadingProjectPreferences else { return }
             persistReadyParentRollUpPreference()
             rebuildIndexForProjectIndexPreferenceChange()
         }
@@ -135,25 +138,29 @@ final class BeadStore {
     var showsOwnerInBeadList = false {
         didSet {
             guard oldValue != showsOwnerInBeadList else { return }
-            userDefaults.set(showsOwnerInBeadList, forKey: BeadazzlePreferenceKeys.showsOwnerInBeadList)
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectListDisplayOptions()
         }
     }
     var showsAssigneeInBeadList = false {
         didSet {
             guard oldValue != showsAssigneeInBeadList else { return }
-            userDefaults.set(showsAssigneeInBeadList, forKey: BeadazzlePreferenceKeys.showsAssigneeInBeadList)
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectListDisplayOptions()
         }
     }
     var showsDueDateInBeadList = false {
         didSet {
             guard oldValue != showsDueDateInBeadList else { return }
-            userDefaults.set(showsDueDateInBeadList, forKey: BeadazzlePreferenceKeys.showsDueDateInBeadList)
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectListDisplayOptions()
         }
     }
     var showsCommentsInBeadList = true {
         didSet {
             guard oldValue != showsCommentsInBeadList else { return }
-            userDefaults.set(showsCommentsInBeadList, forKey: BeadazzlePreferenceKeys.showsCommentsInBeadList)
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectListDisplayOptions()
         }
     }
     var isLoading = false
@@ -179,6 +186,7 @@ final class BeadStore {
     @ObservationIgnored private var recomputeTask: Task<Void, Never>?
     @ObservationIgnored private var queryGeneration = 0
     @ObservationIgnored private var selectionSideDataTask: Task<Void, Never>?
+    @ObservationIgnored private var commentLoadTask: Task<Void, Never>?
     @ObservationIgnored private var gateDetailTask: Task<Void, Never>?
     @ObservationIgnored private var projectHealthTask: Task<Void, Never>?
     @ObservationIgnored private var dataSourceMonitor: BeadsDataSourceMonitor?
@@ -192,6 +200,7 @@ final class BeadStore {
     @ObservationIgnored private var outlineState = BeadOutlineSelectionState()
     @ObservationIgnored private var workspaceHistory = BeadWorkspaceHistory()
     @ObservationIgnored private var isRestoringWorkspace = false
+    @ObservationIgnored private var isLoadingProjectPreferences = false
     @ObservationIgnored private var suppressesHistoryRecording = false
     @ObservationIgnored private var suppressesFilterUpdates = false
     @ObservationIgnored private let userDefaults: UserDefaults
@@ -214,30 +223,6 @@ final class BeadStore {
         self.commands = commands
         self.projectLoader = BeadProjectLoader(commands: commands)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
-        staleCutoffDays = Self.normalizedStaleCutoffDays(
-            userDefaults.object(forKey: BeadazzlePreferenceKeys.staleCutoffDays) as? Int
-                ?? BeadProjectIndex.defaultStaleCutoffDays
-        )
-        showsOwnerInBeadList = Self.boolValue(
-            userDefaults,
-            key: BeadazzlePreferenceKeys.showsOwnerInBeadList,
-            defaultValue: false
-        )
-        showsAssigneeInBeadList = Self.boolValue(
-            userDefaults,
-            key: BeadazzlePreferenceKeys.showsAssigneeInBeadList,
-            defaultValue: false
-        )
-        showsDueDateInBeadList = Self.boolValue(
-            userDefaults,
-            key: BeadazzlePreferenceKeys.showsDueDateInBeadList,
-            defaultValue: false
-        )
-        showsCommentsInBeadList = Self.boolValue(
-            userDefaults,
-            key: BeadazzlePreferenceKeys.showsCommentsInBeadList,
-            defaultValue: true
-        )
         recentProjects = Self.loadRecentProjects(from: userDefaults)
 
         if recentProjects.isEmpty,
@@ -935,13 +920,12 @@ final class BeadStore {
         stopDataSourceMonitor()
         projectURL = url
         resetProjectHealthStatus()
-        loadProjectVisibility(for: url)
         isInitializingBeads = false
         if projectDirectoryExists(at: url) {
             rememberRecentProject(url)
         }
         clearLoadedProjectData()
-        loadReadyParentRollUpPreference(for: url)
+        loadProjectPreferences(for: url)
         selectedBookmark = .ready
         resetWorkspaceHistory()
         if isMissingDataSourceProject(url) {
@@ -1004,6 +988,21 @@ final class BeadStore {
         return userDefaults.bool(forKey: key)
     }
 
+    private static func migratedBoolValue(
+        _ userDefaults: UserDefaults,
+        key: String,
+        legacyKey: String,
+        defaultValue: Bool
+    ) -> Bool {
+        if userDefaults.object(forKey: key) != nil {
+            return userDefaults.bool(forKey: key)
+        }
+        guard userDefaults.object(forKey: legacyKey) != nil else { return defaultValue }
+        let value = userDefaults.bool(forKey: legacyKey)
+        userDefaults.set(value, forKey: key)
+        return value
+    }
+
     private static func normalizedStaleCutoffDays(_ days: Int) -> Int {
         min(max(days, 1), 3_650)
     }
@@ -1018,12 +1017,62 @@ final class BeadStore {
     }
 
     private func persistStaleCutoffDays() {
-        userDefaults.set(staleCutoffDays, forKey: BeadazzlePreferenceKeys.staleCutoffDays)
+        guard let projectURL else { return }
+        userDefaults.set(staleCutoffDays, forKey: BeadazzlePreferenceKeys.staleCutoffDays(projectURL: projectURL))
+    }
+
+    private func loadProjectPreferences(for url: URL) {
+        isLoadingProjectPreferences = true
+        defer { isLoadingProjectPreferences = false }
+        loadProjectVisibility(for: url)
+        loadProjectListDisplayOptions(for: url)
+        loadStaleCutoffDaysPreference(for: url)
+        loadReadyParentRollUpPreference(for: url)
     }
 
     private func loadProjectVisibility(for url: URL) {
         hiddenTypeNames = Set(userDefaults.stringArray(forKey: BeadazzlePreferenceKeys.hiddenTypes(projectURL: url)) ?? [])
         hiddenStatusNames = Set(userDefaults.stringArray(forKey: BeadazzlePreferenceKeys.hiddenStatuses(projectURL: url)) ?? [])
+    }
+
+    private func loadProjectListDisplayOptions(for url: URL) {
+        showsOwnerInBeadList = Self.migratedBoolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.showsOwnerInBeadList(projectURL: url),
+            legacyKey: BeadazzlePreferenceKeys.legacyShowsOwnerInBeadList,
+            defaultValue: false
+        )
+        showsAssigneeInBeadList = Self.migratedBoolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.showsAssigneeInBeadList(projectURL: url),
+            legacyKey: BeadazzlePreferenceKeys.legacyShowsAssigneeInBeadList,
+            defaultValue: false
+        )
+        showsDueDateInBeadList = Self.migratedBoolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.showsDueDateInBeadList(projectURL: url),
+            legacyKey: BeadazzlePreferenceKeys.legacyShowsDueDateInBeadList,
+            defaultValue: false
+        )
+        showsCommentsInBeadList = Self.migratedBoolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.showsCommentsInBeadList(projectURL: url),
+            legacyKey: BeadazzlePreferenceKeys.legacyShowsCommentsInBeadList,
+            defaultValue: true
+        )
+    }
+
+    private func loadStaleCutoffDaysPreference(for url: URL) {
+        let key = BeadazzlePreferenceKeys.staleCutoffDays(projectURL: url)
+        let storedValue = userDefaults.object(forKey: key) as? Int
+        let migratedValue = userDefaults.object(forKey: BeadazzlePreferenceKeys.legacyStaleCutoffDays) as? Int
+        let value = Self.normalizedStaleCutoffDays(
+            storedValue ?? migratedValue ?? BeadProjectIndex.defaultStaleCutoffDays
+        )
+        if storedValue == nil, migratedValue != nil {
+            userDefaults.set(value, forKey: key)
+        }
+        staleCutoffDays = value
     }
 
     private func loadReadyParentRollUpPreference(for url: URL) {
@@ -1038,6 +1087,26 @@ final class BeadStore {
         guard let projectURL else { return }
         userDefaults.set(hiddenTypeNames.sorted(), forKey: BeadazzlePreferenceKeys.hiddenTypes(projectURL: projectURL))
         userDefaults.set(hiddenStatusNames.sorted(), forKey: BeadazzlePreferenceKeys.hiddenStatuses(projectURL: projectURL))
+    }
+
+    private func persistProjectListDisplayOptions() {
+        guard let projectURL else { return }
+        userDefaults.set(
+            showsOwnerInBeadList,
+            forKey: BeadazzlePreferenceKeys.showsOwnerInBeadList(projectURL: projectURL)
+        )
+        userDefaults.set(
+            showsAssigneeInBeadList,
+            forKey: BeadazzlePreferenceKeys.showsAssigneeInBeadList(projectURL: projectURL)
+        )
+        userDefaults.set(
+            showsDueDateInBeadList,
+            forKey: BeadazzlePreferenceKeys.showsDueDateInBeadList(projectURL: projectURL)
+        )
+        userDefaults.set(
+            showsCommentsInBeadList,
+            forKey: BeadazzlePreferenceKeys.showsCommentsInBeadList(projectURL: projectURL)
+        )
     }
 
     private func persistReadyParentRollUpPreference() {
@@ -1150,6 +1219,9 @@ final class BeadStore {
         commentsIssueID = nil
         commentCache = [:]
         commentRefreshIssueID = nil
+        commentLoadError = nil
+        commentLoadTask?.cancel()
+        commentLoadTask = nil
         selectionSideDataTask?.cancel()
         selectionSideDataTask = nil
         gateDetailTask?.cancel()
@@ -1380,12 +1452,10 @@ final class BeadStore {
                         self?.isLoading = false
                     }
                     self?.markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
-                    self?.finishCommentRefreshIfNeeded(projectURL: projectURL)
                     return
                 }
                 self?.applyLoadedProject(loadedProject, projectURL: projectURL)
             } catch is CancellationError {
-                self?.finishCommentRefreshIfNeeded(projectURL: projectURL)
                 return
             } catch BeadError.projectMissingDataSource(let missingURL) {
                 guard let self, !Task.isCancelled, self.projectURL == projectURL else { return }
@@ -1410,21 +1480,18 @@ final class BeadStore {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return }
                     self.applyLoadedProject(recoveredProject, projectURL: projectURL)
                 } catch is CancellationError {
-                    self.finishCommentRefreshIfNeeded(projectURL: projectURL)
                     return
                 } catch {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return }
                     self.setMissingDataSource(missingURL)
                     self.lastError = error.localizedDescription
                     self.markSnapshotFreshnessFailed(error.localizedDescription)
-                    self.finishCommentRefreshIfNeeded(projectURL: projectURL)
                 }
             } catch {
                 guard !Task.isCancelled, self?.projectURL == projectURL else { return }
                 self?.lastError = error.localizedDescription
                 self?.isLoading = false
                 self?.markSnapshotFreshnessFailed(error.localizedDescription)
-                self?.finishCommentRefreshIfNeeded(projectURL: projectURL)
             }
         }
     }
@@ -1457,6 +1524,8 @@ final class BeadStore {
 
     func syncCommentsForSelectionFromCache() {
         guard let issue = selectedIssue else {
+            commentLoadTask?.cancel()
+            commentLoadTask = nil
             if commentsIssueID != nil {
                 commentsIssueID = nil
             }
@@ -1465,6 +1534,7 @@ final class BeadStore {
             }
             isLoadingComments = false
             commentRefreshIssueID = nil
+            commentLoadError = nil
             return
         }
 
@@ -1491,6 +1561,8 @@ final class BeadStore {
     private func clearSelectionSideData() {
         selectionSideDataTask?.cancel()
         selectionSideDataTask = nil
+        commentLoadTask?.cancel()
+        commentLoadTask = nil
         if dependencyIssueID != nil {
             dependencyIssueID = nil
         }
@@ -1504,6 +1576,7 @@ final class BeadStore {
             comments = []
         }
         commentRefreshIssueID = nil
+        commentLoadError = nil
         isLoadingComments = false
     }
 
@@ -1511,21 +1584,51 @@ final class BeadStore {
         isLoadingComments && commentRefreshIssueID == issueID
     }
 
-    private func finishCommentRefreshIfNeeded(projectURL expectedProjectURL: URL) {
-        guard commentRefreshIssueID != nil, projectURL == expectedProjectURL else { return }
-        commentRefreshIssueID = nil
-        isLoadingComments = false
-        syncCommentsForSelectionFromCache()
-    }
-
     func loadCommentsForSelection(force: Bool = false) {
         syncCommentsForSelectionFromCache()
-        if force {
-            guard let issue = selectedIssue else { return }
-            commentRefreshIssueID = issue.id
-            isLoadingComments = true
-            refresh()
+        guard let issue = selectedIssue, let projectURL else { return }
+        if !force, commentCache[issue.id] != nil { return }
+
+        commentLoadTask?.cancel()
+        commentRefreshIssueID = issue.id
+        commentLoadError = nil
+        isLoadingComments = true
+        let commands = commands
+        let issueID = issue.id
+        commentLoadTask = Task { @MainActor [weak self] in
+            do {
+                let loadedComments = try await commands.loadComments(projectURL: projectURL, issueID: issueID)
+                guard !Task.isCancelled,
+                      let self,
+                      self.projectURL == projectURL,
+                      self.selectedIssue?.id == issueID else {
+                    return
+                }
+                self.commentCache[issueID] = loadedComments
+                self.commentsIssueID = issueID
+                self.comments = loadedComments
+                self.commentRefreshIssueID = nil
+                self.isLoadingComments = false
+                self.commentLoadTask = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      let self,
+                      self.projectURL == projectURL,
+                      self.selectedIssue?.id == issueID else {
+                    return
+                }
+                self.commentLoadError = error.localizedDescription
+                self.commentRefreshIssueID = nil
+                self.isLoadingComments = false
+                self.commentLoadTask = nil
+            }
         }
+    }
+
+    func commentLoadError(for issueID: String) -> String? {
+        commentsIssueID == issueID ? commentLoadError : nil
     }
 
     func issue(with id: String) -> BeadIssue? {
@@ -2063,11 +2166,6 @@ final class BeadStore {
             return false
         }
         return await bulkSet(issueIDs: [issueID], status: status)
-    }
-
-    @discardableResult
-    func deleteSelected() async -> Bool {
-        await delete(issueIDs: Array(selectedIDs))
     }
 
     @discardableResult
@@ -3158,17 +3256,19 @@ final class BeadStore {
         }
         currentDataSource = loadedProject.source
         markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
+        if let warning = loadedProject.snapshotRefreshWarning {
+            snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: warning)
+        }
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
-        mergeCommentCache(from: loadedProject.snapshot.commentsByIssueID)
+        reconcileCommentCache(with: loadedProject.snapshot.issues)
         applyFilters()
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
         isLoading = false
         lastError = nil
         synchronizeDataSourceMonitor(projectURL: projectURL, source: loadedProject.source)
-        finishCommentRefreshIfNeeded(projectURL: projectURL)
         pruneGateDetailsForCurrentSnapshot()
         loadWaitersForSelectedGateIfNeeded()
         resetWorkspaceHistory()
@@ -3271,11 +3371,10 @@ final class BeadStore {
         snapshotFreshness = snapshotFreshness.failed(message)
     }
 
-    private func mergeCommentCache(from snapshotComments: [String: [BeadComment]]) {
-        let existingComments = commentCache
-        commentCache = snapshotComments
-        for (issueID, cachedComments) in existingComments where cachedComments.count > commentCache[issueID, default: []].count {
-            commentCache[issueID] = cachedComments
+    private func reconcileCommentCache(with loadedIssues: [BeadIssue]) {
+        let commentCountsByIssueID = Dictionary(uniqueKeysWithValues: loadedIssues.map { ($0.id, $0.commentCount) })
+        commentCache = commentCache.filter { issueID, comments in
+            commentCountsByIssueID[issueID] == comments.count
         }
     }
 

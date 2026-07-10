@@ -188,4 +188,15 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
             observedFiles: observedFiles
         )
     }
+
+    func possiblyStale(afterFailedRefresh message: String) -> ProjectSnapshotFreshness {
+        ProjectSnapshotFreshness(
+            state: .possiblyStale,
+            message: "Snapshot may be stale",
+            detail: "Could not export the latest Beads data. \(message)",
+            evaluatedAt: Date(),
+            loadedFiles: loadedFiles,
+            observedFiles: observedFiles
+        )
+    }
 }

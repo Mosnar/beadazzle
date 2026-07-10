@@ -5,7 +5,7 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsSidebar = true
     @State private var workspaceWidth: CGFloat = 0
-    @State private var showingDeleteConfirmation = false
+    @State private var pendingDeleteRequest: DeleteBeadsRequest?
     @State private var hierarchySheetRequest: ContentHierarchySheetRequest?
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var searchPresented = false
@@ -34,7 +34,7 @@ struct ContentView: View {
                 .help(store.selectedBookmark == .gates ? "Gates are created from a bead's ⋯ menu, not here" : "New Bead")
 
                 BulkActionsMenu(
-                    showingDeleteConfirmation: $showingDeleteConfirmation,
+                    requestDeleteSelected: requestDeleteSelected,
                     requestCloseSelected: requestCloseSelected,
                     requestSetStatus: requestSetSelectedStatus
                 )
@@ -43,16 +43,17 @@ struct ContentView: View {
         }
         .confirmationDialog(
             "Delete selected beads?",
-            isPresented: $showingDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Delete \(store.selectedIDs.count) Bead\(store.selectedIDs.count == 1 ? "" : "s")", role: .destructive) {
+            isPresented: deleteConfirmationBinding,
+            titleVisibility: .visible,
+            presenting: pendingDeleteRequest
+        ) { request in
+            Button(request.actionTitle, role: .destructive) {
                 Task {
-                    await store.deleteSelected()
+                    await store.delete(issueIDs: request.issueIDs)
                 }
             }
             Button("Cancel", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text("Beads deletes are destructive. Dependencies involving the selected beads will be cleaned up by bd.")
         }
         .sheet(item: $hierarchySheetRequest) { request in
@@ -151,6 +152,7 @@ struct ContentView: View {
                 IssueListView(
                     requestClose: requestClose,
                     requestSetStatus: requestSetStatus,
+                    requestDelete: requestDelete,
                     openDetail: openDetail
                 )
                     .frame(
@@ -210,6 +212,26 @@ struct ContentView: View {
             get: { store.lastError != nil },
             set: { if !$0 { store.lastError = nil } }
         )
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteRequest != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingDeleteRequest = nil
+                }
+            }
+        )
+    }
+
+    private func requestDeleteSelected() {
+        requestDelete(store.selectedIDs)
+    }
+
+    private func requestDelete(_ issueIDs: Set<String>) {
+        guard !issueIDs.isEmpty else { return }
+        pendingDeleteRequest = DeleteBeadsRequest(issueIDs: issueIDs.sorted())
     }
 
     private func openProject() {
@@ -388,6 +410,14 @@ private enum ContentHierarchySheetRequest: Identifiable, Equatable {
         case .reopenAncestorsForStatus(let request):
             "reopen-ancestors-status|\(request.id)"
         }
+    }
+}
+
+private struct DeleteBeadsRequest: Equatable {
+    let issueIDs: [String]
+
+    var actionTitle: String {
+        "Delete \(issueIDs.count) Bead\(issueIDs.count == 1 ? "" : "s")"
     }
 }
 

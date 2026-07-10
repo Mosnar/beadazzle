@@ -5,6 +5,7 @@ enum BeadError: LocalizedError {
     case sqliteOpen(String)
     case sqlitePrepare(String)
     case sqliteStep(String)
+    case invalidSnapshot(path: String, line: Int, message: String)
     case commandFailed(command: String, output: String)
 
     var errorDescription: String? {
@@ -17,6 +18,8 @@ enum BeadError: LocalizedError {
             return "Could not prepare database query: \(message)"
         case .sqliteStep(let message):
             return "Database query failed: \(message)"
+        case .invalidSnapshot(let path, let line, let message):
+            return "Could not read Beads snapshot \(path) at line \(line): \(message)"
         case .commandFailed(let command, let output):
             return "`\(command)` failed: \(output)"
         }

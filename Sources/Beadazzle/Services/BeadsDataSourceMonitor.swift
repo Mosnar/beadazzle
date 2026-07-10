@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-final class BeadsDataSourceMonitor {
+final class BeadsDataSourceMonitor: @unchecked Sendable {
     enum Role: Hashable, Sendable {
         case activeSource
         case legacySQLite
@@ -14,14 +14,14 @@ final class BeadsDataSourceMonitor {
         var roles: Set<Role>
     }
 
-    fileprivate struct WatchedPath {
+    fileprivate struct WatchedPath: Sendable {
         var url: URL
         var role: Role
     }
 
     private let watchedPaths: [WatchedPath]
     private let debounce: TimeInterval
-    private let callback: (Event) -> Void
+    private let callback: @Sendable (Event) -> Void
     private let queue = DispatchQueue(label: "com.beadazzle.data-source-monitor")
     private var watches: [PathWatch] = []
     private var pendingCallback: DispatchWorkItem?
@@ -32,7 +32,7 @@ final class BeadsDataSourceMonitor {
         projectURL: URL,
         source: BeadsDataSource,
         debounce: TimeInterval = 0.35,
-        callback: @escaping (Event) -> Void
+        callback: @escaping @Sendable (Event) -> Void
     ) {
         let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
         let sqliteURL = beadsURL.appendingPathComponent("beads.db")
@@ -45,10 +45,6 @@ final class BeadsDataSourceMonitor {
         ])
         self.debounce = debounce
         self.callback = callback
-    }
-
-    deinit {
-        stop()
     }
 
     func start() {
@@ -78,18 +74,16 @@ final class BeadsDataSourceMonitor {
     /// read into a spurious "data changed" event — the app's reads re-triggered its
     /// own monitor, driving a runaway reload → `bd` → reload loop. `.delete`/`.rename`
     /// still catch atomic replaces (e.g. `bd export` rewriting `issues.jsonl`).
-    private static let eventMask: DispatchSource.FileSystemEvent = [
-        .write,
-        .extend,
-        .delete,
-        .rename,
-        .revoke
-    ]
+    private static var eventMask: DispatchSource.FileSystemEvent {
+        [.write, .extend, .delete, .rename, .revoke]
+    }
 
     /// Events that mean the watched inode is gone (atomically replaced/unlinked). The
     /// `O_EVTONLY` descriptor now points at a dead inode and would never fire again, so
     /// we must re-open a fresh watch on the path.
-    private static let replacementEvents: DispatchSource.FileSystemEvent = [.delete, .rename, .revoke]
+    private static var replacementEvents: DispatchSource.FileSystemEvent {
+        [.delete, .rename, .revoke]
+    }
 
     private func watchExistingPaths() {
         for path in watchedPaths where !isWatching(path.url) {
@@ -183,7 +177,7 @@ final class BeadsDataSourceMonitor {
     }
 }
 
-private final class PathWatch {
+private final class PathWatch: @unchecked Sendable {
     private let source: DispatchSourceFileSystemObject
     let url: URL
     let role: BeadsDataSourceMonitor.Role

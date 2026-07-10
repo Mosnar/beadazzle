@@ -4,6 +4,7 @@ struct IssueListView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
+    let requestDelete: (Set<String>) -> Void
     let openDetail: (String) -> Void
 
     var body: some View {
@@ -38,6 +39,7 @@ struct IssueListView: View {
                         store: store,
                         requestClose: requestClose,
                         requestSetStatus: requestSetStatus,
+                        requestDelete: requestDelete,
                         openDetail: openDetail
                     )
                 }
@@ -91,6 +93,7 @@ private struct IssueListHeader: View {
             HStack(alignment: .center, spacing: 8) {
                 FilterMenu()
                 SortMenu()
+                ViewOptionsMenu()
                 Text(summaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -124,6 +127,33 @@ private struct IssueListHeader: View {
             : "\(store.filteredIssueCount.formatted()) of \(store.issues.count.formatted())"
         guard !store.selectedIDs.isEmpty else { return count }
         return "\(count), \(store.selectedIDs.count.formatted()) selected"
+    }
+}
+
+private struct ViewOptionsMenu: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+
+    var body: some View {
+        @Bindable var store = store
+
+        Menu {
+            Section("Issue Rows") {
+                Toggle("Show owner", isOn: $store.showsOwnerInBeadList)
+                Toggle("Show assignee", isOn: $store.showsAssigneeInBeadList)
+                Toggle("Show due date", isOn: $store.showsDueDateInBeadList)
+                Toggle("Show comments", isOn: $store.showsCommentsInBeadList)
+            }
+        } label: {
+            Label("View", systemImage: "slider.horizontal.3")
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
+        }
+        .menuStyle(.button)
+        .controlSize(.small)
+        .fixedSize()
+        .disabled(store.projectURL == nil)
+        .help(store.projectURL == nil ? "Open a project to change view options" : "View Options")
+        .accessibilityLabel("View Options")
     }
 }
 
@@ -211,7 +241,7 @@ struct GateRowView: View, Equatable {
     let showsDisclosure: Bool
     let toggleExpansion: () -> Void
 
-    static func == (lhs: GateRowView, rhs: GateRowView) -> Bool {
+    nonisolated static func == (lhs: GateRowView, rhs: GateRowView) -> Bool {
         lhs.issue == rhs.issue
             && lhs.row == rhs.row
             && lhs.gate == rhs.gate
@@ -303,7 +333,7 @@ struct IssueRowView: View, Equatable {
     let blockedReason: BlockedReasonPresentation?
     let toggleExpansion: () -> Void
 
-    static func == (lhs: IssueRowView, rhs: IssueRowView) -> Bool {
+    nonisolated static func == (lhs: IssueRowView, rhs: IssueRowView) -> Bool {
         lhs.issue == rhs.issue
             && lhs.row == rhs.row
             && lhs.showsDisclosure == rhs.showsDisclosure

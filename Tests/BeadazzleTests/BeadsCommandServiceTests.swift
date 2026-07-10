@@ -14,6 +14,28 @@ final class BeadsCommandServiceTests: XCTestCase {
         }
     }
 
+    func testDecodeCommentsHandlesCurrentAndLegacyFieldNames() throws {
+        let data = Data(
+            #"[{"id":12,"issue_id":"bd-1","author":"Riley","text":"First","created_at":"2026-07-03T20:58:35Z"},{"issueId":"bd-1","body":"Second","createdAt":"2026-07-03T21:58:35.123Z"}]"#.utf8
+        )
+
+        let comments = try BeadsCommandService.decodeComments(from: data, issueID: "bd-fallback")
+
+        XCTAssertEqual(comments.map(\.id), ["12", "bd-1-comment-1"])
+        XCTAssertEqual(comments.map(\.issueID), ["bd-1", "bd-1"])
+        XCTAssertEqual(comments.map(\.text), ["First", "Second"])
+        XCTAssertNotNil(comments[0].createdAt)
+        XCTAssertNotNil(comments[1].createdAt)
+    }
+
+    func testDecodeCommentsRejectsUnexpectedJSONShape() {
+        XCTAssertThrowsError(
+            try BeadsCommandService.decodeComments(from: Data(#"{"id":"comment-1"}"#.utf8), issueID: "bd-1")
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Expected a JSON array of comments"))
+        }
+    }
+
     func testEnsureExportedIssuesJSONLExistsCreatesReadableEmptySnapshot() throws {
         let projectURL = try makeProjectWithBeadsDirectory()
         let snapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)

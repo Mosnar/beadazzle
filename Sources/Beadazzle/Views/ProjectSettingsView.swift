@@ -50,7 +50,7 @@ struct ProjectSettingsView: View {
     }
 
     private var activePane: ProjectSettingsPane {
-        ProjectSettingsPane(rawValue: selectedPaneRawValue) ?? .types
+        ProjectSettingsPane(rawValue: selectedPaneRawValue) ?? .storage
     }
 
     var body: some View {
@@ -103,6 +103,15 @@ private struct ProjectWorkflowSettingsPane: View {
         @Bindable var store = store
 
         Form {
+            Section("Staleness") {
+                LabeledContent("Cut-off") {
+                    Stepper(value: $store.staleCutoffDays, in: 1...365) {
+                        Text("\(store.staleCutoffDays.formatted()) days")
+                            .monospacedDigit()
+                    }
+                }
+            }
+
             Section("Ready") {
                 Toggle("Hide parents whose unfinished children are all blocked", isOn: $store.hidesParentsWithOnlyBlockedChildrenInReady)
             }

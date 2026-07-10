@@ -2,7 +2,6 @@ import SwiftUI
 
 private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
     case general
-    case ui
     case updates
 
     var id: Self { self }
@@ -11,8 +10,6 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             "General"
-        case .ui:
-            "UI"
         case .updates:
             "Updates"
         }
@@ -22,8 +19,6 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             "gearshape"
-        case .ui:
-            "sidebar.leading"
         case .updates:
             "arrow.down.circle"
         }
@@ -75,8 +70,6 @@ private struct AppSettingsDetail: View {
         switch pane {
         case .general:
             GeneralSettingsPane()
-        case .ui:
-            UISettingsPane()
         case .updates:
             UpdatesSettingsPane()
         }
@@ -120,14 +113,6 @@ private struct GeneralSettingsPane: View {
                 }
             }
 
-            Section("Staleness") {
-                LabeledContent("Cut-off") {
-                    Stepper(value: $store.staleCutoffDays, in: 1...365) {
-                        Text("\(store.staleCutoffDays.formatted()) days")
-                            .monospacedDigit()
-                    }
-                }
-            }
         }
         .settingsGroupedForm()
     }
@@ -152,24 +137,6 @@ private struct UpdatesSettingsPane: View {
                 Text("Beta updates deliver pre-release builds as soon as they ship. Turn this off to only receive stable releases once they are available.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            }
-        }
-        .settingsGroupedForm()
-    }
-}
-
-private struct UISettingsPane: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-
-    var body: some View {
-        @Bindable var store = store
-
-        Form {
-            Section("Beads") {
-                Toggle("Show owner", isOn: $store.showsOwnerInBeadList)
-                Toggle("Show assignee", isOn: $store.showsAssigneeInBeadList)
-                Toggle("Show due date", isOn: $store.showsDueDateInBeadList)
-                Toggle("Show comments", isOn: $store.showsCommentsInBeadList)
             }
         }
         .settingsGroupedForm()

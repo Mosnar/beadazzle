@@ -17,11 +17,26 @@ for users, not for the commit log.
 
 - The app menu now includes Project Settings beneath Settings when a project is open.
 
+### Changed
+
+- Bead list display controls now live in the issue-list View Options menu and
+  are remembered per project, while stale cut-off moved to Project Settings >
+  Workflow.
+- Comment bodies now load only when Activity is visible, keeping project loads
+  lighter on trackers with long comment histories.
+
 ### Fixed
 
 - Local builds without Sparkle signing keys no longer show update controls that
   can offer the current release as if it were newer than the running build.
 - Auto-update setup docs now point to the `public-release` GitHub environment.
+- Deleting from a bead's context menu now uses the same confirmation as bulk
+  deletion.
+- Existing stale cut-off and bead-list display preferences carry forward when
+  they are first migrated to per-project settings.
+- Failed snapshot exports now leave the existing data visible with a stale
+  warning, and malformed JSONL snapshots identify the failing line instead of
+  silently hiding records.
 
 ## [1.0.0] - 2026-07-08
 

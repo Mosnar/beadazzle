@@ -49,4 +49,22 @@ final class UpdaterConfigurationTests: XCTestCase {
         controller.automaticallyChecksForUpdates = true
         XCTAssertFalse(controller.automaticallyChecksForUpdates)
     }
+
+    @MainActor
+    func testBetaUpdatePreferencePersistsThroughInjectedUserDefaults() {
+        let suiteName = "UpdaterConfigurationTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let controller = UpdaterController(userDefaults: defaults, infoDictionary: nil)
+        XCTAssertFalse(controller.receivesBetaUpdates)
+
+        controller.receivesBetaUpdates = true
+
+        let reloadedController = UpdaterController(userDefaults: defaults, infoDictionary: nil)
+        XCTAssertTrue(reloadedController.receivesBetaUpdates)
+    }
 }
