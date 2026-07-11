@@ -21,6 +21,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
             activeDataSource: fixture.jsonlSource,
             snapshotFreshness: fixture.freshness,
             health: health,
+            automaticallyRefreshesExternalChanges: true,
             isLoading: false
         )
 
@@ -44,6 +45,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
             activeDataSource: fixture.jsonlSource,
             snapshotFreshness: fixture.freshness,
             health: health,
+            automaticallyRefreshesExternalChanges: true,
             isLoading: false
         )
 
@@ -74,6 +76,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
             activeDataSource: fixture.jsonlSource,
             snapshotFreshness: freshness,
             health: health,
+            automaticallyRefreshesExternalChanges: true,
             isLoading: false
         )
 
@@ -93,6 +96,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
             activeDataSource: nil,
             snapshotFreshness: .unknown,
             health: nil,
+            automaticallyRefreshesExternalChanges: true,
             isLoading: false
         )
 
@@ -100,6 +104,44 @@ final class ProjectPreflightHealthTests: XCTestCase {
         XCTAssertEqual(preflight.check(.readableData)?.status, .blocked)
         XCTAssertEqual(preflight.check(.readableData)?.summary, "Beads is not initialized")
         XCTAssertEqual(preflight.check(.snapshotFreshness)?.status, .blocked)
+    }
+
+    func testDisabledBdAutoExportIsReadyWhenBeadazzleRefreshesExternalChanges() {
+        let fixture = PreflightFixture()
+        let preflight = ProjectPreflightHealth.evaluate(
+            projectURL: fixture.projectURL,
+            missingDataSourceURL: nil,
+            activeDataSource: fixture.jsonlSource,
+            snapshotFreshness: fixture.freshness,
+            health: fixture.health(exportAuto: false),
+            automaticallyRefreshesExternalChanges: true,
+            isLoading: false
+        )
+
+        XCTAssertEqual(preflight.check(.exportConfiguration)?.status, .ready)
+        XCTAssertEqual(
+            preflight.check(.exportConfiguration)?.summary,
+            "Beadazzle refreshes external changes"
+        )
+    }
+
+    func testDisabledAutomaticExportsWarnWhenBeadazzleRefreshIsOff() {
+        let fixture = PreflightFixture()
+        let preflight = ProjectPreflightHealth.evaluate(
+            projectURL: fixture.projectURL,
+            missingDataSourceURL: nil,
+            activeDataSource: fixture.jsonlSource,
+            snapshotFreshness: fixture.freshness,
+            health: fixture.health(exportAuto: false),
+            automaticallyRefreshesExternalChanges: false,
+            isLoading: false
+        )
+
+        XCTAssertEqual(preflight.check(.exportConfiguration)?.status, .warning)
+        XCTAssertEqual(
+            preflight.check(.exportConfiguration)?.actionHint,
+            "Enable automatic external refresh or export.auto."
+        )
     }
 }
 
@@ -128,6 +170,7 @@ private struct PreflightFixture {
     }
 
     func health(
+        exportAuto: Bool = true,
         hooks: BeadsHooksStatus = BeadsHooksStatus(hooks: []),
         backup: BeadsBackupStatus = BeadsBackupStatus(
             backup: BeadsBackupStatus.Backup(lastDoltCommit: "commit", timestamp: "2026-07-08T13:35:44.99568Z"),
@@ -152,7 +195,7 @@ private struct PreflightFixture {
                 schemaVersion: 1
             )),
             storageConfig: .available(ProjectStorageConfig(
-                exportAuto: true,
+                exportAuto: exportAuto,
                 exportPath: "issues.jsonl",
                 exportInterval: "60s",
                 exportGitAdd: true,

@@ -331,6 +331,9 @@ struct IssueRowView: View, Equatable {
     let displayOptions: BeadListDisplayOptions
     let statusCategory: BeadStatusCategory
     let blockedReason: BlockedReasonPresentation?
+    let blockedByItems: [BlockingRelationshipItem]
+    let blockingItems: [BlockingRelationshipItem]
+    let openRelatedIssue: (String) -> Void
     let toggleExpansion: () -> Void
 
     nonisolated static func == (lhs: IssueRowView, rhs: IssueRowView) -> Bool {
@@ -340,6 +343,8 @@ struct IssueRowView: View, Equatable {
             && lhs.displayOptions == rhs.displayOptions
             && lhs.statusCategory == rhs.statusCategory
             && lhs.blockedReason == rhs.blockedReason
+            && lhs.blockedByItems == rhs.blockedByItems
+            && lhs.blockingItems == rhs.blockingItems
     }
 
     var body: some View {
@@ -372,6 +377,9 @@ struct IssueRowView: View, Equatable {
                 showsAssignee: displayOptions.showsAssignee,
                 showsDueDate: displayOptions.showsDueDate,
                 blockedReason: blockedReason,
+                blockedByItems: blockedByItems,
+                blockingItems: blockingItems,
+                openRelatedIssue: openRelatedIssue,
                 showsDependencyCounts: true,
                 showsComments: displayOptions.showsComments,
                 showsLabels: true

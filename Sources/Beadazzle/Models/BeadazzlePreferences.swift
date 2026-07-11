@@ -40,6 +40,10 @@ enum BeadazzlePreferenceKeys {
     static func hidesParentsWithOnlyBlockedChildrenInReady(projectURL: URL) -> String {
         "HidesParentsWithOnlyBlockedChildrenInReady.\(projectURL.standardizedFileURL.path)"
     }
+
+    static func automaticallyRefreshesExternalChanges(projectURL: URL) -> String {
+        "AutomaticallyRefreshExternalChanges.\(projectURL.standardizedFileURL.path)"
+    }
 }
 
 struct BeadListDisplayOptions: Equatable, Sendable {
@@ -113,6 +117,15 @@ enum BeadazzleOptionInventory {
             defaultValue: "On",
             uiLocation: "Project Settings > Workflow",
             behavior: "Changes ready-list roll-up behavior for the active project."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "automaticallyRefreshesExternalChanges",
+            title: "Automatically refresh external changes",
+            scope: .projectConfiguration,
+            persistence: "AutomaticallyRefreshExternalChanges.<project path>",
+            defaultValue: "On",
+            uiLocation: "Project Settings > Storage",
+            behavior: "Exports and reloads marker-only external Beads changes without polling."
         ),
         BeadazzleOptionInventoryEntry(
             id: "hiddenTypes",

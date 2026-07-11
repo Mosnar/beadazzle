@@ -154,12 +154,18 @@ struct IssueBreadcrumbBar: View {
                     Button {
                         pickerConfiguration = .blockedBy(issue: issue)
                     } label: {
-                        Label("Blocked by...", systemImage: "arrow.down.right.and.arrow.up.left")
+                        Label(
+                            BlockingRelationshipDirection.blockedBy.actionTitle,
+                            systemImage: BlockingRelationshipDirection.blockedBy.systemImage
+                        )
                     }
                     Button {
                         pickerConfiguration = .blocks(issue: issue)
                     } label: {
-                        Label("Blocks bead...", systemImage: "arrow.up.forward")
+                        Label(
+                            BlockingRelationshipDirection.blocking.actionTitle,
+                            systemImage: BlockingRelationshipDirection.blocking.systemImage
+                        )
                     }
                     Divider()
                     if canCreateGate {

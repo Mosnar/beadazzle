@@ -97,13 +97,19 @@ struct ProjectPreflightHealth: Equatable, Sendable {
         activeDataSource: BeadsDataSource?,
         snapshotFreshness: ProjectSnapshotFreshness,
         health: ProjectHealthSnapshot?,
+        automaticallyRefreshesExternalChanges: Bool,
         isLoading: Bool
     ) -> ProjectPreflightHealth {
         let checks = [
             bdCLICheck(health: health, isLoading: isLoading),
             readableDataCheck(projectURL: projectURL, missingDataSourceURL: missingDataSourceURL, activeDataSource: activeDataSource, isLoading: isLoading),
             snapshotFreshnessCheck(missingDataSourceURL: missingDataSourceURL, activeDataSource: activeDataSource, freshness: snapshotFreshness, health: health, isLoading: isLoading),
-            exportConfigurationCheck(health: health, isLoading: isLoading),
+            exportConfigurationCheck(
+                health: health,
+                activeDataSource: activeDataSource,
+                automaticallyRefreshesExternalChanges: automaticallyRefreshesExternalChanges,
+                isLoading: isLoading
+            ),
             gitHooksCheck(health: health, isLoading: isLoading),
             backupCheck(health: health, isLoading: isLoading)
         ]
@@ -311,7 +317,12 @@ struct ProjectPreflightHealth: Equatable, Sendable {
         }
     }
 
-    private static func exportConfigurationCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+    private static func exportConfigurationCheck(
+        health: ProjectHealthSnapshot?,
+        activeDataSource: BeadsDataSource?,
+        automaticallyRefreshesExternalChanges: Bool,
+        isLoading: Bool
+    ) -> Check {
         if let config = health?.storageConfig.value {
             if let errorMessage = config.exportAutoStatus.errorMessage {
                 return configWarning(
@@ -322,13 +333,25 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                 )
             }
             if config.exportAuto == false {
+                if automaticallyRefreshesExternalChanges {
+                    return Check(
+                        id: .exportConfiguration,
+                        title: "Export Config",
+                        status: .ready,
+                        summary: "Beadazzle refreshes external changes",
+                        detail: activeDataSource?.kind == .jsonl
+                            ? "bd automatic export is disabled, so Beadazzle exports after detecting external changes."
+                            : "Beadazzle reloads the active data source after detecting external changes.",
+                        actionHint: nil
+                    )
+                }
                 return Check(
                     id: .exportConfiguration,
                     title: "Export Config",
                     status: .warning,
                     summary: "Automatic export is disabled",
-                    detail: "Beadazzle can export manually, but external bd writes may not refresh the readable JSONL snapshot automatically.",
-                    actionHint: "Enable export.auto in bd config."
+                    detail: "External bd writes require a manual snapshot export while both automatic refresh options are disabled.",
+                    actionHint: "Enable automatic external refresh or export.auto."
                 )
             }
             if let errorMessage = config.exportPathStatus.errorMessage {

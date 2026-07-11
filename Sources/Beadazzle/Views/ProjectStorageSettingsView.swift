@@ -39,6 +39,7 @@ struct ProjectStorageSettingsPane: View {
                 activeDataSource: store.currentDataSource,
                 snapshotFreshness: store.snapshotFreshness,
                 health: store.projectHealthSnapshot,
+                automaticallyRefreshesExternalChanges: store.automaticallyRefreshesExternalChanges,
                 isLoading: store.isLoading || store.isLoadingProjectHealth || store.projectHealthSnapshot == nil
             )
 
@@ -156,8 +157,18 @@ struct ProjectStorageSettingsPane: View {
     }
 
     private var snapshotSection: some View {
-        Section("Beadazzle Snapshot") {
+        @Bindable var store = store
+
+        return Section("Beadazzle Snapshot") {
             let snapshotFile = store.projectHealthSnapshot?.snapshotFile
+
+            Toggle(
+                "Automatically refresh external changes",
+                isOn: $store.automaticallyRefreshesExternalChanges
+            )
+            Text("When Beads changes outside Beadazzle, export and reload its readable snapshot. Direct snapshot changes are always reloaded.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             LabeledContent("App Reads") {
                 if let source = snapshotFile?.activeDataSource {

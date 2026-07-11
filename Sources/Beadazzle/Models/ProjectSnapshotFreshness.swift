@@ -65,6 +65,13 @@ struct ProjectSnapshotFreshnessFiles: Equatable, Sendable {
     func markerChanged(comparedTo loadedFiles: ProjectSnapshotFreshnessFiles) -> Bool {
         exportState != loadedFiles.exportState || lastTouched != loadedFiles.lastTouched
     }
+
+    var hasMarkerNewerThanActiveSource: Bool {
+        guard let sourceModifiedAt = activeSource.modifiedAt else { return false }
+        return [exportState, lastTouched].contains { marker in
+            marker.exists && marker.modifiedAt.map { $0 > sourceModifiedAt } == true
+        }
+    }
 }
 
 struct ProjectSnapshotFreshness: Equatable, Sendable {
@@ -100,10 +107,15 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
 
     static func loaded(projectURL: URL, source: BeadsDataSource) -> ProjectSnapshotFreshness {
         let files = ProjectSnapshotFreshnessFiles.loaded(projectURL: projectURL, source: source)
+        let isPossiblyStale = source.kind == .jsonl && files.hasMarkerNewerThanActiveSource
         return ProjectSnapshotFreshness(
-            state: .current,
-            message: source.kind == .jsonl ? "Snapshot current" : "Data source current",
-            detail: nil,
+            state: isPossiblyStale ? .possiblyStale : .current,
+            message: isPossiblyStale
+                ? "Snapshot may be stale"
+                : (source.kind == .jsonl ? "Snapshot current" : "Data source current"),
+            detail: isPossiblyStale
+                ? "A Beads marker is newer than the readable snapshot."
+                : nil,
             evaluatedAt: Date(),
             loadedFiles: files,
             observedFiles: files
@@ -140,7 +152,7 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
             )
         }
 
-        guard !observedFiles.markerChanged(comparedTo: loadedFiles) else {
+        guard source.kind != .jsonl || !observedFiles.markerChanged(comparedTo: loadedFiles) else {
             return Evaluation(
                 freshness: ProjectSnapshotFreshness(
                     state: .possiblyStale,

@@ -271,7 +271,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
             callbackExpectation.fulfill()
         }
         monitor.start()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(for: .milliseconds(100))
 
         try writeJSONL(
             issueLine(id: "bd-1", title: "One updated"),
@@ -283,7 +283,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         )
 
         await fulfillment(of: [callbackExpectation], timeout: 2.0)
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await Task.sleep(for: .milliseconds(250))
         monitor.stop()
     }
 
@@ -392,14 +392,18 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": issueLine(id: "bd-1", title: "One")
         ])
-        let exportStateURL = projectURL.appendingPathComponent(".beads/export-state.json")
-        try #"{"timestamp":"old"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
-        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { _ in })
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let defaults = makeUserDefaults()
+        defaults.set(
+            false,
+            forKey: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: projectURL)
+        )
+        let store = BeadStore(userDefaults: defaults, commands: TestBeadsCommands { _ in })
         store.openProject(projectURL)
         try await waitUntil {
             !store.isLoading && store.snapshotFreshness.state == .current && store.count(for: .all) == 1
         }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(for: .milliseconds(300))
 
         try #"{"timestamp":"new","issues":1}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
 
@@ -408,6 +412,232 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         }
         XCTAssertEqual(store.count(for: .all), 1)
         XCTAssertFalse(store.isLoading)
+    }
+
+    @MainActor
+    func testStoreExportsAndReloadsMarkerOnlyExternalChangesWhenEnabled() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let recorder = ExportCallRecorder()
+        let updatedJSONL = [
+            issueLine(id: "bd-1", title: "One"),
+            issueLine(id: "bd-2", title: "Two")
+        ].joined(separator: "\n")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { projectURL in
+            recorder.record()
+            try updatedJSONL.write(
+                to: projectURL.appendingPathComponent(".beads/issues.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        })
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.count(for: .all) == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+
+        try #"{"timestamp":"new-1"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        try #"{"timestamp":"new-2"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+
+        try await waitUntil(timeout: 5.0) {
+            store.count(for: .all) == 2 && store.snapshotFreshness.state == .current
+        }
+        XCTAssertEqual(recorder.count, 1)
+    }
+
+    @MainActor
+    func testAutomaticExternalRefreshDoesNotPublishTransientStaleWarning() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let gate = ExportExecutionGate()
+        let currentJSONL = issueLine(id: "bd-1", title: "One")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { projectURL in
+            await gate.blockUntilReleased()
+            try currentJSONL.write(
+                to: projectURL.appendingPathComponent(".beads/issues.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        })
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.snapshotFreshness.state == .current }
+        try await Task.sleep(for: .milliseconds(300))
+
+        try #"{"timestamp":"new"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        await gate.waitUntilStarted()
+
+        XCTAssertEqual(store.snapshotFreshness.state, .refreshing)
+        await gate.release()
+        try await waitUntil(timeout: 4.0) { store.snapshotFreshness.state == .current }
+    }
+
+    @MainActor
+    func testDirectSnapshotChangeSatisfiesQueuedExternalRefresh() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let recorder = ExportCallRecorder()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { _ in
+            recorder.record()
+        })
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.snapshotFreshness.state == .current }
+        try await Task.sleep(for: .milliseconds(300))
+
+        try #"{"timestamp":"new"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        try await waitUntil(timeout: 4.0) { store.snapshotFreshness.state == .refreshing }
+        try writeJSONL(
+            [
+                issueLine(id: "bd-1", title: "One"),
+                issueLine(id: "bd-2", title: "Two")
+            ].joined(separator: "\n"),
+            to: projectURL.appendingPathComponent(".beads/issues.jsonl")
+        )
+
+        try await waitUntil(timeout: 4.0) { store.count(for: .all) == 2 }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(recorder.count, 0)
+    }
+
+    @MainActor
+    func testStoreExportsAndReloadsMarkerThatPredatesAppLaunch() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let issuesURL = projectURL.appendingPathComponent(".beads/issues.jsonl")
+        let lastTouchedURL = projectURL.appendingPathComponent(".beads/last-touched")
+        try "external-write\n".write(to: lastTouchedURL, atomically: true, encoding: .utf8)
+        let sourceAttributes = try FileManager.default.attributesOfItem(atPath: issuesURL.path)
+        let sourceModifiedAt = sourceAttributes[.modificationDate] as? Date ?? .distantPast
+        try FileManager.default.setAttributes(
+            [.modificationDate: sourceModifiedAt.addingTimeInterval(0.05)],
+            ofItemAtPath: lastTouchedURL.path
+        )
+
+        let recorder = ExportCallRecorder()
+        let updatedJSONL = [
+            issueLine(id: "bd-1", title: "One"),
+            issueLine(id: "bd-2", title: "Two")
+        ].joined(separator: "\n")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { projectURL in
+            recorder.record()
+            try updatedJSONL.write(
+                to: projectURL.appendingPathComponent(".beads/issues.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        })
+
+        store.openProject(projectURL)
+
+        try await waitUntil(timeout: 5.0) {
+            store.count(for: .all) == 2 && store.snapshotFreshness.state == .current
+        }
+        XCTAssertEqual(recorder.count, 1)
+    }
+
+    @MainActor
+    func testDisabledExternalRefreshStillReloadsDirectSnapshotChanges() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let defaults = makeUserDefaults()
+        defaults.set(
+            false,
+            forKey: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: projectURL)
+        )
+        let recorder = ExportCallRecorder()
+        let store = BeadStore(userDefaults: defaults, commands: TestBeadsCommands { _ in
+            recorder.record()
+        })
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.count(for: .all) == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+
+        try #"{"timestamp":"new"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        try await waitUntil(timeout: 4.0) { store.snapshotFreshness.state == .possiblyStale }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(recorder.count, 0)
+
+        try writeJSONL(
+            [
+                issueLine(id: "bd-1", title: "One"),
+                issueLine(id: "bd-2", title: "Two")
+            ].joined(separator: "\n"),
+            to: projectURL.appendingPathComponent(".beads/issues.jsonl")
+        )
+        try await waitUntil(timeout: 4.0) { store.count(for: .all) == 2 }
+        XCTAssertEqual(recorder.count, 0)
+    }
+
+    @MainActor
+    func testEnablingExternalRefreshExportsAnAlreadyStaleSnapshot() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let defaults = makeUserDefaults()
+        defaults.set(
+            false,
+            forKey: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: projectURL)
+        )
+        let recorder = ExportCallRecorder()
+        let updatedJSONL = [
+            issueLine(id: "bd-1", title: "One"),
+            issueLine(id: "bd-2", title: "Two")
+        ].joined(separator: "\n")
+        let store = BeadStore(userDefaults: defaults, commands: TestBeadsCommands { projectURL in
+            recorder.record()
+            try updatedJSONL.write(
+                to: projectURL.appendingPathComponent(".beads/issues.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        })
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.count(for: .all) == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+
+        try #"{"timestamp":"new"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        try await waitUntil(timeout: 4.0) { store.snapshotFreshness.state == .possiblyStale }
+
+        store.automaticallyRefreshesExternalChanges = true
+
+        try await waitUntil(timeout: 5.0) {
+            store.count(for: .all) == 2 && store.snapshotFreshness.state == .current
+        }
+        XCTAssertEqual(recorder.count, 1)
+    }
+
+    @MainActor
+    func testExternalRefreshFailureKeepsVisibleDataAndDoesNotRetry() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-1", title: "One")
+        ])
+        let exportStateURL = try writeBaselineExportMarker(projectURL: projectURL)
+        let recorder = ExportCallRecorder()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: TestBeadsCommands { _ in
+            recorder.record()
+            throw TestProjectCommandError.exportFailed
+        })
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.count(for: .all) == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+
+        try #"{"timestamp":"new"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+
+        try await waitUntil(timeout: 5.0) {
+            store.snapshotFreshness.state == .possiblyStale
+                && store.snapshotFreshness.detail?.contains(TestProjectCommandError.exportFailed.localizedDescription) == true
+        }
+        try await Task.sleep(for: .milliseconds(900))
+        XCTAssertEqual(store.count(for: .all), 1)
+        XCTAssertEqual(recorder.count, 1)
     }
 
     @MainActor
@@ -422,7 +652,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
                 && store.currentDataSource?.url.lastPathComponent == "beads.jsonl"
                 && store.issue(with: "bd-legacy") != nil
         }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(for: .milliseconds(300))
 
         try writeJSONL(
             issueLine(id: "bd-current", title: "Current"),
@@ -689,6 +919,19 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         }
     }
 
+    private func writeBaselineExportMarker(projectURL: URL) throws -> URL {
+        let issuesURL = projectURL.appendingPathComponent(".beads/issues.jsonl")
+        let exportStateURL = projectURL.appendingPathComponent(".beads/export-state.json")
+        try #"{"timestamp":"old"}"#.write(to: exportStateURL, atomically: true, encoding: .utf8)
+        let sourceAttributes = try FileManager.default.attributesOfItem(atPath: issuesURL.path)
+        let sourceModifiedAt = sourceAttributes[.modificationDate] as? Date ?? .now
+        try FileManager.default.setAttributes(
+            [.modificationDate: sourceModifiedAt.addingTimeInterval(-2)],
+            ofItemAtPath: exportStateURL.path
+        )
+        return exportStateURL
+    }
+
     @MainActor
     private func waitUntil(
         timeout: TimeInterval = 3.0,
@@ -700,7 +943,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
                 XCTFail("Timed out waiting for condition")
                 return
             }
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await Task.sleep(for: .milliseconds(50))
         }
     }
 }
@@ -708,6 +951,53 @@ final class BeadsSnapshotReaderTests: XCTestCase {
 private enum TestSQLiteError: Error {
     case openFailed
     case execFailed(String)
+}
+
+private final class ExportCallRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedCount = 0
+
+    func record() {
+        lock.lock()
+        recordedCount += 1
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedCount
+    }
+}
+
+private actor ExportExecutionGate {
+    private var isStarted = false
+    private var isReleased = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func blockUntilReleased() async {
+        isStarted = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !isStarted else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
 }
 
 private struct TestBeadsCommands: BeadsCommanding {

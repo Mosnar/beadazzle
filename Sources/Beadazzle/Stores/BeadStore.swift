@@ -135,6 +135,14 @@ final class BeadStore {
             rebuildIndexForProjectIndexPreferenceChange()
         }
     }
+    var automaticallyRefreshesExternalChanges = true {
+        didSet {
+            guard oldValue != automaticallyRefreshesExternalChanges else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistExternalRefreshPreference()
+            externalRefreshPreferenceDidChange()
+        }
+    }
     var showsOwnerInBeadList = false {
         didSet {
             guard oldValue != showsOwnerInBeadList else { return }
@@ -180,8 +188,7 @@ final class BeadStore {
     @ObservationIgnored private var activeMutationCount = 0
     @ObservationIgnored private var mutationWriteChain: Task<Void, Never>?
     @ObservationIgnored private var mutationWriteGeneration = 0
-    @ObservationIgnored private var pendingReconcile = false
-    @ObservationIgnored private var isReconcileInFlight = false
+    @ObservationIgnored private var reconcileState = SnapshotReconcileState()
     @ObservationIgnored private var filterTask: Task<Void, Never>?
     @ObservationIgnored private var recomputeTask: Task<Void, Never>?
     @ObservationIgnored private var queryGeneration = 0
@@ -1028,6 +1035,7 @@ final class BeadStore {
         loadProjectListDisplayOptions(for: url)
         loadStaleCutoffDaysPreference(for: url)
         loadReadyParentRollUpPreference(for: url)
+        loadExternalRefreshPreference(for: url)
     }
 
     private func loadProjectVisibility(for url: URL) {
@@ -1083,6 +1091,14 @@ final class BeadStore {
         )
     }
 
+    private func loadExternalRefreshPreference(for url: URL) {
+        automaticallyRefreshesExternalChanges = Self.boolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: url),
+            defaultValue: true
+        )
+    }
+
     private func persistProjectVisibility() {
         guard let projectURL else { return }
         userDefaults.set(hiddenTypeNames.sorted(), forKey: BeadazzlePreferenceKeys.hiddenTypes(projectURL: projectURL))
@@ -1114,6 +1130,14 @@ final class BeadStore {
         userDefaults.set(
             hidesParentsWithOnlyBlockedChildrenInReady,
             forKey: BeadazzlePreferenceKeys.hidesParentsWithOnlyBlockedChildrenInReady(projectURL: projectURL)
+        )
+    }
+
+    private func persistExternalRefreshPreference() {
+        guard let projectURL else { return }
+        userDefaults.set(
+            automaticallyRefreshesExternalChanges,
+            forKey: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: projectURL)
         )
     }
 
@@ -1209,6 +1233,9 @@ final class BeadStore {
     }
 
     private func clearLoadedProjectData() {
+        reconcileDebounceTask?.cancel()
+        reconcileDebounceTask = nil
+        reconcileState.reset()
         index = .empty
         issues = []
         filteredIssueIDs = []
@@ -1396,7 +1423,7 @@ final class BeadStore {
         if reason == .manual || reason == .initial {
             reconcileDebounceTask?.cancel()
             reconcileDebounceTask = nil
-            pendingReconcile = false
+            reconcileState.reset()
         }
         if showsLoadingIndicator {
             isLoading = true
@@ -1411,7 +1438,7 @@ final class BeadStore {
         // Mutations and explicit user refreshes must re-export the readable JSONL
         // snapshot first: Dolt-backed (embedded) projects only back it up on a
         // periodic timer, so `bd` writes would otherwise not appear for minutes.
-        let forcesSnapshotExport = reason == .mutation || reason == .manual
+        let forcesSnapshotExport = reason == .reconcile || reason == .manual
 
         // Status/type definitions rarely change, and reading them costs two `bd`
         // subprocesses. Reuse the cache except when the user explicitly refreshes, on the
@@ -1454,8 +1481,13 @@ final class BeadStore {
                     self?.markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
                     return
                 }
-                self?.applyLoadedProject(loadedProject, projectURL: projectURL)
+                self?.applyLoadedProject(
+                    loadedProject,
+                    projectURL: projectURL,
+                    queuesInitialExternalRefresh: reason == .initial
+                )
             } catch is CancellationError {
+                self?.finishReconcileAfterRefreshTermination()
                 return
             } catch BeadError.projectMissingDataSource(let missingURL) {
                 guard let self, !Task.isCancelled, self.projectURL == projectURL else { return }
@@ -1478,8 +1510,13 @@ final class BeadStore {
                         recoveryTask.cancel()
                     })
                     guard !Task.isCancelled, self.projectURL == projectURL else { return }
-                    self.applyLoadedProject(recoveredProject, projectURL: projectURL)
+                    self.applyLoadedProject(
+                        recoveredProject,
+                        projectURL: projectURL,
+                        queuesInitialExternalRefresh: reason == .initial
+                    )
                 } catch is CancellationError {
+                    self.finishReconcileAfterRefreshTermination()
                     return
                 } catch {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return }
@@ -1492,6 +1529,7 @@ final class BeadStore {
                 self?.lastError = error.localizedDescription
                 self?.isLoading = false
                 self?.markSnapshotFreshnessFailed(error.localizedDescription)
+                self?.finishReconcileAfterRefreshTermination()
             }
         }
     }
@@ -1799,9 +1837,8 @@ final class BeadStore {
         activeMutationCount += 1
         reconcileDebounceTask?.cancel()
         reconcileDebounceTask = nil
-        if isReconcileInFlight {
+        if reconcileState.cancelInFlightForMutation() {
             refreshTask?.cancel()
-            isReconcileInFlight = false
         }
     }
 
@@ -1846,27 +1883,56 @@ final class BeadStore {
 
     /// Requests a coalesced reconcile without participating in the in-flight count —
     /// used by non-optimistic mutations that have already awaited their `bd` write.
-    private func requestReconcile() {
-        pendingReconcile = true
+    private func requestReconcile(trigger: SnapshotReconcileTrigger = .mutation) {
+        reconcileState.request(trigger)
         scheduleReconcileIfIdle()
     }
 
-    /// Coalesces reconciles: one silent reload fires ~`reconcileDebounce` after the last
-    /// mutation settles, instead of an export + reparse per mutation. Optimistic patches
-    /// already show the change; the reconcile only lets `bd`-computed fields (timestamps,
-    /// auto-cascades, ready state) converge. Skipped while any mutation is still in flight
-    /// — the last one to finish schedules it.
+    private func externalRefreshPreferenceDidChange() {
+        guard automaticallyRefreshesExternalChanges else {
+            reconcileState.removeExternalMarkerRequest()
+            if !reconcileState.hasPendingRequest {
+                reconcileDebounceTask?.cancel()
+                reconcileDebounceTask = nil
+            }
+            return
+        }
+        guard currentDataSource?.kind == .jsonl,
+              snapshotFreshness.state == .possiblyStale else { return }
+        requestReconcile(trigger: .externalMarker)
+    }
+
+    private func satisfyPendingExternalRefreshFromSourceChange() {
+        reconcileState.removeExternalMarkerRequest()
+        if !reconcileState.hasPendingRequest {
+            reconcileDebounceTask?.cancel()
+            reconcileDebounceTask = nil
+        }
+    }
+
+    /// Coalesces mutation reconciliation and external marker changes into one silent
+    /// export + reload after `reconcileDebounce`. Optimistic patches already show app
+    /// mutations immediately; external writes wait for active app mutations to settle so
+    /// the shared export cannot replace newer in-memory state with a pre-mutation snapshot.
     private func scheduleReconcileIfIdle() {
-        guard pendingReconcile, activeMutationCount == 0 else { return }
+        guard reconcileState.hasPendingRequest,
+              activeMutationCount == 0,
+              !reconcileState.isInFlight else { return }
         reconcileDebounceTask?.cancel()
         reconcileDebounceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.reconcileDebounce)
             guard let self, !Task.isCancelled else { return }
-            guard self.activeMutationCount == 0, self.pendingReconcile else { return }
-            self.pendingReconcile = false
-            self.isReconcileInFlight = true
-            self.refresh(reason: .mutation, showsLoadingIndicator: false)
+            guard self.reconcileState.beginIfPossible(activeMutationCount: self.activeMutationCount) else {
+                return
+            }
+            self.refresh(reason: .reconcile, showsLoadingIndicator: false)
         }
+    }
+
+    private func finishReconcileAfterRefreshTermination() {
+        guard reconcileState.isInFlight else { return }
+        reconcileState.terminate()
+        scheduleReconcileIfIdle()
     }
 
     private func optimisticallyUpdatedIssue(_ issue: BeadIssue, from draft: IssueDraft) -> BeadIssue {
@@ -2012,13 +2078,13 @@ final class BeadStore {
                 try await commands.update(projectURL: projectURL, draft: draft, originalIssue: originalIssue)
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
             if attemptedWrite {
-                pendingReconcile = true
+                reconcileState.request(.mutation)
             }
             lastError = error.localizedDescription
             return false
@@ -2131,13 +2197,13 @@ final class BeadStore {
                 try await commands.close(projectURL: projectURL, ids: idsForWrite, reason: reason)
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
             if attemptedWrite {
-                pendingReconcile = true
+                reconcileState.request(.mutation)
             }
             lastError = error.localizedDescription
             return false
@@ -2192,7 +2258,7 @@ final class BeadStore {
                 try await commands.delete(projectURL: projectURL, ids: ids)
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -2331,13 +2397,13 @@ final class BeadStore {
                 )
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
             if attemptedWrite {
-                pendingReconcile = true
+                reconcileState.request(.mutation)
             }
             lastError = error.localizedDescription
             return false
@@ -2396,13 +2462,13 @@ final class BeadStore {
                 )
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
             if attemptedWrite {
-                pendingReconcile = true
+                reconcileState.request(.mutation)
             }
             lastError = error.localizedDescription
             return false
@@ -2473,13 +2539,13 @@ final class BeadStore {
                 )
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
             rollbackOptimisticState(to: snapshot)
             if attemptedWrite {
-                pendingReconcile = true
+                reconcileState.request(.mutation)
             }
             lastError = error.localizedDescription
             return false
@@ -2683,7 +2749,7 @@ final class BeadStore {
                 try await commands.addDependency(projectURL: projectURL, issueID: issueID, dependsOnID: dependsOnID, type: type)
             }
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -2848,7 +2914,7 @@ final class BeadStore {
         do {
             try await commands.removeDependency(projectURL: projectURL, issueID: dependency.issueID, dependsOnID: dependency.dependsOnID)
             guard self.projectURL == projectURL else { return false }
-            pendingReconcile = true
+            reconcileState.request(.mutation)
             return true
         } catch {
             guard self.projectURL == projectURL else { return false }
@@ -3245,8 +3311,14 @@ final class BeadStore {
         _ = outlineState.prune(toValidIssueIDs: index.allIssueIDs)
     }
 
-    private func applyLoadedProject(_ loadedProject: LoadedProject, projectURL: URL) {
-        isReconcileInFlight = false
+    private func applyLoadedProject(
+        _ loadedProject: LoadedProject,
+        projectURL: URL,
+        queuesInitialExternalRefresh: Bool = false
+    ) {
+        let deferredMonitorRoles = reconcileState.complete(
+            replaysDeferredEvents: loadedProject.snapshotRefreshWarning == nil
+        )
         projectReadiness = .ready
         index = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
         issues = loadedProject.snapshot.issues
@@ -3272,6 +3344,24 @@ final class BeadStore {
         pruneGateDetailsForCurrentSnapshot()
         loadWaitersForSelectedGateIfNeeded()
         resetWorkspaceHistory()
+        if !deferredMonitorRoles.isEmpty {
+            handleDataSourceMonitorEvent(
+                BeadsDataSourceMonitor.Event(roles: deferredMonitorRoles),
+                projectURL: projectURL
+            )
+        }
+        if queuesInitialExternalRefresh,
+           loadedProject.snapshotRefreshWarning == nil,
+           loadedProject.source.kind == .jsonl,
+           snapshotFreshness.state == .possiblyStale,
+           automaticallyRefreshesExternalChanges {
+            snapshotFreshness = snapshotFreshness.refreshing(
+                projectURL: projectURL,
+                source: loadedProject.source
+            )
+            requestReconcile(trigger: .externalMarker)
+        }
+        scheduleReconcileIfIdle()
     }
 
     private func pruneGateDetailsForCurrentSnapshot() {
@@ -3346,10 +3436,14 @@ final class BeadStore {
 
     private func handleDataSourceMonitorEvent(_ event: BeadsDataSourceMonitor.Event, projectURL: URL) {
         guard !event.roles.isEmpty, self.projectURL == projectURL, let currentDataSource else { return }
+        if reconcileState.deferMonitorEvent(event.roles) {
+            return
+        }
         if currentDataSource.kind == .jsonl,
            event.roles.contains(.beadsDirectory),
            let discoveredSource = try? BeadsDataSourceDiscovery().discover(projectURL: projectURL),
            discoveredSource != currentDataSource {
+            satisfyPendingExternalRefreshFromSourceChange()
             snapshotFreshness = snapshotFreshness.refreshing(projectURL: projectURL, source: currentDataSource)
             refreshAfterDataSourceChange()
             return
@@ -3358,9 +3452,21 @@ final class BeadStore {
             projectURL: projectURL,
             source: currentDataSource
         )
-        snapshotFreshness = evaluation.freshness
-        guard evaluation.requiresReload else { return }
-        refreshAfterDataSourceChange()
+        if evaluation.requiresReload {
+            snapshotFreshness = evaluation.freshness
+            satisfyPendingExternalRefreshFromSourceChange()
+            refreshAfterDataSourceChange()
+        } else if currentDataSource.kind == .jsonl,
+                  evaluation.freshness.state == .possiblyStale,
+                  automaticallyRefreshesExternalChanges {
+            snapshotFreshness = evaluation.freshness.refreshing(
+                projectURL: projectURL,
+                source: currentDataSource
+            )
+            requestReconcile(trigger: .externalMarker)
+        } else {
+            snapshotFreshness = evaluation.freshness
+        }
     }
 
     private func markSnapshotFreshnessLoaded(projectURL: URL, source: BeadsDataSource) {
@@ -3398,6 +3504,6 @@ final class BeadStore {
 private enum RefreshReason: Sendable {
     case initial
     case manual
-    case mutation
+    case reconcile
     case dataSourceChanged
 }

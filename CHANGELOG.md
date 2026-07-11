@@ -16,6 +16,11 @@ for users, not for the commit log.
 ### Added
 
 - The app menu now includes Project Settings beneath Settings when a project is open.
+- Dependency counters now open relationship previews that explain each direction
+  and link directly to the active blocker or blocked beads.
+- Label counters now open a compact preview of the bead's labels.
+- Project Storage settings can disable automatic snapshot exports for external
+  Beads changes while keeping direct snapshot-file refreshes enabled.
 
 ### Changed
 
@@ -24,6 +29,13 @@ for users, not for the commit log.
   Workflow.
 - Comment bodies now load only when Activity is visible, keeping project loads
   lighter on trackers with long comment histories.
+- Dependency icons and Relations headings now share the same Blocked by and
+  Blocking symbols, and their counts include only the active relationships shown
+  in the detail pane.
+- External embedded-Dolt changes now trigger a coalesced background snapshot
+  export and reload instead of waiting for the periodic JSONL export.
+- Automatic snapshot refresh now catches changes made while Beadazzle was closed
+  and keeps routine background catch-up from flashing a stale warning.
 
 ### Fixed
 
@@ -37,6 +49,9 @@ for users, not for the commit log.
 - Failed snapshot exports now leave the existing data visible with a stale
   warning, and malformed JSONL snapshots identify the failing line instead of
   silently hiding records.
+- Interactive metadata previews can be pinned without closing when they were
+  already opened by hovering, and relationship previews no longer focus their
+  header by default.
 
 ## [1.0.0] - 2026-07-08
 

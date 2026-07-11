@@ -68,11 +68,11 @@ struct IssueInspector: View {
             let blockingIssues = store.activelyBlockedIssues(by: issue.id)
             if !blockedByIssues.isEmpty || !blockingIssues.isEmpty {
                 InspectorGroup("Relations") {
-                    InspectorRelationRows(title: "Blocked by", issues: blockedByIssues)
+                    InspectorRelationRows(direction: .blockedBy, issues: blockedByIssues)
                     if !blockedByIssues.isEmpty && !blockingIssues.isEmpty {
                         InspectorRowDivider()
                     }
-                    InspectorRelationRows(title: "Blocking", issues: blockingIssues)
+                    InspectorRelationRows(direction: .blocking, issues: blockingIssues)
                 }
             }
         }
@@ -81,14 +81,14 @@ struct IssueInspector: View {
 }
 
 private struct InspectorRelationRows: View {
-    let title: String
+    let direction: BlockingRelationshipDirection
     let issues: [BeadIssue]
 
     var body: some View {
         if !issues.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
-                    Text(title)
+                    Label(direction.title, systemImage: direction.systemImage)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

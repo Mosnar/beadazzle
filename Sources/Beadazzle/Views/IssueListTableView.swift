@@ -238,6 +238,18 @@ struct IssueListTableView: NSViewRepresentable {
                     .equatable()
                 )
             } else {
+                let blockedByItems = store.activeBlockingIssues(for: itemID).map {
+                    BlockingRelationshipItem(
+                        issue: $0,
+                        statusCategory: store.statusCategory(for: $0.status)
+                    )
+                }
+                let blockingItems = store.activelyBlockedIssues(by: itemID).map {
+                    BlockingRelationshipItem(
+                        issue: $0,
+                        statusCategory: store.statusCategory(for: $0.status)
+                    )
+                }
                 rowContent = AnyView(
                     IssueRowView(
                         issue: issue,
@@ -250,6 +262,9 @@ struct IssueListTableView: NSViewRepresentable {
                             bookmark: store.selectedBookmark,
                             now: parent.gateClock
                         ),
+                        blockedByItems: blockedByItems,
+                        blockingItems: blockingItems,
+                        openRelatedIssue: { store.openIssueFromDetail(issueID: $0) },
                         toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
                     )
                     .equatable()

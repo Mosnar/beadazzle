@@ -15,6 +15,9 @@ struct IssueSummaryRowContent: View {
     var showsAssignee = false
     var showsDueDate = false
     var blockedReason: BlockedReasonPresentation?
+    var blockedByItems: [BlockingRelationshipItem] = []
+    var blockingItems: [BlockingRelationshipItem] = []
+    var openRelatedIssue: (String) -> Void = { _ in }
     var showsDependencyCounts = true
     var showsComments = true
     var showsLabels = true
@@ -93,14 +96,20 @@ struct IssueSummaryRowContent: View {
                         BlockedReasonInlineLabel(reason: blockedReason)
                     }
 
-                    if showsDependencyCounts, issue.dependencyCount > 0 {
-                        Label(issue.dependencyCount.formatted(), systemImage: "arrow.down.right.and.arrow.up.left")
-                            .foregroundStyle(.secondary)
+                    if showsDependencyCounts, !blockedByItems.isEmpty {
+                        BlockingRelationshipCountPopover(
+                            direction: .blockedBy,
+                            items: blockedByItems,
+                            openIssue: openRelatedIssue
+                        )
                     }
 
-                    if showsDependencyCounts, issue.dependentCount > 0 {
-                        Label(issue.dependentCount.formatted(), systemImage: "arrow.up.forward")
-                            .foregroundStyle(.secondary)
+                    if showsDependencyCounts, !blockingItems.isEmpty {
+                        BlockingRelationshipCountPopover(
+                            direction: .blocking,
+                            items: blockingItems,
+                            openIssue: openRelatedIssue
+                        )
                     }
 
                     if showsComments, issue.commentCount > 0 {
@@ -108,12 +117,8 @@ struct IssueSummaryRowContent: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if showsLabels, let labelsSummary {
-                        Label(labelsSummary, systemImage: "tag")
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .help(labelsHelp)
-                            .accessibilityLabel(labelsAccessibilityLabel)
+                    if showsLabels, !issue.labels.isEmpty {
+                        IssueLabelsPopover(labels: issue.labels)
                     }
 
                     Spacer()
@@ -142,19 +147,6 @@ struct IssueSummaryRowContent: View {
                 .truncationMode(.middle)
                 .frame(width: IssueListMetrics.issueIDWidth, alignment: .leading)
         }
-    }
-
-    private var labelsSummary: String? {
-        guard !issue.labels.isEmpty else { return nil }
-        return issue.labels.count.formatted()
-    }
-
-    private var labelsHelp: String {
-        "Labels: \(issue.labels.joined(separator: ", "))"
-    }
-
-    private var labelsAccessibilityLabel: String {
-        issue.labels.count == 1 ? labelsHelp : "\(issue.labels.count) labels"
     }
 
     private func childProgressTitle(for progress: IssueChildProgress) -> String {

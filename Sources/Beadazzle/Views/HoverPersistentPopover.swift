@@ -1,16 +1,48 @@
 import SwiftUI
 
+struct HoverPersistentPopoverPresentationState: Equatable {
+    var isTriggerHovered = false
+    var isPreviewHovered = false
+    var isPresented = false
+    var isPinned = false
+
+    var shouldOpenAfterDelay: Bool {
+        isTriggerHovered && !isPresented
+    }
+
+    var shouldCloseAfterDelay: Bool {
+        !isPinned && !isTriggerHovered && !isPreviewHovered
+    }
+
+    mutating func togglePin() {
+        isPinned.toggle()
+        isPresented = isPinned || isTriggerHovered || isPreviewHovered
+    }
+
+    mutating func dismiss() {
+        isTriggerHovered = false
+        isPreviewHovered = false
+        isPinned = false
+        isPresented = false
+    }
+}
+
 struct HoverPersistentPopover<Label: View, Preview: View>: View {
+    private enum ClickBehavior {
+        case performAction
+        case pinPreview
+    }
+
     private let arrowEdge: Edge
     private let openDelay: Duration
     private let closeDelay: Duration
+    private let fillsAvailableWidth: Bool
+    private let clickBehavior: ClickBehavior
     private let action: () -> Void
     private let label: (Bool) -> Label
     private let preview: () -> Preview
 
-    @State private var isLinkHovered = false
-    @State private var isPreviewHovered = false
-    @State private var isPresented = false
+    @State private var presentation = HoverPersistentPopoverPresentationState()
     @State private var openTask: Task<Void, Never>?
     @State private var closeTask: Task<Void, Never>?
 
@@ -18,6 +50,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         arrowEdge: Edge = .leading,
         openDelay: Duration = .milliseconds(320),
         closeDelay: Duration = .milliseconds(280),
+        fillsAvailableWidth: Bool = true,
         action: @escaping () -> Void,
         @ViewBuilder label: @escaping (Bool) -> Label,
         @ViewBuilder preview: @escaping () -> Preview
@@ -25,37 +58,69 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         self.arrowEdge = arrowEdge
         self.openDelay = openDelay
         self.closeDelay = closeDelay
+        self.fillsAvailableWidth = fillsAvailableWidth
+        self.clickBehavior = .performAction
         self.action = action
         self.label = label
         self.preview = preview
     }
 
+    init(
+        arrowEdge: Edge = .leading,
+        openDelay: Duration = .milliseconds(320),
+        closeDelay: Duration = .milliseconds(280),
+        fillsAvailableWidth: Bool = true,
+        @ViewBuilder label: @escaping (Bool) -> Label,
+        @ViewBuilder interactivePreview: @escaping () -> Preview
+    ) {
+        self.arrowEdge = arrowEdge
+        self.openDelay = openDelay
+        self.closeDelay = closeDelay
+        self.fillsAvailableWidth = fillsAvailableWidth
+        clickBehavior = .pinPreview
+        action = {}
+        self.label = label
+        self.preview = interactivePreview
+    }
+
     var body: some View {
         Button {
-            hideImmediately()
-            action()
+            switch clickBehavior {
+            case .performAction:
+                hideImmediately()
+                action()
+            case .pinPreview:
+                openTask?.cancel()
+                closeTask?.cancel()
+                setPresentation { $0.togglePin() }
+            }
         } label: {
-            label(isLinkHovered)
+            label(presentation.isTriggerHovered)
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: .leading)
         .onHover { hovering in
             updateLinkHover(hovering)
         }
         .onDisappear {
             hideImmediately()
         }
-        .popover(isPresented: $isPresented, arrowEdge: arrowEdge) {
+        .popover(isPresented: $presentation.isPresented, arrowEdge: arrowEdge) {
             preview()
                 .contentShape(Rectangle())
                 .onHover { hovering in
                     updatePreviewHover(hovering)
                 }
         }
+        .onChange(of: presentation.isPresented) {
+            if !presentation.isPresented {
+                presentation.isPinned = false
+            }
+        }
     }
 
     private func updateLinkHover(_ hovering: Bool) {
-        isLinkHovered = hovering
+        presentation.isTriggerHovered = hovering
 
         if hovering {
             scheduleOpen()
@@ -65,7 +130,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
     }
 
     private func updatePreviewHover(_ hovering: Bool) {
-        isPreviewHovered = hovering
+        presentation.isPreviewHovered = hovering
 
         if hovering {
             closeTask?.cancel()
@@ -77,11 +142,11 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
     private func scheduleOpen() {
         closeTask?.cancel()
         openTask?.cancel()
-        guard !isPresented else { return }
+        guard !presentation.isPresented else { return }
 
         openTask = Task { @MainActor in
             try? await Task.sleep(for: openDelay)
-            guard !Task.isCancelled, isLinkHovered else { return }
+            guard !Task.isCancelled, presentation.shouldOpenAfterDelay else { return }
             setPresented(true)
         }
     }
@@ -92,7 +157,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
 
         closeTask = Task { @MainActor in
             try? await Task.sleep(for: closeDelay)
-            guard !Task.isCancelled, !isLinkHovered, !isPreviewHovered else { return }
+            guard !Task.isCancelled, presentation.shouldCloseAfterDelay else { return }
             setPresented(false)
         }
     }
@@ -100,16 +165,18 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
     private func hideImmediately() {
         openTask?.cancel()
         closeTask?.cancel()
-        isLinkHovered = false
-        isPreviewHovered = false
-        setPresented(false)
+        setPresentation { $0.dismiss() }
     }
 
     private func setPresented(_ presented: Bool) {
+        setPresentation { $0.isPresented = presented }
+    }
+
+    private func setPresentation(_ update: (inout HoverPersistentPopoverPresentationState) -> Void) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            isPresented = presented
+            update(&presentation)
         }
     }
 }

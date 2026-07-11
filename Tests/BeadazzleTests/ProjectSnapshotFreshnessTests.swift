@@ -2,6 +2,20 @@ import XCTest
 @testable import Beadazzle
 
 final class ProjectSnapshotFreshnessTests: XCTestCase {
+    func testInitialLoadMarksSnapshotPossiblyStaleWhenMarkerIsNewer() throws {
+        let project = try makeProject()
+        let newerDate = project.source.modifiedAt.addingTimeInterval(2)
+        try FileManager.default.setAttributes(
+            [.modificationDate: newerDate],
+            ofItemAtPath: project.lastTouchedURL.path
+        )
+
+        let freshness = ProjectSnapshotFreshness.loaded(projectURL: project.url, source: project.source)
+
+        XCTAssertEqual(freshness.state, .possiblyStale)
+        XCTAssertEqual(freshness.message, "Snapshot may be stale")
+    }
+
     func testMarkerOnlyChangeMarksSnapshotPossiblyStaleWithoutReload() throws {
         let project = try makeProject()
         let freshness = ProjectSnapshotFreshness.loaded(projectURL: project.url, source: project.source)
@@ -72,10 +86,20 @@ final class ProjectSnapshotFreshnessTests: XCTestCase {
             size: (attributes[.size] as? NSNumber)?.int64Value ?? 0,
             modifiedAt: attributes[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
         )
+        let olderMarkerDate = source.modifiedAt.addingTimeInterval(-2)
+        try FileManager.default.setAttributes(
+            [.modificationDate: olderMarkerDate],
+            ofItemAtPath: exportStateURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: olderMarkerDate],
+            ofItemAtPath: lastTouchedURL.path
+        )
         return FreshnessTestProject(
             url: projectURL,
             issuesURL: issuesURL,
             exportStateURL: exportStateURL,
+            lastTouchedURL: lastTouchedURL,
             source: source
         )
     }
@@ -85,5 +109,6 @@ private struct FreshnessTestProject {
     var url: URL
     var issuesURL: URL
     var exportStateURL: URL
+    var lastTouchedURL: URL
     var source: BeadsDataSource
 }

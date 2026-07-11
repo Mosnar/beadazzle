@@ -11,6 +11,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertFalse(store.showsAssigneeInBeadList)
         XCTAssertFalse(store.showsDueDateInBeadList)
         XCTAssertTrue(store.showsCommentsInBeadList)
+        XCTAssertTrue(store.automaticallyRefreshesExternalChanges)
         XCTAssertEqual(store.beadListDisplayOptions, .compact)
     }
 
@@ -61,6 +62,28 @@ final class BeadStorePreferencesTests: XCTestCase {
         try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "bd-2") != nil }
 
         XCTAssertEqual(otherStore.beadListDisplayOptions, .compact)
+    }
+
+    func testExternalRefreshPreferencePersistsPerProjectAndDefaultsOn() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let otherProjectURL = try makeProject(issueLine(id: "bd-2", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertTrue(store.automaticallyRefreshesExternalChanges)
+        store.automaticallyRefreshesExternalChanges = false
+
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+        XCTAssertFalse(reloadedStore.automaticallyRefreshesExternalChanges)
+
+        let otherStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "bd-2") != nil }
+        XCTAssertTrue(otherStore.automaticallyRefreshesExternalChanges)
     }
 
     func testLegacyGlobalPreferencesSeedProjectScopedPreferences() async throws {
@@ -406,6 +429,7 @@ final class BeadStorePreferencesTests: XCTestCase {
             "receivesBetaUpdates",
             "staleCutoffDays",
             "hidesParentsWithOnlyBlockedChildrenInReady",
+            "automaticallyRefreshesExternalChanges",
             "hiddenTypes",
             "hiddenStatuses",
             "showsOwnerInBeadList",
