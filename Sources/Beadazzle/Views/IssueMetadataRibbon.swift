@@ -56,7 +56,7 @@ struct IssueMetadataRibbon: View {
                             store.select([gate.id])
                         } label: {
                             IssueMetadataRibbonChipLabel(
-                                systemImage: gate.awaitType.systemImage,
+                                systemImage: gate.systemImage,
                                 tint: GatePresentation.tint(for: gate),
                                 value: gate.id,
                                 showsChevron: false,

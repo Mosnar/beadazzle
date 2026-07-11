@@ -53,8 +53,8 @@ enum GateAwaitType: Hashable, Sendable {
 
     var systemImage: String {
         switch self {
-        case .human: "person.badge.clock"
-        case .timer: "timer"
+        case .human: BeadIconography.humanGate
+        case .timer: BeadIconography.timerGate
         case .githubRun: "gearshape.2"
         case .githubPR: "arrow.triangle.pull"
         case .bead: "link"
@@ -104,6 +104,15 @@ struct BeadGate: Identifiable, Hashable, Sendable {
     /// A gate is actionable while it is not closed.
     var isOpen: Bool {
         status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "closed"
+    }
+
+    /// State-aware gate glyph. A closed timer gate is no longer blocking anything, so it
+    /// drops the prohibition-styled `timerGate` symbol for the neutral timer symbol.
+    var systemImage: String {
+        if awaitType == .timer, !isOpen {
+            return BeadIconography.plainTimerGate
+        }
+        return awaitType.systemImage
     }
 
     var timeout: TimeInterval? {

@@ -25,9 +25,9 @@ enum BlockingRelationshipDirection: String, CaseIterable, Sendable {
     var systemImage: String {
         switch self {
         case .blockedBy:
-            "arrow.down.right.and.arrow.up.left"
+            BeadIconography.blockedBy
         case .blocking:
-            "arrow.up.forward"
+            BeadIconography.blocking
         }
     }
 

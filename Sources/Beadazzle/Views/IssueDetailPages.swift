@@ -197,6 +197,8 @@ private struct IssueDetailBody: View {
     let issue: BeadIssue
     @Binding var draft: IssueDraft
     @State private var isRunningBlockedAction = false
+    @State private var decisionGateForApproval: BeadGate?
+    @State private var decisionGateForRejection: BeadGate?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -216,30 +218,85 @@ private struct IssueDetailBody: View {
             )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .sheet(item: $decisionGateForApproval) { gate in
+            GateApproveSheet(gate: gate, affectedBeads: store.gateDecisionAffectedBeads(for: gate.id)) { reason in
+                await performGateDecision { await store.approveGate(id: gate.id, reason: reason) }
+            }
+        }
+        .sheet(item: $decisionGateForRejection) { gate in
+            GateRejectSheet(
+                gate: gate,
+                affectedBeads: store.gateDecisionAffectedBeads(for: gate.id),
+                statusOptions: store.gateRejectionStatusOptions,
+                defaultStatus: store.defaultGateRejectionStatus,
+                isDeferredStatus: { store.isDeferredStatus($0) }
+            ) { reason, status, deferUntil in
+                await performGateDecision {
+                    await store.rejectGate(
+                        id: gate.id,
+                        reason: reason,
+                        targetStatus: status,
+                        deferUntil: deferUntil
+                    )
+                }
+            }
+        }
     }
 
     private var blockedActionPresentation: BlockedActionPresentation? {
         BlockedActionPresentation.make(
             issueID: issue.id,
             reason: store.blockedReasonPresentation(for: issue.id, now: store.gateClock),
-            canCreateGate: store.canCreateGate(blocking: issue)
+            canCreateGate: store.canCreateGate(blocking: issue),
+            readyDecisionGate: readyDecisionGate
         )
+    }
+
+    /// The open human decision gate blocking this bead, if any — it can be approved or
+    /// rejected right now, so the banner surfaces those actions inline.
+    private var readyDecisionGate: BeadGate? {
+        store.gatesBlocking(issueID: issue.id).first { gate in
+            gate.awaitType == .human && gate.actionState(now: store.gateClock).isReady
+        }
     }
 
     private func performBlockedAction(_ action: BlockedActionPresentation.Action) {
         guard !isRunningBlockedAction else { return }
-        isRunningBlockedAction = true
-        Task { @MainActor in
-            defer { isRunningBlockedAction = false }
-            switch action {
-            case .createTimer:
+        switch action {
+        case .approve:
+            decisionGateForApproval = readyDecisionGate
+        case .reject:
+            decisionGateForRejection = readyDecisionGate
+        case .createTimer:
+            runBlockedAction {
                 await store.createGate(blocks: issue.id, type: .timer, reason: nil, timeout: "8h", awaitID: nil)
-            case .createDecision:
+            }
+        case .createDecision:
+            runBlockedAction {
                 await store.createGate(blocks: issue.id, type: .human, reason: nil, timeout: nil, awaitID: nil)
-            case .reopen:
+            }
+        case .reopen:
+            runBlockedAction {
                 await store.reopenBlockedIssue(issueID: issue.id)
             }
         }
+    }
+
+    private func runBlockedAction(_ action: @escaping () async -> Bool) {
+        guard !isRunningBlockedAction else { return }
+        isRunningBlockedAction = true
+        Task { @MainActor in
+            defer { isRunningBlockedAction = false }
+            _ = await action()
+        }
+    }
+
+    /// Sheet completion handler: the sheets dismiss themselves only when this returns true.
+    private func performGateDecision(_ action: () async -> Bool) async -> Bool {
+        guard !isRunningBlockedAction else { return false }
+        isRunningBlockedAction = true
+        defer { isRunningBlockedAction = false }
+        return await action()
     }
 }
 

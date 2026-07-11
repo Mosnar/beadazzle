@@ -194,7 +194,7 @@ enum IssueListMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .outline:
-            return "list.bullet.indent"
+            return BeadIconography.children
         case .flat:
             return "list.bullet"
         }

@@ -24,6 +24,9 @@ for users, not for the commit log.
 - Label counters now open a compact preview of the bead's labels.
 - Project Storage settings can disable automatic snapshot exports for external
   Beads changes while keeping direct snapshot-file refreshes enabled.
+- Beads blocked by a decision gate now show a banner in the detail view with
+  inline Approve and Reject actions, so resolving the gate no longer requires
+  opening it first.
 
 ### Changed
 
@@ -35,6 +38,10 @@ for users, not for the commit log.
 - Dependency icons and Relations headings now share the same Blocked by and
   Blocking symbols, and their counts include only the active relationships shown
   in the detail pane.
+- Blocking relationships now use clear stop and raised-hand symbols instead of
+  directional arrows. Child progress uses a nested-list symbol, and timer gates
+  show a clock-badged blocked symbol where supported. Resolved timer gates drop
+  the blocked styling and show a neutral timer symbol.
 - External embedded-Dolt changes now trigger a coalesced background snapshot
   export and reload instead of waiting for the periodic JSONL export.
 - Automatic snapshot refresh now catches changes made while Beadazzle was closed

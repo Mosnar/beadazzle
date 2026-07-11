@@ -40,7 +40,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
                 inlineTitle: title,
                 listTitle: title,
                 help: title,
-                systemImage: "arrow.down.right.and.arrow.up.left",
+                systemImage: BeadIconography.blockedBy,
                 tint: .secondary
             )
         }
@@ -55,7 +55,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
                 inlineTitle: headline,
                 listTitle: "\(gate.id): \(headline)",
                 help: help,
-                systemImage: gate.awaitType.systemImage,
+                systemImage: gate.systemImage,
                 tint: gate.actionState(now: now).isReady ? .action : .secondary
             )
         }
@@ -67,7 +67,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
                 inlineTitle: reference,
                 listTitle: reference,
                 help: help,
-                systemImage: "link",
+                systemImage: BeadIconography.externalReference,
                 tint: .warning
             )
         }
@@ -148,7 +148,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
                 kind: .subissue,
                 title: "Blocked sub-issue: \(issueTitle)",
                 help: "Sub-issue \(issueTitle) is marked blocked.",
-                systemImage: "list.bullet.indent",
+                systemImage: BeadIconography.children,
                 tint: .secondary
             )
         }
@@ -159,7 +159,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
                 title: "Sub-issue blocked by \(blockers.count.formatted()) blockers: \(issueTitle)",
                 help: "Sub-issue \(issueTitle) is blocked by \(blockers.count.formatted()) blockers:\n"
                     + blockers.map { "- \($0.help)" }.joined(separator: "\n"),
-                systemImage: "list.bullet.indent",
+                systemImage: BeadIconography.children,
                 tint: blockers.contains { $0.kind == .external } ? .warning : .secondary
             )
         }
@@ -178,7 +178,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
             kind: .subissue,
             title: title,
             help: "Sub-issue \(issueTitle):\n\(first.help)",
-            systemImage: "list.bullet.indent",
+            systemImage: BeadIconography.children,
             tint: first.tint
         )
     }
@@ -200,7 +200,7 @@ struct BlockedReasonPresentation: Hashable, Sendable {
             title: "Blocked by \(blockers.count.formatted()) blockers: \(blockers[0].listTitle)",
             help: "Blocked by \(blockers.count.formatted()) blockers:\n"
                 + blockers.map { "- \($0.help)" }.joined(separator: "\n"),
-            systemImage: "arrow.down.right.and.arrow.up.left",
+            systemImage: BeadIconography.blockedBy,
             tint: hasExternalBlocker ? .warning : .secondary
         )
     }

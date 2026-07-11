@@ -44,6 +44,38 @@ enum BeadVisualStyle {
     }
 }
 
+/// Single source of truth for the relationship, hierarchy, and gate SF Symbols that
+/// are shared across surfaces. Symbols with a single consumer stay inline at their
+/// point of use (e.g. `GateAwaitType.systemImage`).
+enum BeadIconography {
+    static let blockedBy = "nosign"
+    static let blocking = "hand.raised"
+    static let children = "list.bullet.indent"
+    static let genericGate = "flag.checkered"
+    static let externalReference = "link"
+
+    static let humanGate = "person.badge.clock"
+    /// Neutral timer glyph: the pre-15.4 fallback and the closed-gate presentation.
+    static let plainTimerGate = "timer"
+    /// Requires macOS 15.4 (SF Symbols 6.4); the deployment target is macOS 14, so
+    /// earlier systems must fall back to `plainTimerGate` at runtime.
+    static let preferredTimerGate = "nosign.badge.clock"
+    static let timerGate = resolvedSystemName(
+        preferred: preferredTimerGate,
+        fallback: plainTimerGate
+    )
+
+    static func resolvedSystemName(
+        preferred: String,
+        fallback: String,
+        isAvailable: (String) -> Bool = { name in
+            NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+        }
+    ) -> String {
+        isAvailable(preferred) ? preferred : fallback
+    }
+}
+
 enum IssueClipboard {
     static func copyIssueID(_ issueID: String) {
         NSPasteboard.general.clearContents()

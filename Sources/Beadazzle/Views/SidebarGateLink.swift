@@ -22,7 +22,7 @@ struct SidebarGateLink: View {
             store.openIssueFromDetail(issueID: issue.id)
         } label: { isHovered in
             HStack(alignment: .center, spacing: 9) {
-                Image(systemName: gate.awaitType.systemImage)
+                Image(systemName: gate.systemImage)
                     .font(.system(size: 13, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(gateTint)
@@ -107,7 +107,7 @@ private struct SidebarGatePreview: View {
             SidebarPreviewIDHeader(issueID: issue.id)
 
             HStack(spacing: 8) {
-                Image(systemName: gate.awaitType.systemImage)
+                Image(systemName: gate.systemImage)
                     .font(.system(size: 15, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(GatePresentation.tint(for: gate, now: now))

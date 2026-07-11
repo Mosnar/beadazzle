@@ -6,10 +6,10 @@ final class BlockingRelationshipDirectionTests: XCTestCase {
         XCTAssertEqual(BlockingRelationshipDirection.blockedBy.title, "Blocked by")
         XCTAssertEqual(
             BlockingRelationshipDirection.blockedBy.systemImage,
-            "arrow.down.right.and.arrow.up.left"
+            BeadIconography.blockedBy
         )
         XCTAssertEqual(BlockingRelationshipDirection.blocking.title, "Blocking")
-        XCTAssertEqual(BlockingRelationshipDirection.blocking.systemImage, "arrow.up.forward")
+        XCTAssertEqual(BlockingRelationshipDirection.blocking.systemImage, BeadIconography.blocking)
     }
 
     func testSummariesUseDirectionalSingularAndPluralLanguage() {

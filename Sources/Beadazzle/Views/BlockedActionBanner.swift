@@ -4,11 +4,14 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
     enum Kind: Hashable, Sendable {
         case resolvedGate
         case noActiveGate
+        case awaitingApproval
     }
 
     enum Action: Hashable, Sendable, Identifiable {
         case createTimer
         case createDecision
+        case approve
+        case reject
         case reopen
 
         var id: Self { self }
@@ -19,6 +22,10 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
                 "Timer gate"
             case .createDecision:
                 "Decision gate"
+            case .approve:
+                "Approve..."
+            case .reject:
+                "Reject..."
             case .reopen:
                 "Reopen"
             }
@@ -27,9 +34,13 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
         var systemImage: String {
             switch self {
             case .createTimer:
-                "timer"
+                BeadIconography.timerGate
             case .createDecision:
-                "person.badge.clock"
+                BeadIconography.humanGate
+            case .approve:
+                "checkmark.circle"
+            case .reject:
+                "xmark.circle"
             case .reopen:
                 "arrow.uturn.backward.circle"
             }
@@ -41,6 +52,10 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
                 "Create an 8 hour timer gate"
             case .createDecision:
                 "Create a human decision gate"
+            case .approve:
+                "Approve the gate and unblock this bead"
+            case .reject:
+                "Reject the gate and choose a status for this bead"
             case .reopen:
                 "Move this bead back to the active status"
             }
@@ -51,9 +66,11 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
     let issueID: String
     let message: String
     let actions: [Action]
+    /// The open decision gate behind an `awaitingApproval` banner; nil for other kinds.
+    var gateID: String?
 
     var id: String {
-        "\(issueID)-\(kind)"
+        "\(issueID)-\(kind)-\(gateID ?? "")"
     }
 
     var systemImage: String {
@@ -62,6 +79,8 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
             "checkmark.seal"
         case .noActiveGate:
             "questionmark.circle"
+        case .awaitingApproval:
+            BeadIconography.humanGate
         }
     }
 
@@ -71,13 +90,16 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
             Color(nsColor: .systemGreen)
         case .noActiveGate:
             Color(nsColor: .systemOrange)
+        case .awaitingApproval:
+            Color(nsColor: .systemBlue)
         }
     }
 
     static func make(
         issueID: String,
         reason: BlockedReasonPresentation?,
-        canCreateGate: Bool = true
+        canCreateGate: Bool = true,
+        readyDecisionGate: BeadGate? = nil
     ) -> BlockedActionPresentation? {
         guard let reason else { return nil }
         switch reason.kind {
@@ -95,7 +117,16 @@ struct BlockedActionPresentation: Hashable, Sendable, Identifiable {
                 message: "Marked blocked with no active gate.",
                 actions: canCreateGate ? [.createTimer, .createDecision, .reopen] : [.reopen]
             )
-        case .issue, .gate, .multiple, .external, .subissue:
+        case .gate:
+            guard let gate = readyDecisionGate else { return nil }
+            return BlockedActionPresentation(
+                kind: .awaitingApproval,
+                issueID: issueID,
+                message: "Waiting on \(gate.title.nilIfBlank ?? "a decision gate") — needs your decision.",
+                actions: [.approve, .reject],
+                gateID: gate.id
+            )
+        case .issue, .multiple, .external, .subissue:
             return nil
         }
     }

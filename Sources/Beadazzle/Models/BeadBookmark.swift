@@ -40,7 +40,7 @@ enum BeadBookmark: CaseIterable, Hashable, Identifiable, Sendable {
         case .stale:
             "clock.arrow.circlepath"
         case .gates:
-            "flag.checkered"
+            BeadIconography.genericGate
         case .all:
             "circle.hexagongrid"
         case .open, .inProgress, .blocked, .closed:

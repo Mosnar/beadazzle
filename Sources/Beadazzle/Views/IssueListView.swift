@@ -272,7 +272,7 @@ struct GateRowView: View, Equatable {
                 .help(row.isExpanded ? "Collapse blocked beads" : "Expand blocked beads")
             }
 
-            Image(systemName: gate.awaitType.systemImage)
+            Image(systemName: gate.systemImage)
                 .font(.caption.weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tint)

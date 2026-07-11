@@ -84,7 +84,7 @@ struct IssueSummaryRowContent: View {
                     if let childProgress = row.childProgress {
                         Label(
                             childProgressTitle(for: childProgress),
-                            systemImage: childProgressSystemImage(for: childProgress)
+                            systemImage: BeadIconography.children
                         )
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -152,10 +152,6 @@ struct IssueSummaryRowContent: View {
     private func childProgressTitle(for progress: IssueChildProgress) -> String {
         guard progress.workedCount > 0 else { return "Not started" }
         return "\(progress.completedCount.formatted())/\(progress.totalCount.formatted())"
-    }
-
-    private func childProgressSystemImage(for progress: IssueChildProgress) -> String {
-        progress.workedCount > 0 ? "checkmark.circle" : "circle"
     }
 
     private func childProgressHelp(for progress: IssueChildProgress) -> String {

@@ -172,7 +172,7 @@ struct IssueBreadcrumbBar: View {
                         Button {
                             showingGateCreation = true
                         } label: {
-                            Label("Create Gate...", systemImage: "flag.checkered")
+                            Label("Create Gate...", systemImage: BeadIconography.genericGate)
                         }
                     }
                     Button {
