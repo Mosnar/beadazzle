@@ -21,10 +21,9 @@
     {
       "identity" : "swift-markdown-engine",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/nodes-app/swift-markdown-engine",
+      "location" : "https://github.com/Mosnar/swift-markdown-engine",
       "state" : {
-        "revision" : "7d537d0646a6a3170a0779d4e08f6e951b378eb9",
-        "version" : "0.8.0"
+        "revision" : "a2dc2ea551cf65d4c72a1062fb20a7ece0c8cca6"
       }
     },
     {

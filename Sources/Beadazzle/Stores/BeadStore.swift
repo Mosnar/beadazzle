@@ -180,6 +180,7 @@ final class BeadStore {
     private(set) var hiddenStatusNames: Set<String> = []
     private(set) var canGoBack = false
     private(set) var canGoForward = false
+    private(set) var issueReferenceLookup = IssueReferenceLookup.empty
 
     @ObservationIgnored private let commands: any BeadsCommanding
     @ObservationIgnored private let projectLoader: BeadProjectLoader
@@ -210,9 +211,19 @@ final class BeadStore {
     @ObservationIgnored private var isLoadingProjectPreferences = false
     @ObservationIgnored private var suppressesHistoryRecording = false
     @ObservationIgnored private var suppressesFilterUpdates = false
+    @ObservationIgnored private var issueReferenceRevision = 0
     @ObservationIgnored private let userDefaults: UserDefaults
 
-    private var index = BeadProjectIndex.empty
+    private var index = BeadProjectIndex.empty {
+        didSet {
+            guard oldValue.allIssueIDs != index.allIssueIDs else { return }
+            issueReferenceRevision &+= 1
+            issueReferenceLookup = IssueReferenceLookup(
+                issueIDs: index.allIssueIDs,
+                revision: issueReferenceRevision
+            )
+        }
+    }
 
     var hierarchyMutationPolicy: BeadHierarchyMutationPolicy {
         BeadHierarchyMutationPolicy(index: index)

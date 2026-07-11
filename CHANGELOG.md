@@ -15,6 +15,9 @@ for users, not for the commit log.
 
 ### Added
 
+- Issue IDs in description, acceptance criteria, design, notes, and comments
+  now link to their bead. Command-click links while editing; hovering an editor
+  link shows the same bead preview used elsewhere in the app.
 - The app menu now includes Project Settings beneath Settings when a project is open.
 - Dependency counters now open relationship previews that explain each direction
   and link directly to the active blocker or blocked beads.

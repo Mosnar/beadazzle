@@ -1,5 +1,10 @@
 import SwiftUI
 
+enum HoverPopoverTiming {
+    static let openDelay: Duration = .milliseconds(320)
+    static let closeDelay: Duration = .milliseconds(280)
+}
+
 struct HoverPersistentPopoverPresentationState: Equatable {
     var isTriggerHovered = false
     var isPreviewHovered = false
@@ -48,8 +53,8 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
 
     init(
         arrowEdge: Edge = .leading,
-        openDelay: Duration = .milliseconds(320),
-        closeDelay: Duration = .milliseconds(280),
+        openDelay: Duration = HoverPopoverTiming.openDelay,
+        closeDelay: Duration = HoverPopoverTiming.closeDelay,
         fillsAvailableWidth: Bool = true,
         action: @escaping () -> Void,
         @ViewBuilder label: @escaping (Bool) -> Label,
@@ -67,8 +72,8 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
 
     init(
         arrowEdge: Edge = .leading,
-        openDelay: Duration = .milliseconds(320),
-        closeDelay: Duration = .milliseconds(280),
+        openDelay: Duration = HoverPopoverTiming.openDelay,
+        closeDelay: Duration = HoverPopoverTiming.closeDelay,
         fillsAvailableWidth: Bool = true,
         @ViewBuilder label: @escaping (Bool) -> Label,
         @ViewBuilder interactivePreview: @escaping () -> Preview

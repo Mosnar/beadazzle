@@ -6,7 +6,7 @@ Beadazzle currently resolves the following SwiftPM dependencies from `Package.re
 
 | Component | Version | Upstream | License | Notes |
 | --- | --- | --- | --- | --- |
-| MarkdownEngine | `0.8.0` | `nodes-app/swift-markdown-engine` | Apache License 2.0 | Provides Beadazzle's markdown editing and rendering support. |
+| MarkdownEngine | `a2dc2ea5` (forked from `0.8.0`) | `Mosnar/swift-markdown-engine` | Apache License 2.0 | Provides Beadazzle's markdown editing, rendering, and host-defined automatic links. Original project by `nodes-app/swift-markdown-engine`. |
 | Sparkle | `2.9.4` | `sparkle-project/Sparkle` | MIT License | Provides Beadazzle's automatic update framework and appcast tooling. |
 | HighlighterSwift | `3.1.0` | `smittytone/HighlighterSwift` | MIT License | Bundles additional Highlight.js code/theme portions under BSD 3-Clause terms, per upstream `LICENCE.md`. |
 | SwiftMath | `1.7.3` | `mgriebling/SwiftMath` | MIT License | Includes bundled math fonts with upstream font-license notices. |

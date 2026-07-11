@@ -49,7 +49,7 @@ struct SidebarBeadLink: View {
                     .accessibilityHidden(true)
             }
         } preview: {
-            SidebarBeadPreview(issue: issue)
+            BeadDetailPreview(issue: issue)
         }
         .help("\(issue.id) \(issue.title)")
         .accessibilityElement(children: .ignore)
@@ -59,7 +59,7 @@ struct SidebarBeadLink: View {
     }
 }
 
-private struct SidebarBeadPreview: View {
+struct BeadDetailPreview: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let issue: BeadIssue
 

@@ -10,6 +10,7 @@ struct CommentsView: View {
         let comments = store.comments(for: issue.id)
         let isLoadingComments = store.isLoadingComments(for: issue.id)
         let commentLoadError = store.commentLoadError(for: issue.id)
+        let issueReferenceLookup = store.issueReferenceLookup
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -48,7 +49,8 @@ struct CommentsView: View {
             } else {
                 LazyVStack(spacing: 0) {
                     ForEach(comments) { comment in
-                        CommentRow(comment: comment)
+                        CommentRow(comment: comment, issueReferenceLookup: issueReferenceLookup)
+                            .equatable()
                         if comment.id != comments.last?.id {
                             Divider()
                         }
@@ -91,6 +93,16 @@ struct CommentsView: View {
         .onChange(of: issue.id) {
             draftText = ""
         }
+        .environment(\.openURL, OpenURLAction { url in
+            guard let issueID = BeadIssueURL.issueID(from: url),
+                  store.issue(with: issueID) != nil else {
+                // Not a resolvable bead link — let the system handle it so any
+                // ordinary URL in a comment still opens.
+                return .systemAction
+            }
+            store.openIssueFromDetail(issueID: issueID)
+            return .handled
+        })
     }
 
     private var normalizedDraft: String {
@@ -111,8 +123,24 @@ private struct CommentLoadTaskID: Hashable {
     let commentCount: Int
 }
 
-private struct CommentRow: View {
+// Equatable on (comment, lookup revision) so `.equatable()` skips body — and
+// with it the reference-matching pass — unless the comment text or the
+// project's set of issue IDs actually changed.
+private struct CommentRow: View, Equatable {
     let comment: BeadComment
+    let issueReferenceLookup: IssueReferenceLookup
+
+    static func == (lhs: CommentRow, rhs: CommentRow) -> Bool {
+        lhs.comment == rhs.comment
+            && lhs.issueReferenceLookup.revision == rhs.issueReferenceLookup.revision
+    }
+
+    private var attributedText: AttributedString {
+        IssueReferenceAttributedStringBuilder.make(
+            text: comment.text,
+            lookup: issueReferenceLookup
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -126,7 +154,7 @@ private struct CommentRow: View {
                 Spacer()
             }
 
-            Text(comment.text)
+            Text(attributedText)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
