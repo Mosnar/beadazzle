@@ -48,6 +48,22 @@ struct BeadIssue: Identifiable, Hashable, Sendable {
     var isGate: Bool {
         BeadIssueWorkflowPolicy.isReservedIssueType(issueType)
     }
+
+    /// True when every field contributing to `summaryText` is unchanged. Used to carry
+    /// pre-folded search bytes across index rebuilds; each comparison is cheap for an
+    /// untouched issue because copy-on-write leaves both sides sharing storage.
+    func hasSameSearchText(as other: BeadIssue) -> Bool {
+        id == other.id
+            && title == other.title
+            && description == other.description
+            && design == other.design
+            && acceptanceCriteria == other.acceptanceCriteria
+            && notes == other.notes
+            && labels == other.labels
+            && assignee == other.assignee
+            && owner == other.owner
+            && externalRef == other.externalRef
+    }
 }
 
 enum BeadCompletionAction: Equatable, Sendable {
@@ -408,7 +424,7 @@ struct BeadIssueSortOrder: Sendable {
     }
 
     private func compareStrings(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        lhs.localizedStandardCompare(rhs)
+        lhs.naturalCompare(rhs)
     }
 }
 

@@ -337,7 +337,10 @@ struct IssueRowView: View, Equatable {
     let toggleExpansion: () -> Void
 
     nonisolated static func == (lhs: IssueRowView, rhs: IssueRowView) -> Bool {
-        lhs.issue == rhs.issue
+        // Compare only the issue fields the row actually renders (see
+        // IssueSummaryRowContent): full `BeadIssue` equality scans description/notes
+        // bodies that can be kilobytes, per visible row per update.
+        displayedIssueFieldsEqual(lhs.issue, rhs.issue)
             && lhs.row == rhs.row
             && lhs.showsDisclosure == rhs.showsDisclosure
             && lhs.displayOptions == rhs.displayOptions
@@ -345,6 +348,20 @@ struct IssueRowView: View, Equatable {
             && lhs.blockedReason == rhs.blockedReason
             && lhs.blockedByItems == rhs.blockedByItems
             && lhs.blockingItems == rhs.blockingItems
+    }
+
+    nonisolated private static func displayedIssueFieldsEqual(_ lhs: BeadIssue, _ rhs: BeadIssue) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.status == rhs.status
+            && lhs.priority == rhs.priority
+            && lhs.issueType == rhs.issueType
+            && lhs.owner == rhs.owner
+            && lhs.assignee == rhs.assignee
+            && lhs.dueAt == rhs.dueAt
+            && lhs.updatedAt == rhs.updatedAt
+            && lhs.commentCount == rhs.commentCount
+            && lhs.labels == rhs.labels
     }
 
     var body: some View {

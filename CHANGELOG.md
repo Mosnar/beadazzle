@@ -39,8 +39,25 @@ for users, not for the commit log.
   export and reload instead of waiting for the periodic JSONL export.
 - Automatic snapshot refresh now catches changes made while Beadazzle was closed
   and keeps routine background catch-up from flashing a stale warning.
+- Opening and refreshing large projects is faster: issue timestamps parse in a
+  single pass, filter counts share the search scan with the visible list, and
+  edits reuse the existing search index instead of rebuilding it.
+- Sorting by title, status, or type is faster on large trackers, using a
+  Finder-like natural order (case-insensitive, numeric-aware).
+- New Bead, Open Beads Project, Refresh, and Find menu commands now target the
+  focused window and disable when they don't apply, instead of broadcasting to
+  every window.
 
 ### Fixed
+
+- Adding a comment no longer risks crashing the app when `bd` rejects the
+  bead before reading the comment body.
+- A stalled `bd` write now times out with an error after two minutes instead of
+  silently blocking every subsequent edit behind it.
+- `bd` commands run from Finder/Dock launches now see the same search path used
+  to locate `bd` itself, so helpers like git or dolt resolve in embedded projects.
+- Checking for external changes no longer freezes the UI briefly when `bd` is
+  holding a database lock mid-write.
 
 - Local builds without Sparkle signing keys no longer show update controls that
   can offer the current release as if it were newer than the running build.

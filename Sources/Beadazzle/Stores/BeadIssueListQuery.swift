@@ -23,6 +23,30 @@ struct BeadIssueListQuery: Sendable {
         }
     }
 
+    /// Single-scan variant for the common recompute path: shares the expensive
+    /// search/filter pass between the row ID list and the filter counts. Not valid
+    /// for the gates bookmark, whose rows ignore active filters while counts don't.
+    static func filteredIssueIDsAndCounts(
+        index: BeadProjectIndex,
+        bookmark: BeadBookmark,
+        statusFilters: Set<String>,
+        typeFilters: Set<String>,
+        priorityFilters: Set<Int>,
+        labelFilters: Set<String>,
+        searchText: String
+    ) -> (matchingIDs: [String], counts: BeadFilterCounts) {
+        PerformanceSignposts.query.withIntervalSignpost("Filter") {
+            index.filteredIssueIDsAndCounts(
+                for: bookmark,
+                statusFilters: statusFilters,
+                typeFilters: typeFilters,
+                priorityFilters: priorityFilters,
+                labelFilters: labelFilters,
+                searchText: searchText
+            )
+        }
+    }
+
     static func sortedIssueIDs(
         index: BeadProjectIndex,
         ids: [String],

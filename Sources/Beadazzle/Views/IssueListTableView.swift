@@ -223,10 +223,9 @@ struct IssueListTableView: NSViewRepresentable {
             }
             let isContextFocused = shouldShowFocusOutline(for: itemID)
             let store = parent.store
-            let rowContent: AnyView
             if let gate = store.gate(for: itemID) {
-                rowContent = AnyView(
-                    GateRowView(
+                return chromedRowView(
+                    content: GateRowView(
                         issue: issue,
                         row: row,
                         gate: gate,
@@ -234,8 +233,9 @@ struct IssueListTableView: NSViewRepresentable {
                         // Gate rows disclose their blocked beads in the Gates section.
                         showsDisclosure: parent.mode == .outline || parent.store.selectedBookmark == .gates,
                         toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
-                    )
-                    .equatable()
+                    ),
+                    itemID: itemID,
+                    isContextFocused: isContextFocused
                 )
             } else {
                 let blockedByItems = store.activeBlockingIssues(for: itemID).map {
@@ -250,8 +250,8 @@ struct IssueListTableView: NSViewRepresentable {
                         statusCategory: store.statusCategory(for: $0.status)
                     )
                 }
-                rowContent = AnyView(
-                    IssueRowView(
+                return chromedRowView(
+                    content: IssueRowView(
                         issue: issue,
                         row: row,
                         showsDisclosure: parent.mode == .outline,
@@ -266,12 +266,23 @@ struct IssueListTableView: NSViewRepresentable {
                         blockingItems: blockingItems,
                         openRelatedIssue: { store.openIssueFromDetail(issueID: $0) },
                         toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
-                    )
-                    .equatable()
+                    ),
+                    itemID: itemID,
+                    isContextFocused: isContextFocused
                 )
             }
-            return AnyView(
-                rowContent
+        }
+
+        /// Erases once for `NSHostingView<AnyView>`; the row content itself stays
+        /// concrete (and `.equatable()`-diffable) instead of double-wrapping in AnyView.
+        private func chromedRowView(
+            content: some View & Equatable,
+            itemID: String,
+            isContextFocused: Bool
+        ) -> AnyView {
+            AnyView(
+                content
+                    .equatable()
                     .padding(.leading, 12)
                     .padding(.trailing, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -842,9 +853,9 @@ private final class IssueKeyboardTableView: NSTableView {
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 123: // left arrow
+        case KeyCode.leftArrow:
             if onNavigateOutline?(.left) == true { return }
-        case 124: // right arrow
+        case KeyCode.rightArrow:
             if onNavigateOutline?(.right) == true { return }
         default:
             break

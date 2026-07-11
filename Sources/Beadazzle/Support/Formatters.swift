@@ -36,11 +36,13 @@ private final class BeadDateFormatterStore: @unchecked Sendable {
     private let commandDateFormatter: DateFormatter
 
     init() {
+        // Ordered by frequency in bd output: bd emits `yyyy-MM-dd'T'HH:mm:ssZ`
+        // timestamps, so the common case must match on the first attempt.
         parseDateFormatters = [
-            "yyyy-MM-dd",
             "yyyy-MM-dd'T'HH:mm:ssXXXXX",
             "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
-            "yyyy-MM-dd HH:mm:ss"
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd"
         ].map { format in
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -56,6 +58,7 @@ private final class BeadDateFormatterStore: @unchecked Sendable {
     }
 
     func parseDate(_ value: String) -> Date? {
+        guard !value.isEmpty else { return nil }
         lock.lock()
         defer { lock.unlock() }
         for formatter in parseDateFormatters {

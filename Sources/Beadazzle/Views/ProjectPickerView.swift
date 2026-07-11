@@ -339,11 +339,6 @@ private struct ProjectPickerPopover: View {
     }
 }
 
-private enum KeyCode {
-    static let escape: UInt16 = 53
-    static let downArrow: UInt16 = 125
-}
-
 private struct ProjectSearchField: View {
     @Binding var text: String
     let isFocused: Bool

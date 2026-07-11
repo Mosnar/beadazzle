@@ -36,6 +36,34 @@ enum BeadsCLI {
         return (URL(fileURLWithPath: "/usr/bin/env"), ["bd"])
     }
 
+    /// Environment for `bd` subprocesses. When the app is launched via LaunchServices
+    /// (Finder/Dock) the inherited PATH is the minimal system one, so helpers `bd` itself
+    /// shells out to (git, dolt, version-manager shims) would not resolve even though we
+    /// found `bd`. Augment PATH with the same fallback directories used to locate `bd`,
+    /// plus the resolved executable's own directory.
+    static func subprocessEnvironment(executableURL: URL) -> [String: String] {
+        subprocessEnvironment(
+            base: ProcessInfo.processInfo.environment,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            executableURL: executableURL
+        )
+    }
+
+    static func subprocessEnvironment(
+        base: [String: String],
+        homeDirectory: URL,
+        executableURL: URL
+    ) -> [String: String] {
+        var directories = pathDirectories(environment: base, homeDirectory: homeDirectory)
+        let executableDirectory = executableURL.deletingLastPathComponent()
+        if executableDirectory.path != "/" && !directories.contains(executableDirectory) {
+            directories.append(executableDirectory)
+        }
+        var environment = base
+        environment["PATH"] = directories.map(\.path).joined(separator: ":")
+        return environment
+    }
+
     private static func pathDirectories(environment: [String: String], homeDirectory: URL) -> [URL] {
         let path = environment["PATH"] ?? ""
         var directories = path

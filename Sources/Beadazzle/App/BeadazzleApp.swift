@@ -21,34 +21,9 @@ struct BeadazzleApp: App {
                 }
             }
 
-            CommandGroup(replacing: .newItem) {
-                Button("New Bead") {
-                    NotificationCenter.default.post(name: .newBeadRequested, object: nil)
-                }
-                .keyboardShortcut("n")
-            }
-
+            WorkspaceCommands()
             BeadSaveCommands()
             ProjectSettingsCommands(store: store)
-
-            CommandGroup(after: .importExport) {
-                Button("Open Beads Project...") {
-                    NotificationCenter.default.post(name: .openProjectRequested, object: nil)
-                }
-                .keyboardShortcut("o")
-
-                Button("Refresh") {
-                    NotificationCenter.default.post(name: .refreshRequested, object: nil)
-                }
-                .keyboardShortcut("r")
-            }
-
-            CommandMenu("Find") {
-                Button("Find") {
-                    NotificationCenter.default.post(name: .focusSearchRequested, object: nil)
-                }
-                .keyboardShortcut("f")
-            }
 
             CommandMenu("Navigate") {
                 Button(BeadNavigationDirection.back.title) {

@@ -25,7 +25,9 @@ final class BeadStore {
     var projectURL: URL?
     private(set) var projectReadiness = BeadProjectReadiness.noProject
     private(set) var recentProjects: [RecentProject] = []
-    var issues: [BeadIssue] = []
+    /// Derived from `index` so the two can never disagree; `index` is the single
+    /// authoritative snapshot state.
+    var issues: [BeadIssue] { index.issues }
     private(set) var filteredIssueIDs: [String] = []
     private(set) var issueListRows: [IssueListRow] = []
     var dependencies: [BeadDependency] = []
@@ -775,6 +777,40 @@ final class BeadStore {
         BeadIssueWorkflowPolicy.canCreateGate(blocking: issue, isDone: isDone(issue))
     }
 
+    enum StatusChangeConfirmation: Equatable {
+        case closeChildren([BeadIssue])
+        case reopenAncestors([BeadIssue])
+        case deferDate
+        case proceed
+    }
+
+    /// Decides which confirmation, if any, setting `status` on `issueIDs` requires,
+    /// so views present the matching sheet without re-deriving hierarchy policy.
+    func statusChangeConfirmation(forSetting status: String, on issueIDs: [String]) -> StatusChangeConfirmation {
+        if statusClosesBeads(status) {
+            let childIssues = openChildIssues(forClosing: issueIDs)
+            if !childIssues.isEmpty { return .closeChildren(childIssues) }
+        } else {
+            let ancestorIssues = doneAncestorIssues(forReopening: issueIDs)
+            if !ancestorIssues.isEmpty { return .reopenAncestors(ancestorIssues) }
+        }
+        if isDeferredStatus(status) { return .deferDate }
+        return .proceed
+    }
+
+    enum ReopenConfirmation: Equatable {
+        case reopenAncestors([BeadIssue], reopenStatus: String)
+        case missingReopenStatus
+        case proceed
+    }
+
+    func reopenConfirmation(for issueIDs: [String]) -> ReopenConfirmation {
+        let ancestorIssues = doneAncestorIssues(forReopening: issueIDs)
+        guard !ancestorIssues.isEmpty else { return .proceed }
+        guard let reopenStatus = reopenStatusName else { return .missingReopenStatus }
+        return .reopenAncestors(ancestorIssues, reopenStatus: reopenStatus)
+    }
+
     var reopenStatusName: String? {
         if index.semantics.statuses.contains(where: { $0.name == "open" && $0.category == .active }) {
             return "open"
@@ -1248,7 +1284,6 @@ final class BeadStore {
         reconcileDebounceTask = nil
         reconcileState.reset()
         index = .empty
-        issues = []
         filteredIssueIDs = []
         issueListRows = []
         dependencies = []
@@ -1819,9 +1854,9 @@ final class BeadStore {
             dependencies: dependencies,
             semantics: index.semantics,
             staleCutoffDays: staleCutoffDays,
-            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+            reusingSearchTextFrom: index
         )
-        self.issues = issues
         contentRevision &+= 1
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
         syncFullPageDetailWithSelection()
@@ -3174,15 +3209,40 @@ final class BeadStore {
 
         recomputeTask = Task { @MainActor [weak self] in
             let results = await Task.detached(priority: .userInitiated) { () -> QueryResults in
-                let filteredIDs = BeadIssueListQuery.filteredIssueIDs(
-                    index: index,
-                    bookmark: bookmark,
-                    statusFilters: statusFilters,
-                    typeFilters: typeFilters,
-                    priorityFilters: priorityFilters,
-                    labelFilters: labelFilters,
-                    searchText: searchText
-                )
+                let filteredIDs: [String]
+                var counts: BeadFilterCounts?
+                if recomputeCounts, bookmark != .gates {
+                    (filteredIDs, counts) = BeadIssueListQuery.filteredIssueIDsAndCounts(
+                        index: index,
+                        bookmark: bookmark,
+                        statusFilters: statusFilters,
+                        typeFilters: typeFilters,
+                        priorityFilters: priorityFilters,
+                        labelFilters: labelFilters,
+                        searchText: searchText
+                    )
+                } else {
+                    filteredIDs = BeadIssueListQuery.filteredIssueIDs(
+                        index: index,
+                        bookmark: bookmark,
+                        statusFilters: statusFilters,
+                        typeFilters: typeFilters,
+                        priorityFilters: priorityFilters,
+                        labelFilters: labelFilters,
+                        searchText: searchText
+                    )
+                    counts = recomputeCounts
+                        ? BeadIssueListQuery.filterCounts(
+                            index: index,
+                            bookmark: bookmark,
+                            statusFilters: statusFilters,
+                            typeFilters: typeFilters,
+                            priorityFilters: priorityFilters,
+                            searchText: searchText,
+                            selectedLabels: labelFilters
+                        )
+                        : nil
+                }
                 let sortedIDs = BeadIssueListQuery.sortedIssueIDs(
                     index: index,
                     ids: filteredIDs,
@@ -3214,18 +3274,6 @@ final class BeadStore {
                         bookmark: bookmark
                     )
                 }
-
-                let counts = recomputeCounts
-                    ? BeadIssueListQuery.filterCounts(
-                        index: index,
-                        bookmark: bookmark,
-                        statusFilters: statusFilters,
-                        typeFilters: typeFilters,
-                        priorityFilters: priorityFilters,
-                        searchText: searchText,
-                        selectedLabels: labelFilters
-                    )
-                    : nil
 
                 return QueryResults(
                     filteredIssueIDs: sortedIDs,
@@ -3265,8 +3313,18 @@ final class BeadStore {
     /// Awaits the in-flight filtered/sorted/rows recomputation, if any, so callers can
     /// observe settled derived state (`filteredIssueIDs`, `issueListRows`, `filterCounts`).
     /// Intended for tests; production UI simply re-renders when the recompute lands.
+    ///
+    /// A recompute superseded mid-flight resolves without applying its results, so
+    /// awaiting a single task is not enough: if another schedule lands while we're
+    /// suspended (e.g. a debounced monitor event), loop until the task we awaited is
+    /// still the current one.
     func waitForPendingQueryRecompute() async {
-        await recomputeTask?.value
+        while let task = recomputeTask {
+            await task.value
+            if recomputeTask == task {
+                return
+            }
+        }
     }
 
     func waitForPendingProjectHealthLoad() async {
@@ -3280,7 +3338,8 @@ final class BeadStore {
             dependencies: index.dependencies,
             semantics: index.semantics,
             staleCutoffDays: staleCutoffDays,
-            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+            reusingSearchTextFrom: index
         )
         contentRevision &+= 1
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
@@ -3302,7 +3361,8 @@ final class BeadStore {
             dependencies: loadedIndex.dependencies,
             semantics: loadedIndex.semantics,
             staleCutoffDays: staleCutoffDays,
-            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+            reusingSearchTextFrom: loadedIndex
         )
     }
 
@@ -3332,7 +3392,6 @@ final class BeadStore {
         )
         projectReadiness = .ready
         index = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
-        issues = loadedProject.snapshot.issues
         contentRevision &+= 1
         if let definitions = loadedProject.definitions {
             cachedDefinitions = definitions
@@ -3450,15 +3509,34 @@ final class BeadStore {
         if reconcileState.deferMonitorEvent(event.roles) {
             return
         }
-        if currentDataSource.kind == .jsonl,
-           event.roles.contains(.beadsDirectory),
-           let discoveredSource = try? BeadsDataSourceDiscovery().discover(projectURL: projectURL),
-           discoveredSource != currentDataSource {
-            satisfyPendingExternalRefreshFromSourceChange()
-            snapshotFreshness = snapshotFreshness.refreshing(projectURL: projectURL, source: currentDataSource)
-            refreshAfterDataSourceChange()
+        if currentDataSource.kind == .jsonl, event.roles.contains(.beadsDirectory) {
+            // Discovery opens beads.db and can block up to its 5s busy timeout while
+            // bd holds a write lock — exactly when watcher events fire — so the probe
+            // must not run on the main actor.
+            let expectedSource = currentDataSource
+            Task { [weak self] in
+                let discoveredSource = await Task.detached(priority: .utility) {
+                    try? BeadsDataSourceDiscovery().discover(projectURL: projectURL)
+                }.value
+                guard let self,
+                      self.projectURL == projectURL,
+                      self.currentDataSource == expectedSource else {
+                    return
+                }
+                if let discoveredSource, discoveredSource != expectedSource {
+                    self.satisfyPendingExternalRefreshFromSourceChange()
+                    self.snapshotFreshness = self.snapshotFreshness.refreshing(projectURL: projectURL, source: expectedSource)
+                    self.refreshAfterDataSourceChange()
+                } else {
+                    self.evaluateMonitorFreshness(projectURL: projectURL, source: expectedSource)
+                }
+            }
             return
         }
+        evaluateMonitorFreshness(projectURL: projectURL, source: currentDataSource)
+    }
+
+    private func evaluateMonitorFreshness(projectURL: URL, source currentDataSource: BeadsDataSource) {
         let evaluation = snapshotFreshness.evaluatingCurrentFiles(
             projectURL: projectURL,
             source: currentDataSource

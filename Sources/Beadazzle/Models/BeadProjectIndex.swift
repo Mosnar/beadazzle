@@ -76,12 +76,17 @@ struct BeadProjectIndex: Sendable {
 
     private let issueIDsByBookmark: [BeadBookmark: Set<String>]
 
+    /// - Parameter reusingSearchTextFrom: a previous index to carry pre-folded search
+    ///   bytes from for issues whose searchable fields are unchanged. Folding is the
+    ///   dominant cost of a rebuild, so optimistic single-issue edits pass the outgoing
+    ///   index here instead of re-folding every issue.
     init(
         issues: [BeadIssue],
         dependencies: [BeadDependency],
         semantics: BeadProjectSemantics,
         staleCutoffDays: Int = Self.defaultStaleCutoffDays,
-        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
+        reusingSearchTextFrom previousIndex: BeadProjectIndex? = nil
     ) {
         self.issues = issues
         self.dependencies = dependencies
@@ -108,7 +113,14 @@ struct BeadProjectIndex: Sendable {
             issueIDsByStatusCategory[semantics.category(forStatus: issue.status), default: []].insert(issue.id)
             issueIDsByType[issue.issueType, default: []].insert(issue.id)
             issueIDsByPriority[issue.priority, default: []].insert(issue.id)
-            foldedSearchBytesByID[issue.id] = ContiguousArray(Self.foldedForSearch(issue.id + " " + issue.summaryText).utf8)
+            if let previousIndex,
+               let priorIssue = previousIndex.issueByID[issue.id],
+               let priorBytes = previousIndex.foldedSearchBytesByID[issue.id],
+               issue.hasSameSearchText(as: priorIssue) {
+                foldedSearchBytesByID[issue.id] = priorBytes
+            } else {
+                foldedSearchBytesByID[issue.id] = ContiguousArray(Self.foldedForSearch(issue.id + " " + issue.summaryText).utf8)
+            }
             for label in issue.labels {
                 issueIDsByLabel[label, default: []].insert(issue.id)
             }
@@ -558,7 +570,7 @@ struct BeadProjectIndex: Sendable {
     }
 
     private func compareStrings(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        lhs.localizedStandardCompare(rhs)
+        lhs.naturalCompare(rhs)
     }
 
     func filterCounts(
@@ -569,20 +581,61 @@ struct BeadProjectIndex: Sendable {
         searchText: String,
         selectedLabels: Set<String>
     ) -> BeadFilterCounts {
-        let baseIDs = issueIDs(for: bookmark)
         let nonLabelIDs = filteredIssueIDs(
-            within: baseIDs,
+            within: issueIDs(for: bookmark),
             statusFilters: statusFilters,
             typeFilters: typeFilters,
             priorityFilters: priorityFilters,
             labelFilters: [],
             searchText: searchText
         )
+        return filterCounts(for: bookmark, nonLabelFilteredIDs: nonLabelIDs, selectedLabels: selectedLabels)
+    }
 
-        let baseCounts = baseFilterCountsByBookmark[bookmark] ?? Self.baseFilterCounts(for: baseIDs, issueByID: issueByID, semantics: semantics)
+    /// Computes the filtered ID list and the filter counts from a single scan.
+    /// The search-text pass over all candidates is the expensive part of both, so
+    /// the non-label-filtered set is computed once and shared: the row set is its
+    /// intersection with the label filters, and label counts read it directly.
+    func filteredIssueIDsAndCounts(
+        for bookmark: BeadBookmark,
+        statusFilters: Set<String>,
+        typeFilters: Set<String>,
+        priorityFilters: Set<Int>,
+        labelFilters: Set<String>,
+        searchText: String,
+        shouldCancel: @Sendable () -> Bool = { false }
+    ) -> (matchingIDs: [String], counts: BeadFilterCounts) {
+        let nonLabelIDs = filteredIssueIDs(
+            within: issueIDs(for: bookmark),
+            statusFilters: statusFilters,
+            typeFilters: typeFilters,
+            priorityFilters: priorityFilters,
+            labelFilters: [],
+            searchText: searchText,
+            shouldCancel: shouldCancel
+        )
+        let counts = filterCounts(for: bookmark, nonLabelFilteredIDs: nonLabelIDs, selectedLabels: labelFilters)
+
+        guard !labelFilters.isEmpty else {
+            return (nonLabelIDs, counts)
+        }
+        var matchingIDs = Set(nonLabelIDs)
+        for label in labelFilters {
+            matchingIDs.formIntersection(issueIDsByLabel[label, default: []])
+        }
+        return (Array(matchingIDs), counts)
+    }
+
+    private func filterCounts(
+        for bookmark: BeadBookmark,
+        nonLabelFilteredIDs: [String],
+        selectedLabels: Set<String>
+    ) -> BeadFilterCounts {
+        let baseCounts = baseFilterCountsByBookmark[bookmark]
+            ?? Self.baseFilterCounts(for: issueIDs(for: bookmark), issueByID: issueByID, semantics: semantics)
 
         var labelCounts: [String: Int] = [:]
-        for id in nonLabelIDs {
+        for id in nonLabelFilteredIDs {
             guard let issue = issueByID[id] else { continue }
             for label in issue.labels {
                 labelCounts[label, default: 0] += 1

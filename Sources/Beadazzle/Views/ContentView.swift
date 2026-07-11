@@ -21,15 +21,13 @@ struct ContentView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .keyboardShortcut("r")
-                .disabled(store.projectURL == nil || store.isInitializingBeads || store.isLoading)
+                .disabled(!canRefresh)
 
                 Button {
                     store.beginCreatingBead()
                 } label: {
                     Label("New Bead", systemImage: "plus")
                 }
-                .keyboardShortcut("n")
                 .disabled(!store.canCreateBead)
                 .help(store.selectedBookmark == .gates ? "Gates are created from a bead's ⋯ menu, not here" : "New Bead")
 
@@ -79,22 +77,12 @@ struct ContentView: View {
         .onAppear {
             store.openDefaultProjectIfAvailable()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .newBeadRequested)) { _ in
-            if store.hasReadableProject {
-                store.beginCreatingBead()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openProjectRequested)) { _ in
-            openProject()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .refreshRequested)) { _ in
-            store.refresh()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .focusSearchRequested)) { _ in
-            if store.hasReadableProject {
-                searchPresented = true
-            }
-        }
+        .focusedSceneValue(\.workspaceCommands, WorkspaceCommandActions(
+            newBead: store.canCreateBead ? { store.beginCreatingBead() } : nil,
+            openProject: openProject,
+            refresh: canRefresh ? { store.refresh() } : nil,
+            find: store.hasReadableProject ? { searchPresented = true } : nil
+        ))
         .onChange(of: store.projectURL) {
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
@@ -207,6 +195,10 @@ struct ContentView: View {
         )
     }
 
+    private var canRefresh: Bool {
+        store.projectURL != nil && !store.isInitializingBeads && !store.isLoading
+    }
+
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { store.lastError != nil },
@@ -277,50 +269,38 @@ struct ContentView: View {
             .compactMap { store.issue(with: $0) }
         guard !issues.isEmpty else { return }
 
-        if store.statusClosesBeads(status) {
-            let childIssues = store.openChildIssues(forClosing: issues.map(\.id))
-            if !childIssues.isEmpty {
-                hierarchySheetRequest = .closeChildrenForStatus(
-                    CloseChildBeadsStatusRequest(
-                        issues: issues,
-                        status: status,
-                        childIssues: childIssues
-                    )
+        switch store.statusChangeConfirmation(forSetting: status, on: issues.map(\.id)) {
+        case .closeChildren(let childIssues):
+            hierarchySheetRequest = .closeChildrenForStatus(
+                CloseChildBeadsStatusRequest(
+                    issues: issues,
+                    status: status,
+                    childIssues: childIssues
                 )
-                return
-            }
-        } else {
-            let ancestorIssues = store.doneAncestorIssues(forReopening: issues.map(\.id))
-            if !ancestorIssues.isEmpty {
-                hierarchySheetRequest = .reopenAncestorsForStatus(
-                    ReopenAncestorBeadsStatusRequest(
-                        issues: issues,
-                        status: status,
-                        ancestorIssues: ancestorIssues
-                    )
+            )
+        case .reopenAncestors(let ancestorIssues):
+            hierarchySheetRequest = .reopenAncestorsForStatus(
+                ReopenAncestorBeadsStatusRequest(
+                    issues: issues,
+                    status: status,
+                    ancestorIssues: ancestorIssues
                 )
-                return
-            }
-        }
-
-        if store.isDeferredStatus(status) {
+            )
+        case .deferDate:
             deferredStatusRequest = DeferredStatusRequest(issues: issues, status: status)
-            return
-        }
-
-        Task {
-            await store.bulkSet(issueIDs: issues.map(\.id), status: status)
+        case .proceed:
+            Task {
+                await store.bulkSet(issueIDs: issues.map(\.id), status: status)
+            }
         }
     }
 
     private func requestReopen(issues: [BeadIssue]) {
         let issueIDs = issues.map(\.id)
-        let ancestorIssues = store.doneAncestorIssues(forReopening: issueIDs)
-        if !ancestorIssues.isEmpty {
-            guard let reopenStatus = store.reopenStatusName else {
-                store.lastError = "No active status is configured for reopened beads."
-                return
-            }
+        switch store.reopenConfirmation(for: issueIDs) {
+        case .missingReopenStatus:
+            store.lastError = "No active status is configured for reopened beads."
+        case .reopenAncestors(let ancestorIssues, let reopenStatus):
             hierarchySheetRequest = .reopenAncestorsForStatus(
                 ReopenAncestorBeadsStatusRequest(
                     issues: issues,
@@ -328,7 +308,7 @@ struct ContentView: View {
                     ancestorIssues: ancestorIssues
                 )
             )
-        } else {
+        case .proceed:
             Task {
                 await store.reopen(issueIDs: issueIDs)
             }

@@ -114,15 +114,18 @@ struct BeadsCommandService {
 
     private let readOnlyCommandTimeout: Duration
     private let snapshotExportTimeout: Duration
+    private let writeCommandTimeout: Duration
     private let executable: @Sendable () -> CommandExecutable
 
     init(
         readOnlyCommandTimeout: Duration = .seconds(10),
         snapshotExportTimeout: Duration = .seconds(60),
+        writeCommandTimeout: Duration = .seconds(120),
         executable: @escaping @Sendable () -> CommandExecutable = { BeadsCLI.executable() }
     ) {
         self.readOnlyCommandTimeout = readOnlyCommandTimeout
         self.snapshotExportTimeout = snapshotExportTimeout
+        self.writeCommandTimeout = writeCommandTimeout
         self.executable = executable
     }
 
@@ -349,7 +352,12 @@ struct BeadsCommandService {
     }
 
     private func run(projectURL: URL, arguments: [String], standardInput: String? = nil) async throws {
-        _ = try await runOutput(projectURL: projectURL, arguments: arguments, standardInput: standardInput)
+        _ = try await runOutput(
+            projectURL: projectURL,
+            arguments: arguments,
+            standardInput: standardInput,
+            timeout: writeCommandTimeout
+        )
     }
 
     /// - Parameter terminatesOnCancel: when `true`, cancelling the surrounding task kills
@@ -363,7 +371,6 @@ struct BeadsCommandService {
         terminatesOnCancel: Bool = false,
         timeout: Duration? = nil
     ) async throws -> String {
-        precondition(timeout == nil || terminatesOnCancel, "Timed commands must be cancellable.")
         let executable = executable()
         if terminatesOnCancel {
             guard let timeout else {
@@ -383,7 +390,13 @@ struct BeadsCommandService {
             )
         }
         return try await Task.detached(priority: .userInitiated) {
-            try Self.runOutputSynchronously(projectURL: projectURL, arguments: arguments, standardInput: standardInput, executable: executable)
+            try Self.runOutputSynchronously(
+                projectURL: projectURL,
+                arguments: arguments,
+                standardInput: standardInput,
+                executable: executable,
+                timeout: timeout
+            )
         }.value
     }
 
@@ -417,12 +430,14 @@ struct BeadsCommandService {
         projectURL: URL,
         arguments: [String],
         standardInput: String? = nil,
-        executable: CommandExecutable
+        executable: CommandExecutable,
+        timeout: Duration? = nil
     ) throws -> String {
         let process = Process()
         process.executableURL = executable.url
         process.arguments = executable.prefix + arguments
         process.currentDirectoryURL = projectURL
+        process.environment = BeadsCLI.subprocessEnvironment(executableURL: executable.url)
 
         let output = Pipe()
         let input = standardInput.map { _ in Pipe() }
@@ -433,9 +448,27 @@ struct BeadsCommandService {
         process.standardError = output
 
         try process.run()
+
+        // A watchdog rather than task cancellation: writes must never be interrupted
+        // by a superseded task, but with no ceiling at all a hung `bd` (e.g. a stuck
+        // Dolt lock) stalls the serialized mutation queue forever while optimistic
+        // edits stay applied and never error.
+        var watchdog: (item: DispatchWorkItem, state: SubprocessWatchdogState)?
+        if let timeout {
+            let state = SubprocessWatchdogState()
+            let item = DispatchWorkItem {
+                state.markFired()
+                process.terminate()
+            }
+            DispatchQueue.global(qos: .userInitiated)
+                .asyncAfter(deadline: .now() + timeout.timeInterval, execute: item)
+            watchdog = (item, state)
+        }
+        defer { watchdog?.item.cancel() }
+
+        var standardInputDelivered = true
         if let standardInput, let input {
-            input.fileHandleForWriting.write(Data(standardInput.utf8))
-            input.fileHandleForWriting.closeFile()
+            standardInputDelivered = writeStandardInput(standardInput, to: input)
         }
 
         let data = output.fileHandleForReading.readDataToEndOfFile()
@@ -443,9 +476,36 @@ struct BeadsCommandService {
         let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         guard process.terminationStatus == 0 else {
+            if watchdog?.state.didFire == true {
+                throw BeadError.commandFailed(
+                    command: commandDescription(arguments),
+                    output: "Timed out waiting for `bd` to finish."
+                )
+            }
             throw BeadError.commandFailed(command: commandDescription(arguments), output: text)
         }
+        guard standardInputDelivered else {
+            throw BeadError.commandFailed(
+                command: commandDescription(arguments),
+                output: "`bd` stopped reading its input before it was fully delivered."
+            )
+        }
         return text
+    }
+
+    /// Writes `bd`'s stdin without crashing on a broken pipe. The non-throwing
+    /// `FileHandle.write(_:)` raises an uncatchable ObjC exception if `bd` exits
+    /// before draining stdin; the throwing variant surfaces that as an error we
+    /// defer to the process's own exit status.
+    private static func writeStandardInput(_ text: String, to pipe: Pipe) -> Bool {
+        let handle = pipe.fileHandleForWriting
+        defer { try? handle.close() }
+        do {
+            try handle.write(contentsOf: Data(text.utf8))
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Runs `bd` off the cooperative pool and terminates the subprocess if the surrounding
@@ -497,6 +557,8 @@ struct BeadsCommandService {
         process.arguments = executable.prefix + arguments
         process.currentDirectoryURL = projectURL
 
+        process.environment = BeadsCLI.subprocessEnvironment(executableURL: executable.url)
+
         let output = Pipe()
         let input = standardInput.map { _ in Pipe() }
         if let input {
@@ -528,9 +590,9 @@ struct BeadsCommandService {
                             continuation.resume(throwing: CancellationError())
                             return
                         }
+                        var standardInputDelivered = true
                         if let standardInput, let input {
-                            input.fileHandleForWriting.write(Data(standardInput.utf8))
-                            input.fileHandleForWriting.closeFile()
+                            standardInputDelivered = writeStandardInput(standardInput, to: input)
                         }
                         let data = output.fileHandleForReading.readDataToEndOfFile()
                         process.waitUntilExit()
@@ -541,6 +603,13 @@ struct BeadsCommandService {
                         let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                         guard process.terminationStatus == 0 else {
                             continuation.resume(throwing: BeadError.commandFailed(command: commandDescription(arguments), output: text))
+                            return
+                        }
+                        guard standardInputDelivered else {
+                            continuation.resume(throwing: BeadError.commandFailed(
+                                command: commandDescription(arguments),
+                                output: "`bd` stopped reading its input before it was fully delivered."
+                            ))
                             return
                         }
                         continuation.resume(returning: text)
@@ -1007,6 +1076,29 @@ enum BeadsCommandArguments {
 /// handler. Guards two hazards under one lock: (1) `Process.terminate()` raises if the
 /// process was never launched, so cancellation must only terminate a launched process; and
 /// (2) the worker must be able to tell a termination we caused from a genuine `bd` failure.
+private final class SubprocessWatchdogState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func markFired() {
+        lock.lock()
+        fired = true
+        lock.unlock()
+    }
+
+    var didFire: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fired
+    }
+}
+
+extension Duration {
+    var timeInterval: TimeInterval {
+        TimeInterval(components.seconds) + TimeInterval(components.attoseconds) * 1e-18
+    }
+}
+
 private final class SubprocessRunState: @unchecked Sendable {
     private let lock = NSLock()
     private var launched = false
