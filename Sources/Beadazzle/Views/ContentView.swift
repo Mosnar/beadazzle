@@ -73,7 +73,8 @@ struct ContentView: View {
         .sheet(item: $savedViewEditorRequest) { request in
             SaveBookmarkSheet(
                 existing: existingSavedView(for: request),
-                initialFilter: store.currentSavedViewConfiguration,
+                initialQuery: store.currentSavedViewQuery,
+                initialOrdering: store.currentSavedViewOrdering,
                 suggestedName: store.suggestedSavedViewName,
                 initialSymbolName: workspace.selectedBookmark.systemImage
             )

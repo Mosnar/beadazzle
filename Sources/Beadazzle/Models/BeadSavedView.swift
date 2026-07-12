@@ -5,19 +5,27 @@ struct BeadSavedView: Identifiable, Hashable, Codable, Sendable {
     var id: UUID
     var name: String
     var symbolName: String
-    var filter: BeadSavedViewFilter
+    var query: BeadSavedViewQuery
+    var ordering: BeadSavedViewOrdering
 
     var hasValidQuery: Bool {
-        filter.advancedPredicate?.isValid ?? true
+        query.advancedPredicate?.isValid ?? true
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, symbolName, filter }
+    private enum CodingKeys: String, CodingKey { case id, name, symbolName, query, ordering }
 
-    init(id: UUID, name: String, symbolName: String, filter: BeadSavedViewFilter) {
+    init(
+        id: UUID,
+        name: String,
+        symbolName: String,
+        query: BeadSavedViewQuery,
+        ordering: BeadSavedViewOrdering
+    ) {
         self.id = id
         self.name = name
         self.symbolName = symbolName
-        self.filter = filter
+        self.query = query
+        self.ordering = ordering
     }
 
     init(from decoder: Decoder) throws {
@@ -25,27 +33,93 @@ struct BeadSavedView: Identifiable, Hashable, Codable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         symbolName = try container.decode(String.self, forKey: .symbolName)
-        filter = try container.decode(BeadSavedViewFilter.self, forKey: .filter)
-        guard hasValidQuery, filter.advancedPredicate?.hasUniqueNodeIDs != false else {
+        query = try container.decode(BeadSavedViewQuery.self, forKey: .query)
+        ordering = try container.decode(BeadSavedViewOrdering.self, forKey: .ordering)
+        guard hasValidQuery, query.advancedPredicate?.hasUniqueNodeIDs != false else {
             throw DecodingError.dataCorruptedError(
-                forKey: .filter,
+                forKey: .query,
                 in: container,
                 debugDescription: "Saved view contains an invalid predicate or duplicate node identity"
             )
         }
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(symbolName, forKey: .symbolName)
+        try container.encode(query, forKey: .query)
+        try container.encode(ordering, forKey: .ordering)
+    }
 }
 
-struct BeadSavedViewFilter: Hashable, Codable, Sendable {
+struct BeadSavedViewQuery: Hashable, Codable, Sendable {
     var basePreset: BeadBookmarkToken
     var statusFilters: Set<String>
     var typeFilters: Set<String>
     var priorityFilters: Set<Int>
     var labelFilters: Set<String>
     var searchText: String
-    var sort: IssueSort
-    var sortDirection: SortDirection
     var advancedPredicate: BeadFilterGroup? = nil
+}
+
+struct BeadSavedViewSort: Hashable, Codable, Sendable {
+    var field: IssueSort
+    var direction: SortDirection
+}
+
+struct BeadSavedViewManualOrdering: Hashable, Codable, Sendable {
+    var issueIDs: [String]
+    var fallback: BeadSavedViewSort
+}
+
+enum BeadSavedViewOrdering: Hashable, Codable, Sendable {
+    case sorted(BeadSavedViewSort)
+    case manual(BeadSavedViewManualOrdering)
+
+    var fallbackSort: BeadSavedViewSort {
+        get {
+            switch self {
+            case .sorted(let sort): sort
+            case .manual(let manual): manual.fallback
+            }
+        }
+        set {
+            switch self {
+            case .sorted:
+                self = .sorted(newValue)
+            case .manual(var manual):
+                manual.fallback = newValue
+                self = .manual(manual)
+            }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, sorted, manual }
+    private enum Kind: String, Codable { case sorted, manual }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .sorted:
+            self = .sorted(try container.decode(BeadSavedViewSort.self, forKey: .sorted))
+        case .manual:
+            self = .manual(try container.decode(BeadSavedViewManualOrdering.self, forKey: .manual))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .sorted(let sort):
+            try container.encode(Kind.sorted, forKey: .kind)
+            try container.encode(sort, forKey: .sorted)
+        case .manual(let manual):
+            try container.encode(Kind.manual, forKey: .kind)
+            try container.encode(manual, forKey: .manual)
+        }
+    }
 }
 
 enum BeadFilterGroupMatch: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -548,7 +622,7 @@ struct BeadSavedViewsPayload: Codable, Sendable {
     static let currentVersion = 1
 
     var version = currentVersion
-    var views: [BeadSavedView]
+    var rootNodes: [BeadSavedViewNode]
 }
 
 struct BeadSavedViewPreview: Equatable, Sendable {

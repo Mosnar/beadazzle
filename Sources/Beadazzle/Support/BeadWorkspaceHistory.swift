@@ -4,6 +4,7 @@ struct BeadWorkspaceSnapshot: Equatable, Sendable {
     var bookmark: BeadBookmark
     var activeSavedViewID: UUID?
     var sourceSavedViewID: UUID? = nil
+    var savedViewOrdering: BeadSavedViewOrdering? = nil
     var selectedIDs: Set<String>
     var fullPageDetailIssueID: String?
     var searchText: String

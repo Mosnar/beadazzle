@@ -54,13 +54,16 @@ final class BeadSavedViewQueryEvaluatorTests: XCTestCase {
             .condition(condition(.assignee, .contains, text: "sam")),
             .condition(condition(.due, .isEmpty))
         ])
-        let view = BeadSavedView(id: UUID(), name: "Advanced", symbolName: "star", filter: filter(group))
-        let payload = BeadSavedViewsPayload(views: [view])
+        let view = BeadSavedView(
+            id: UUID(), name: "Advanced", symbolName: "star", query: filter(group),
+            ordering: .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
+        )
+        let payload = BeadSavedViewsPayload(rootNodes: [.view(view)])
 
         let decoded = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: JSONEncoder().encode(payload))
 
         XCTAssertEqual(decoded.version, 1)
-        XCTAssertEqual(decoded.views, [view])
+        XCTAssertEqual(decoded.rootNodes, [.view(view)])
     }
 
     func testInvalidPredicateFailsClosedInsteadOfBroadeningBaseView() {
@@ -95,10 +98,9 @@ final class BeadSavedViewQueryEvaluatorTests: XCTestCase {
     func testCountEvaluationReportsCancellationDuringBaseFiltering() {
         let issues = (0..<100).map { issue("bd-\($0)", title: "Issue \($0)") }
         let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: .fallback(issues: issues))
-        let query = BeadSavedViewFilter(
+        let query = BeadSavedViewQuery(
             basePreset: .all,
-            statusFilters: [], typeFilters: [], priorityFilters: [], labelFilters: [], searchText: "Issue",
-            sort: .priority, sortDirection: .ascending
+            statusFilters: [], typeFilters: [], priorityFilters: [], labelFilters: [], searchText: "Issue"
         )
 
         XCTAssertNil(BeadSavedViewQueryEvaluator.matchingIssueCount(
@@ -127,16 +129,14 @@ final class BeadSavedViewQueryEvaluatorTests: XCTestCase {
         XCTAssertEqual(result.counts, .empty)
     }
 
-    private func filter(_ group: BeadFilterGroup) -> BeadSavedViewFilter {
-        BeadSavedViewFilter(
+    private func filter(_ group: BeadFilterGroup) -> BeadSavedViewQuery {
+        BeadSavedViewQuery(
             basePreset: .all,
             statusFilters: [],
             typeFilters: [],
             priorityFilters: [],
             labelFilters: [],
             searchText: "",
-            sort: .priority,
-            sortDirection: .ascending,
             advancedPredicate: group
         )
     }

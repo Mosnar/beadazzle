@@ -133,16 +133,14 @@ final class BeadWorkspaceStore {
     fileprivate(set) var selectedIDs: Set<String> = []
     fileprivate(set) var fullPageDetailIssueID: String?
     fileprivate(set) var selectedBookmark: BeadBookmark = .ready
-    fileprivate(set) var savedViews: [BeadSavedView] = []
+    fileprivate(set) var savedViewTree = BeadSavedViewTree()
+    var savedViews: [BeadSavedView] { savedViewTree.savedViews }
     fileprivate(set) var activeSavedViewID: UUID?
     fileprivate(set) var sourceSavedViewID: UUID?
     fileprivate(set) var activeAdvancedPredicate: BeadFilterGroup?
     fileprivate(set) var savedViewCounts: [UUID: Int] = [:]
     fileprivate(set) var isRebuildingSavedViewCounts = false
-    fileprivate(set) var savedViewsHaveUnsupportedVersion = false
-    fileprivate(set) var savedViewsPayloadIsCorrupt = false
-    fileprivate(set) var savedViewRecoveryIssueCount = 0
-    fileprivate(set) var savedViewsPersistenceMessage: String?
+    fileprivate(set) var savedViewPersistenceState = BeadSavedViewPersistenceState.ready
     fileprivate(set) var filterCounts = BeadFilterCounts.empty
     fileprivate(set) var savedViewFilterClock = Date()
     fileprivate(set) var requestedSavedViewEditorID: UUID?
@@ -251,7 +249,8 @@ final class BeadStore {
     var selectedBookmark: BeadBookmark { workspace.selectedBookmark }
     internal var _selectedBookmark: BeadBookmark { get { workspace.selectedBookmark } set { workspace.selectedBookmark = newValue } }
     var savedViews: [BeadSavedView] { workspace.savedViews }
-    internal var _savedViews: [BeadSavedView] { get { workspace.savedViews } set { workspace.savedViews = newValue } }
+    var savedViewTree: BeadSavedViewTree { workspace.savedViewTree }
+    internal var _savedViewTree: BeadSavedViewTree { get { workspace.savedViewTree } set { workspace.savedViewTree = newValue } }
     var activeSavedViewID: UUID? { workspace.activeSavedViewID }
     internal var _activeSavedViewID: UUID? { get { workspace.activeSavedViewID } set { workspace.activeSavedViewID = newValue } }
     var sourceSavedViewID: UUID? { workspace.sourceSavedViewID }
@@ -262,14 +261,15 @@ final class BeadStore {
     internal var _savedViewCounts: [UUID: Int] { get { workspace.savedViewCounts } set { workspace.savedViewCounts = newValue } }
     var isRebuildingSavedViewCounts: Bool { workspace.isRebuildingSavedViewCounts }
     internal var _isRebuildingSavedViewCounts: Bool { get { workspace.isRebuildingSavedViewCounts } set { workspace.isRebuildingSavedViewCounts = newValue } }
-    var savedViewsHaveUnsupportedVersion: Bool { workspace.savedViewsHaveUnsupportedVersion }
-    internal var _savedViewsHaveUnsupportedVersion: Bool { get { workspace.savedViewsHaveUnsupportedVersion } set { workspace.savedViewsHaveUnsupportedVersion = newValue } }
-    var savedViewsPayloadIsCorrupt: Bool { workspace.savedViewsPayloadIsCorrupt }
-    internal var _savedViewsPayloadIsCorrupt: Bool { get { workspace.savedViewsPayloadIsCorrupt } set { workspace.savedViewsPayloadIsCorrupt = newValue } }
-    var savedViewRecoveryIssueCount: Int { workspace.savedViewRecoveryIssueCount }
-    internal var _savedViewRecoveryIssueCount: Int { get { workspace.savedViewRecoveryIssueCount } set { workspace.savedViewRecoveryIssueCount = newValue } }
-    var savedViewsPersistenceMessage: String? { workspace.savedViewsPersistenceMessage }
-    internal var _savedViewsPersistenceMessage: String? { get { workspace.savedViewsPersistenceMessage } set { workspace.savedViewsPersistenceMessage = newValue } }
+    var savedViewPersistenceState: BeadSavedViewPersistenceState { workspace.savedViewPersistenceState }
+    internal var _savedViewPersistenceState: BeadSavedViewPersistenceState {
+        get { workspace.savedViewPersistenceState }
+        set { workspace.savedViewPersistenceState = newValue }
+    }
+    var savedViewsHaveUnsupportedVersion: Bool { savedViewPersistenceState.hasUnsupportedVersion }
+    var savedViewsPayloadIsCorrupt: Bool { savedViewPersistenceState.isCorrupt }
+    var savedViewRecoveryIssueCount: Int { savedViewPersistenceState.recoveryIssueCount }
+    var savedViewsPersistenceMessage: String? { savedViewPersistenceState.message }
     var creationDraft: IssueDraft? {
         didSet {
             guard oldValue != creationDraft else { return }

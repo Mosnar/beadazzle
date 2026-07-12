@@ -6,6 +6,7 @@ struct SidebarView: View {
     private var workspace: BeadWorkspaceStore { store.workspace }
     let onSaveBookmark: () -> Void
     let onEditBookmark: (UUID) -> Void
+    @State private var isConfirmingBookmarkReset = false
 
     var body: some View {
         List(selection: bookmarkSelection) {
@@ -24,27 +25,34 @@ struct SidebarView: View {
             }
 
             Section {
-                if let message = workspace.savedViewsPersistenceMessage {
-                    Label(message, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                        .accessibilityHint("The original bookmark data was preserved.")
+                if workspace.savedViewPersistenceState != .ready {
+                    SavedViewPersistenceNotice(
+                        state: workspace.savedViewPersistenceState,
+                        onKeepRecovered: store.acceptRecoveredSavedViews,
+                        onReset: { isConfirmingBookmarkReset = true }
+                    )
                 }
-                if workspace.savedViews.isEmpty, workspace.savedViewsPersistenceMessage == nil {
+                if workspace.savedViewTree.isEmpty, workspace.savedViewPersistenceState == .ready {
                     Text("No bookmarks yet")
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("No saved bookmarks")
-                } else if !workspace.savedViews.isEmpty {
-                    ForEach(workspace.savedViews) { savedView in
-                        SavedViewRow(
-                            view: savedView,
-                            count: store.count(forSavedViewID: savedView.id),
-                            countIsLoading: workspace.isRebuildingSavedViewCounts,
-                            onEdit: { onEditBookmark(savedView.id) }
-                        )
-                            .tag(BeadSidebarSelection.savedView(savedView.id))
+                } else if !workspace.savedViewTree.isEmpty {
+                    if workspace.savedViewTree.containsFolders {
+                        OutlineGroup(workspace.savedViewTree.rootNodes, children: \.outlineChildren) { node in
+                            SavedViewNodeRow(node: node, onEditBookmark: onEditBookmark)
+                        }
+                    } else {
+                        ForEach(workspace.savedViews) { savedView in
+                            SavedViewRow(
+                                view: savedView,
+                                count: store.count(forSavedViewID: savedView.id),
+                                countIsLoading: workspace.isRebuildingSavedViewCounts,
+                                onEdit: { onEditBookmark(savedView.id) }
+                            )
+                                .tag(BeadSidebarSelection.savedView(savedView.id))
+                        }
+                        .onMove(perform: store.moveSavedViews)
                     }
-                    .onMove(perform: store.moveSavedViews)
                 }
             } header: {
                 HStack {
@@ -69,6 +77,14 @@ struct SidebarView: View {
                 ProgressView()
             }
         }
+        .alert("Reset Bookmarks?", isPresented: $isConfirmingBookmarkReset) {
+            Button("Reset", role: .destructive) {
+                store.resetSavedViews()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the current bookmarks for this project so you can start again. The existing data remains preserved as a recovery copy.")
+        }
     }
 
     private var bookmarkSelection: Binding<BeadSidebarSelection?> {
@@ -84,6 +100,57 @@ struct SidebarView: View {
                 store.scheduleSidebarSelection(selection)
             }
         )
+    }
+}
+
+private struct SavedViewPersistenceNotice: View {
+    let state: BeadSavedViewPersistenceState
+    let onKeepRecovered: () -> Void
+    let onReset: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let message = state.message {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .accessibilityHint("The original bookmark data was preserved.")
+            }
+            HStack(spacing: 10) {
+                if case .recovered = state {
+                    Button("Keep Recovered Bookmarks", action: onKeepRecovered)
+                        .buttonStyle(.link)
+                }
+                Button("Reset Bookmarks…", role: .destructive, action: onReset)
+                    .buttonStyle(.link)
+            }
+            .font(.caption)
+        }
+    }
+}
+
+private struct SavedViewNodeRow: View {
+    @Environment(BeadStore.self) private var store
+    private var workspace: BeadWorkspaceStore { store.workspace }
+    let node: BeadSavedViewNode
+    let onEditBookmark: (UUID) -> Void
+
+    var body: some View {
+        Group {
+            switch node {
+            case .folder(let folder):
+                Label(folder.name, systemImage: "folder")
+                    .foregroundStyle(.secondary)
+            case .view(let savedView):
+                SavedViewRow(
+                    view: savedView,
+                    count: store.count(forSavedViewID: savedView.id),
+                    countIsLoading: workspace.isRebuildingSavedViewCounts,
+                    onEdit: { onEditBookmark(savedView.id) }
+                )
+                .tag(BeadSidebarSelection.savedView(savedView.id))
+            }
+        }
     }
 }
 

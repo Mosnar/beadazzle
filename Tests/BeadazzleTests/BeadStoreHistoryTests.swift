@@ -182,6 +182,43 @@ final class BeadStoreHistoryTests: XCTestCase {
         XCTAssertEqual(store.activeSavedViewID, savedID)
     }
 
+    func testBackDoesNotRestoreSavedViewIdentityAfterManualOrderingChanges() async throws {
+        let store = try await makeLoadedStore()
+        let firstOrdering = BeadSavedViewOrdering.manual(BeadSavedViewManualOrdering(
+            issueIDs: ["bd-child", "bd-parent"],
+            fallback: BeadSavedViewSort(field: .priority, direction: .ascending)
+        ))
+        store.saveConfiguredView(
+            name: "Manual",
+            symbolName: "bookmark",
+            query: store.currentSavedViewQuery,
+            ordering: firstOrdering
+        )
+        await store.waitForPendingQueryRecompute()
+        let savedID = try XCTUnwrap(store.activeSavedViewID)
+
+        store.applyBookmark(.ready)
+        let changedOrdering = BeadSavedViewOrdering.manual(BeadSavedViewManualOrdering(
+            issueIDs: ["bd-parent", "bd-child"],
+            fallback: BeadSavedViewSort(field: .priority, direction: .ascending)
+        ))
+        store.updateConfiguredView(
+            id: savedID,
+            name: "Manual",
+            symbolName: "bookmark",
+            query: store.currentSavedViewQuery,
+            ordering: changedOrdering
+        )
+        await store.waitForPendingQueryRecompute()
+
+        store.goBack()
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertNil(store.activeSavedViewID)
+        XCTAssertEqual(store.currentWorkspaceSnapshot?.savedViewOrdering, firstOrdering)
+    }
+
     func testSavedViewMetadataChangesDoNotCreateHistorySteps() async throws {
         let store = try await makeLoadedStore()
         store.saveCurrentViewAsBookmark(name: "Ready View", symbolName: "bookmark")

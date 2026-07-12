@@ -132,10 +132,9 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
                     operation: .isAnyOf,
                     value: BeadFilterValue(strings: ["owner\(offset % 10)"])
                 )
-                return BeadSavedViewFilter(
+                return BeadSavedViewQuery(
                     basePreset: .all,
                     statusFilters: [], typeFilters: [], priorityFilters: [], labelFilters: [], searchText: "",
-                    sort: .priority, sortDirection: .ascending,
                     advancedPredicate: BeadFilterGroup(children: [.condition(condition)])
                 )
             }

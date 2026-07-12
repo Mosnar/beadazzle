@@ -18,17 +18,25 @@ struct SaveBookmarkSheet: View {
     let existingID: UUID?
     @State private var name: String
     @State private var symbolName: String
-    @State private var filter: BeadSavedViewFilter
+    @State private var query: BeadSavedViewQuery
+    @State private var ordering: BeadSavedViewOrdering
     @State private var preview: BeadSavedViewPreview?
     @State private var isLoadingPreview = false
     @State private var currentFiltersExpanded = false
     @FocusState private var nameIsFocused: Bool
 
-    init(existing: BeadSavedView?, initialFilter: BeadSavedViewFilter, suggestedName: String, initialSymbolName: String) {
+    init(
+        existing: BeadSavedView?,
+        initialQuery: BeadSavedViewQuery,
+        initialOrdering: BeadSavedViewOrdering,
+        suggestedName: String,
+        initialSymbolName: String
+    ) {
         existingID = existing?.id
         _name = State(initialValue: existing?.name ?? suggestedName)
         _symbolName = State(initialValue: existing?.symbolName ?? BeadSavedViewSymbols.normalized(initialSymbolName))
-        _filter = State(initialValue: existing?.filter ?? initialFilter)
+        _query = State(initialValue: existing?.query ?? initialQuery)
+        _ordering = State(initialValue: existing?.ordering ?? initialOrdering)
     }
 
     var body: some View {
@@ -48,11 +56,11 @@ struct SaveBookmarkSheet: View {
         }
         .frame(minWidth: 620, idealWidth: 620, minHeight: 500, idealHeight: 500)
         .onAppear { nameIsFocused = true }
-        .task(id: filter) {
+        .task(id: query) {
             isLoadingPreview = true
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled else { return }
-            let nextPreview = await store.previewSavedView(filter)
+            let nextPreview = await store.previewSavedView(query)
             guard !Task.isCancelled else { return }
             preview = nextPreview
             isLoadingPreview = false
@@ -99,7 +107,7 @@ struct SaveBookmarkSheet: View {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 7) {
                 GridRow {
                     Text("Base")
-                    Picker("Base", selection: $filter.basePreset) {
+                    Picker("Base", selection: $query.basePreset) {
                         ForEach(BeadBookmark.allCases) { bookmark in
                             Text(bookmark.title).tag(BeadBookmarkToken(bookmark))
                         }
@@ -108,11 +116,11 @@ struct SaveBookmarkSheet: View {
                 }
                 GridRow {
                     Text("Status")
-                    FilterValueMultiSelect(field: .status, options: store.availableStatuses, selection: $filter.statusFilters)
+                    FilterValueMultiSelect(field: .status, options: store.availableStatuses, selection: $query.statusFilters)
                 }
                 GridRow {
                     Text("Type")
-                    FilterValueMultiSelect(field: .type, options: store.availableTypes, selection: $filter.typeFilters)
+                    FilterValueMultiSelect(field: .type, options: store.availableTypes, selection: $query.typeFilters)
                 }
                 GridRow {
                     Text("Priority")
@@ -120,23 +128,35 @@ struct SaveBookmarkSheet: View {
                 }
                 GridRow {
                     Text("Labels")
-                    FilterValueMultiSelect(field: .labels, options: store.availableLabels, selection: $filter.labelFilters)
+                    FilterValueMultiSelect(field: .labels, options: store.availableLabels, selection: $query.labelFilters)
                 }
                 GridRow {
                     Text("Search")
-                    TextField("Search text", text: $filter.searchText)
+                    TextField("Search text", text: $query.searchText)
                 }
                 GridRow {
-                    Text("Sort")
-                    HStack {
-                        Picker("Sort", selection: $filter.sort) {
-                            ForEach(IssueSort.allCases) { Text($0.rawValue).tag($0) }
+                    Text("Order")
+                    if case .manual = ordering {
+                        HStack(spacing: 8) {
+                            Label("Manual", systemImage: "line.3.horizontal")
+                            Text("Fallback: \(ordering.fallbackSort.field.rawValue), \(ordering.fallbackSort.direction.rawValue.lowercased())")
+                                .foregroundStyle(.secondary)
+                            Button("Use Sorted Order") {
+                                ordering = .sorted(ordering.fallbackSort)
+                            }
+                            .controlSize(.small)
                         }
-                        Picker("Direction", selection: $filter.sortDirection) {
-                            ForEach(SortDirection.allCases) { Text($0.rawValue).tag($0) }
+                    } else {
+                        HStack {
+                            Picker("Sort", selection: sortFieldBinding) {
+                                ForEach(IssueSort.allCases) { Text($0.rawValue).tag($0) }
+                            }
+                            Picker("Direction", selection: sortDirectionBinding) {
+                                ForEach(SortDirection.allCases) { Text($0.rawValue).tag($0) }
+                            }
                         }
+                        .labelsHidden()
                     }
-                    .labelsHidden()
                 }
                 }
                 .padding(.top, 12)
@@ -153,15 +173,15 @@ struct SaveBookmarkSheet: View {
                 Label("Additional Rules", systemImage: "switch.2")
                     .fontWeight(.medium)
                 Spacer()
-                if filter.advancedPredicate != nil {
-                    Button("Clear") { filter.advancedPredicate = nil }
+                if query.advancedPredicate != nil {
+                    Button("Clear") { query.advancedPredicate = nil }
                         .controlSize(.small)
                 }
                 Button {
-                    if filter.advancedPredicate == nil {
-                        filter.advancedPredicate = BeadFilterGroup(children: [.condition(BeadFilterCondition())])
+                    if query.advancedPredicate == nil {
+                        query.advancedPredicate = BeadFilterGroup(children: [.condition(BeadFilterCondition())])
                     } else {
-                        filter.advancedPredicate?.children.append(.condition(BeadFilterCondition()))
+                        query.advancedPredicate?.children.append(.condition(BeadFilterCondition()))
                     }
                 } label: {
                     Label("Add Rule", systemImage: "plus")
@@ -169,7 +189,7 @@ struct SaveBookmarkSheet: View {
                 .controlSize(.small)
             }
 
-            if filter.advancedPredicate == nil {
+            if query.advancedPredicate == nil {
                 HStack(spacing: 10) {
                     Image(systemName: "plus.circle")
                         .foregroundStyle(.secondary)
@@ -216,39 +236,59 @@ struct SaveBookmarkSheet: View {
 
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (filter.advancedPredicate?.isValid ?? true)
+            && (query.advancedPredicate?.isValid ?? true)
     }
 
     private var advancedGroupBinding: Binding<BeadFilterGroup> {
         Binding(
-            get: { filter.advancedPredicate ?? BeadFilterGroup() },
-            set: { filter.advancedPredicate = $0 }
+            get: { query.advancedPredicate ?? BeadFilterGroup() },
+            set: { query.advancedPredicate = $0 }
         )
     }
 
     private var priorityStringBinding: Binding<Set<String>> {
         Binding(
-            get: { Set(filter.priorityFilters.map(String.init)) },
-            set: { filter.priorityFilters = Set($0.compactMap(Int.init)) }
+            get: { Set(query.priorityFilters.map(String.init)) },
+            set: { query.priorityFilters = Set($0.compactMap(Int.init)) }
+        )
+    }
+
+    private var sortFieldBinding: Binding<IssueSort> {
+        Binding(
+            get: { ordering.fallbackSort.field },
+            set: { ordering.fallbackSort.field = $0 }
+        )
+    }
+
+    private var sortDirectionBinding: Binding<SortDirection> {
+        Binding(
+            get: { ordering.fallbackSort.direction },
+            set: { ordering.fallbackSort.direction = $0 }
         )
     }
 
     private var compactCurrentViewSummary: String {
-        var parts = [filter.basePreset.bookmark.title]
-        let filterCount = filter.statusFilters.count + filter.typeFilters.count
-            + filter.priorityFilters.count + filter.labelFilters.count
+        var parts = [query.basePreset.bookmark.title]
+        let filterCount = query.statusFilters.count + query.typeFilters.count
+            + query.priorityFilters.count + query.labelFilters.count
         if filterCount > 0 { parts.append("\(filterCount) filter\(filterCount == 1 ? "" : "s")") }
-        if !filter.searchText.isEmpty { parts.append("search") }
-        parts.append(filter.sort.rawValue)
+        if !query.searchText.isEmpty { parts.append("search") }
+        parts.append(ordering.fallbackSort.field.rawValue)
         return parts.joined(separator: " · ")
     }
 
     private func save() {
-        filter.advancedPredicate = filter.advancedPredicate?.normalized
+        query.advancedPredicate = query.advancedPredicate?.normalized
         if let existingID {
-            store.updateConfiguredView(id: existingID, name: name, symbolName: symbolName, filter: filter)
+            store.updateConfiguredView(
+                id: existingID,
+                name: name,
+                symbolName: symbolName,
+                query: query,
+                ordering: ordering
+            )
         } else {
-            store.saveConfiguredView(name: name, symbolName: symbolName, filter: filter)
+            store.saveConfiguredView(name: name, symbolName: symbolName, query: query, ordering: ordering)
         }
         dismiss()
     }

@@ -281,27 +281,58 @@ extension BeadStore {
             id: UUID(),
             name: name,
             symbolName: symbolName,
-            filter: currentSavedViewFilter()
+            query: makeCurrentSavedViewQuery(),
+            ordering: currentSavedViewOrdering
         ))
-        _savedViews.append(view)
+        var tree = savedViewTree
+        tree.append(view)
+        _savedViewTree = tree
         persistSavedViews()
         scheduleSavedViewCountRebuild()
         applySavedView(id: view.id)
     }
 
-    func saveConfiguredView(name: String, symbolName: String, filter: BeadSavedViewFilter) {
-        guard hasReadableProject, canMutateSavedViews, filter.advancedPredicate?.isValid != false else { return }
-        let view = normalizedSavedView(BeadSavedView(id: UUID(), name: name, symbolName: symbolName, filter: filter))
-        _savedViews.append(view)
+    func saveConfiguredView(
+        name: String,
+        symbolName: String,
+        query: BeadSavedViewQuery,
+        ordering: BeadSavedViewOrdering
+    ) {
+        guard hasReadableProject, canMutateSavedViews, query.advancedPredicate?.isValid != false else { return }
+        let view = normalizedSavedView(BeadSavedView(
+            id: UUID(),
+            name: name,
+            symbolName: symbolName,
+            query: query,
+            ordering: ordering
+        ))
+        var tree = savedViewTree
+        tree.append(view)
+        _savedViewTree = tree
         persistSavedViews()
         scheduleSavedViewCountRebuild()
         applySavedView(id: view.id)
     }
 
-    func updateConfiguredView(id: UUID, name: String, symbolName: String, filter: BeadSavedViewFilter) {
-        guard canMutateSavedViews, filter.advancedPredicate?.isValid != false,
-              let index = savedViews.firstIndex(where: { $0.id == id }) else { return }
-        _savedViews[index] = normalizedSavedView(BeadSavedView(id: id, name: name, symbolName: symbolName, filter: filter))
+    func updateConfiguredView(
+        id: UUID,
+        name: String,
+        symbolName: String,
+        query: BeadSavedViewQuery,
+        ordering: BeadSavedViewOrdering
+    ) {
+        guard canMutateSavedViews, query.advancedPredicate?.isValid != false else { return }
+        var tree = savedViewTree
+        guard tree.updateSavedView(id: id, { view in
+            view = normalizedSavedView(BeadSavedView(
+                id: id,
+                name: name,
+                symbolName: symbolName,
+                query: query,
+                ordering: ordering
+            ))
+        }) else { return }
+        _savedViewTree = tree
         persistSavedViews()
         scheduleSavedViewCountRebuild()
         applySavedView(id: id)
@@ -352,18 +383,18 @@ extension BeadStore {
             return
         }
         suppressesFilterUpdates = true
-        _selectedBookmark = view.filter.basePreset.bookmark
-        statusFilters = view.filter.statusFilters
-        typeFilters = view.filter.typeFilters
-        priorityFilters = view.filter.priorityFilters
-        labelFilters = view.filter.labelFilters
-        searchText = view.filter.searchText
-        sort = view.filter.sort
-        sortDirection = view.filter.sortDirection
+        _selectedBookmark = view.query.basePreset.bookmark
+        statusFilters = view.query.statusFilters
+        typeFilters = view.query.typeFilters
+        priorityFilters = view.query.priorityFilters
+        labelFilters = view.query.labelFilters
+        searchText = view.query.searchText
+        sort = view.ordering.fallbackSort.field
+        sortDirection = view.ordering.fallbackSort.direction
         suppressesFilterUpdates = false
         _activeSavedViewID = id
         _sourceSavedViewID = id
-        _activeAdvancedPredicate = view.filter.advancedPredicate?.validatedNormalized
+        _activeAdvancedPredicate = view.query.advancedPredicate?.validatedNormalized
         _savedViewFilterClock = Date()
         _selectedIDs = []
         _fullPageDetailIssueID = nil
@@ -385,11 +416,12 @@ extension BeadStore {
     }
 
     func duplicateSavedView(id: UUID) {
-        guard canMutateSavedViews, let sourceIndex = savedViews.firstIndex(where: { $0.id == id }) else { return }
-        var duplicate = savedViews[sourceIndex]
+        guard canMutateSavedViews, var duplicate = savedViewTree.savedView(id: id) else { return }
         duplicate.id = UUID()
         duplicate.name = uniqueSavedViewName("\(duplicate.name) Copy")
-        _savedViews.insert(normalizedSavedView(duplicate), at: sourceIndex + 1)
+        var tree = savedViewTree
+        guard tree.insertSavedView(normalizedSavedView(duplicate), after: id) else { return }
+        _savedViewTree = tree
         persistSavedViews()
         scheduleSavedViewCountRebuild()
     }
@@ -398,7 +430,8 @@ extension BeadStore {
         let wasActive = activeSavedViewID == id
         let wasSource = sourceSavedViewID == id
         updateSavedView(id: id, invalidatesCount: true) { view in
-            view.filter = currentSavedViewFilter()
+            view.query = makeCurrentSavedViewQuery()
+            view.ordering.fallbackSort = BeadSavedViewSort(field: sort, direction: sortDirection)
         }
         if wasActive || wasSource {
             _activeSavedViewID = id
@@ -411,7 +444,9 @@ extension BeadStore {
         guard canMutateSavedViews, savedViews.contains(where: { $0.id == id }) else { return }
         let wasActive = activeSavedViewID == id
         let wasSource = sourceSavedViewID == id
-        _savedViews.removeAll { $0.id == id }
+        var tree = savedViewTree
+        guard tree.removeSavedView(id: id) else { return }
+        _savedViewTree = tree
         _savedViewCounts[id] = nil
         if wasActive {
             _activeSavedViewID = nil
@@ -429,31 +464,35 @@ extension BeadStore {
     }
 
     func moveSavedViews(fromOffsets: IndexSet, toOffset: Int) {
-        guard canMutateSavedViews else { return }
-        _savedViews.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        guard canMutateSavedViews, !savedViewTree.containsFolders else { return }
+        var tree = savedViewTree
+        tree.moveRootNodes(fromOffsets: fromOffsets, toOffset: toOffset)
+        _savedViewTree = tree
         persistSavedViews()
     }
 
     func moveSavedViewUp(id: UUID) {
-        guard canMutateSavedViews, let index = savedViews.firstIndex(where: { $0.id == id }), index > 0 else { return }
-        _savedViews.swapAt(index, index - 1)
+        guard canMutateSavedViews else { return }
+        var tree = savedViewTree
+        guard tree.moveRootNodeUp(id: id) else { return }
+        _savedViewTree = tree
         persistSavedViews()
     }
 
     func moveSavedViewDown(id: UUID) {
-        guard canMutateSavedViews, let index = savedViews.firstIndex(where: { $0.id == id }), index < savedViews.index(before: savedViews.endIndex) else { return }
-        _savedViews.swapAt(index, index + 1)
+        guard canMutateSavedViews else { return }
+        var tree = savedViewTree
+        guard tree.moveRootNodeDown(id: id) else { return }
+        _savedViewTree = tree
         persistSavedViews()
     }
 
     func canMoveSavedViewUp(id: UUID) -> Bool {
-        guard let index = savedViews.firstIndex(where: { $0.id == id }) else { return false }
-        return index > 0
+        savedViewTree.canMoveRootNodeUp(id: id)
     }
 
     func canMoveSavedViewDown(id: UUID) -> Bool {
-        guard let index = savedViews.firstIndex(where: { $0.id == id }) else { return false }
-        return index < savedViews.index(before: savedViews.endIndex)
+        savedViewTree.canMoveRootNodeDown(id: id)
     }
 
     func count(forSavedViewID id: UUID) -> Int? {
@@ -483,7 +522,7 @@ extension BeadStore {
 
     func updateWouldReplaceAdvancedRules(id: UUID) -> Bool {
         guard let saved = savedViews.first(where: { $0.id == id }) else { return false }
-        return saved.filter.advancedPredicate?.normalized != activeAdvancedPredicate?.normalized
+        return saved.query.advancedPredicate?.normalized != activeAdvancedPredicate?.normalized
     }
 
     func revertToSourceSavedView() {
@@ -493,7 +532,7 @@ extension BeadStore {
 
     var hasRelativeSavedViewFilters: Bool {
         activeAdvancedPredicate?.containsRelativeDateRule == true
-            || savedViews.contains { $0.filter.advancedPredicate?.containsRelativeDateRule == true }
+            || savedViews.contains { $0.query.advancedPredicate?.containsRelativeDateRule == true }
     }
 
     func refreshRelativeSavedViewFilters(now: Date = Date()) {
@@ -510,10 +549,13 @@ extension BeadStore {
         invalidatesCount: Bool,
         update: (inout BeadSavedView) -> Void
     ) {
-        guard canMutateSavedViews, let index = savedViews.firstIndex(where: { $0.id == id }) else { return }
-        var view = savedViews[index]
-        update(&view)
-        _savedViews[index] = normalizedSavedView(view)
+        guard canMutateSavedViews else { return }
+        var tree = savedViewTree
+        guard tree.updateSavedView(id: id, { view in
+            update(&view)
+            view = normalizedSavedView(view)
+        }) else { return }
+        _savedViewTree = tree
         persistSavedViews()
         if invalidatesCount {
             scheduleSavedViewCountRebuild()
@@ -521,7 +563,7 @@ extension BeadStore {
     }
 
     private var canMutateSavedViews: Bool {
-        guard !savedViewsHaveUnsupportedVersion, !savedViewsPayloadIsCorrupt else {
+        guard savedViewPersistenceState.canMutate else {
             lastError = savedViewsPersistenceMessage ?? "Bookmarks are read-only because their saved data could not be interpreted."
             return false
         }
@@ -529,34 +571,36 @@ extension BeadStore {
     }
 
     var canCreateSavedView: Bool {
-        hasReadableProject && !savedViewsHaveUnsupportedVersion && !savedViewsPayloadIsCorrupt
+        hasReadableProject && savedViewPersistenceState.canMutate
     }
 
-    private func currentSavedViewFilter() -> BeadSavedViewFilter {
-        BeadSavedViewFilter(
+    private func makeCurrentSavedViewQuery() -> BeadSavedViewQuery {
+        BeadSavedViewQuery(
             basePreset: BeadBookmarkToken(selectedBookmark),
             statusFilters: statusFilters,
             typeFilters: typeFilters,
             priorityFilters: priorityFilters,
             labelFilters: labelFilters,
             searchText: searchText,
-            sort: sort,
-            sortDirection: sortDirection,
             advancedPredicate: activeAdvancedPredicate
         )
     }
 
-    var currentSavedViewConfiguration: BeadSavedViewFilter {
-        currentSavedViewFilter()
+    var currentSavedViewOrdering: BeadSavedViewOrdering {
+        .sorted(BeadSavedViewSort(field: sort, direction: sortDirection))
     }
 
-    func previewSavedView(_ filter: BeadSavedViewFilter) async -> BeadSavedViewPreview {
+    var currentSavedViewQuery: BeadSavedViewQuery {
+        makeCurrentSavedViewQuery()
+    }
+
+    func previewSavedView(_ query: BeadSavedViewQuery) async -> BeadSavedViewPreview {
         let index = index
         let now = Date()
         let worker = Task.detached(priority: .userInitiated) {
             BeadSavedViewQueryEvaluator.filteredIssueIDs(
                 index: index,
-                filter: filter,
+                filter: query,
                 now: now,
                 shouldCancel: { Task.isCancelled }
             )

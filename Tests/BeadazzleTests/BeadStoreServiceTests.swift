@@ -11,13 +11,21 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
         var view = makeSavedView()
         view.name = "  Focus  "
         view.symbolName = "not.a.real.saved.view.symbol"
+        view.ordering = .manual(BeadSavedViewManualOrdering(
+            issueIDs: ["bd-1", " bd-1 ", "", "bd-2"],
+            fallback: BeadSavedViewSort(field: .updated, direction: .descending)
+        ))
 
-        repository.save([view], projectURL: projectURL)
+        repository.save(BeadSavedViewTree(rootNodes: [.view(view)]), projectURL: projectURL)
         let result = repository.load(projectURL: projectURL)
 
         XCTAssertEqual(result.views.count, 1)
         XCTAssertEqual(result.views[0].name, "Focus")
         XCTAssertEqual(result.views[0].symbolName, BeadSavedViewSymbols.normalized(view.symbolName))
+        guard case .manual(let ordering) = result.views[0].ordering else {
+            return XCTFail("Expected manual ordering")
+        }
+        XCTAssertEqual(ordering.issueIDs, ["bd-1", "bd-2"])
         XCTAssertTrue(result.rebuildsCounts)
         XCTAssertFalse(result.isCorrupt)
     }
@@ -37,21 +45,75 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), corruptData)
     }
 
+    func testExplicitResetArchivesCurrentPayloadEvenWhenRecoveryAlreadyExists() throws {
+        let defaults = makeUserDefaults()
+        let repository = BeadSavedViewRepository(userDefaults: defaults)
+        let projectURL = URL(fileURLWithPath: "/tmp/repository-reset-archive")
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        let earlierRecovery = Data("earlier".utf8)
+        defaults.set(earlierRecovery, forKey: "\(key).Recovery")
+        repository.save(BeadSavedViewTree(rootNodes: [.view(makeSavedView())]), projectURL: projectURL)
+        let currentPayload = try XCTUnwrap(defaults.data(forKey: key))
+
+        repository.reset(projectURL: projectURL)
+
+        XCTAssertNil(defaults.data(forKey: key))
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), earlierRecovery)
+        let archivedPayloads = defaults.dictionaryRepresentation().compactMap { entryKey, value -> Data? in
+            guard entryKey.hasPrefix("\(key).Recovery."), let data = value as? Data else { return nil }
+            return data
+        }
+        XCTAssertTrue(archivedPayloads.contains(currentPayload))
+    }
+
+    func testMalformedNestedNodePreservesFolderAndValidSiblings() throws {
+        let defaults = makeUserDefaults()
+        let repository = BeadSavedViewRepository(userDefaults: defaults)
+        let projectURL = URL(fileURLWithPath: "/tmp/repository-nested-recovery")
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        let view = makeSavedView()
+        let payload = BeadSavedViewsPayload(rootNodes: [
+            .folder(BeadSavedViewFolder(id: UUID(), name: "  Planning  ", children: [.view(view)]))
+        ])
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any]
+        )
+        var rootNodes = try XCTUnwrap(object["rootNodes"] as? [[String: Any]])
+        var folder = try XCTUnwrap(rootNodes[0]["folder"] as? [String: Any])
+        var children = try XCTUnwrap(folder["children"] as? [[String: Any]])
+        children.append(["kind": "future-node"])
+        folder["children"] = children
+        rootNodes[0]["folder"] = folder
+        object["rootNodes"] = rootNodes
+        let damagedData = try JSONSerialization.data(withJSONObject: object)
+        defaults.set(damagedData, forKey: key)
+
+        let result = repository.load(projectURL: projectURL)
+
+        XCTAssertEqual(result.recoveryIssueCount, 1)
+        XCTAssertEqual(result.views, [view])
+        guard case .folder(let recoveredFolder) = result.rootNodes.first else {
+            return XCTFail("Expected recovered folder")
+        }
+        XCTAssertEqual(recoveredFolder.name, "Planning")
+        XCTAssertEqual(recoveredFolder.children, [.view(view)])
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), damagedData)
+    }
+
     private func makeSavedView() -> BeadSavedView {
         BeadSavedView(
             id: UUID(),
             name: "Focus",
             symbolName: "bookmark",
-            filter: BeadSavedViewFilter(
+            query: BeadSavedViewQuery(
                 basePreset: .all,
                 statusFilters: [],
                 typeFilters: [],
                 priorityFilters: [],
                 labelFilters: [],
-                searchText: "",
-                sort: .priority,
-                sortDirection: .ascending
-            )
+                searchText: ""
+            ),
+            ordering: .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
         )
     }
 
@@ -61,6 +123,7 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
     }
+
 }
 
 @MainActor

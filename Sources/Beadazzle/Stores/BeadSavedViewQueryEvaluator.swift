@@ -9,7 +9,7 @@ struct BeadSavedViewQueryEvaluator: Sendable {
         var labels: Set<String>
         var searchText: String
 
-        init(_ filter: BeadSavedViewFilter) {
+        init(_ filter: BeadSavedViewQuery) {
             preset = filter.basePreset
             statuses = filter.statusFilters
             types = filter.typeFilters
@@ -21,7 +21,7 @@ struct BeadSavedViewQueryEvaluator: Sendable {
 
     static func filteredIssueIDs(
         index: BeadProjectIndex,
-        filter: BeadSavedViewFilter,
+        filter: BeadSavedViewQuery,
         now: Date = Date(),
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [String] {
@@ -46,7 +46,7 @@ struct BeadSavedViewQueryEvaluator: Sendable {
 
     static func matchingIssueCount(
         index: BeadProjectIndex,
-        filter: BeadSavedViewFilter,
+        filter: BeadSavedViewQuery,
         now: Date = Date(),
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> Int? {
@@ -63,7 +63,7 @@ struct BeadSavedViewQueryEvaluator: Sendable {
 
     static func matchingIssueCounts(
         index: BeadProjectIndex,
-        filters: [(id: UUID, filter: BeadSavedViewFilter)],
+        filters: [(id: UUID, filter: BeadSavedViewQuery)],
         now: Date = Date(),
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [UUID: Int]? {
@@ -96,7 +96,7 @@ struct BeadSavedViewQueryEvaluator: Sendable {
 
     private static func baseIssueIDs(
         index: BeadProjectIndex,
-        filter: BeadSavedViewFilter,
+        filter: BeadSavedViewQuery,
         shouldCancel: @Sendable () -> Bool
     ) -> [String] {
         BeadIssueListQuery.filteredIssueIDs(

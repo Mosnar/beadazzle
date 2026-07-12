@@ -52,12 +52,9 @@ extension BeadStore {
 
     private func loadSavedViews(for url: URL) {
         let result = savedViewRepository.load(projectURL: url)
-        _savedViews = result.views
+        _savedViewTree = result.tree
         _savedViewCounts = [:]
-        _savedViewsHaveUnsupportedVersion = result.hasUnsupportedVersion
-        _savedViewsPayloadIsCorrupt = result.isCorrupt
-        _savedViewRecoveryIssueCount = result.recoveryIssueCount
-        _savedViewsPersistenceMessage = result.message
+        _savedViewPersistenceState = result.persistenceState
         _activeSavedViewID = nil
         _sourceSavedViewID = nil
         if result.rebuildsCounts {
@@ -66,16 +63,40 @@ extension BeadStore {
     }
 
     internal func persistSavedViews() {
-        guard !savedViewsHaveUnsupportedVersion, !savedViewsPayloadIsCorrupt else {
+        guard savedViewPersistenceState.canMutate else {
             lastError = savedViewsPersistenceMessage ?? "Bookmarks are read-only because their saved data could not be interpreted."
             return
         }
         guard let projectURL else { return }
-        savedViewRepository.save(savedViews, projectURL: projectURL)
+        savedViewRepository.save(savedViewTree, projectURL: projectURL)
     }
 
     internal func normalizedSavedView(_ view: BeadSavedView) -> BeadSavedView {
         BeadSavedViewRepository.normalized(view)
+    }
+
+    func resetSavedViews() {
+        guard let projectURL else { return }
+        let reconcilesCurrentIdentity = activeSavedViewID != nil || sourceSavedViewID != nil
+        savedViewRepository.reset(projectURL: projectURL)
+        _savedViewTree = BeadSavedViewTree()
+        _savedViewCounts = [:]
+        _savedViewPersistenceState = .ready
+        _activeSavedViewID = nil
+        _sourceSavedViewID = nil
+        scheduleSavedViewCountRebuild()
+        if reconcilesCurrentIdentity {
+            syncCurrentWorkspaceSnapshotIfNeeded()
+        }
+    }
+
+    func acceptRecoveredSavedViews() {
+        guard case .recovered = savedViewPersistenceState, let projectURL else { return }
+        guard savedViewRepository.save(savedViewTree, projectURL: projectURL) else {
+            lastError = "The recovered bookmarks could not be saved."
+            return
+        }
+        _savedViewPersistenceState = .ready
     }
 
     private func loadProjectVisibility(for url: URL) {

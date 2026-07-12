@@ -66,6 +66,8 @@ extension BeadStore {
             bookmark: selectedBookmark,
             activeSavedViewID: activeSavedViewID,
             sourceSavedViewID: sourceSavedViewID,
+            savedViewOrdering: (activeSavedViewID ?? sourceSavedViewID)
+                .flatMap { savedViewTree.savedView(id: $0)?.ordering },
             selectedIDs: selectedIDs,
             fullPageDetailIssueID: fullPageDetailIssueID,
             searchText: searchText,
@@ -134,7 +136,7 @@ extension BeadStore {
         guard let id = snapshot.activeSavedViewID,
               let view = savedViews.first(where: { $0.id == id })
         else { return nil }
-        let filter = view.filter
+        let filter = view.query
         guard filter.basePreset.bookmark == snapshot.bookmark,
               filter.statusFilters == snapshot.statusFilters,
               filter.typeFilters == snapshot.typeFilters,
@@ -142,8 +144,9 @@ extension BeadStore {
               filter.labelFilters == snapshot.labelFilters,
               filter.advancedPredicate?.normalized == snapshot.advancedPredicate?.normalized,
               filter.searchText == snapshot.searchText,
-              filter.sort == snapshot.sort,
-              filter.sortDirection == snapshot.sortDirection
+              view.ordering == snapshot.savedViewOrdering,
+              view.ordering.fallbackSort.field == snapshot.sort,
+              view.ordering.fallbackSort.direction == snapshot.sortDirection
         else { return nil }
         return id
     }
@@ -296,15 +299,13 @@ extension BeadStore {
                 } else {
                     filteredIDs = BeadSavedViewQueryEvaluator.filteredIssueIDs(
                         index: index,
-                        filter: BeadSavedViewFilter(
+                        filter: BeadSavedViewQuery(
                             basePreset: BeadBookmarkToken(bookmark),
                             statusFilters: statusFilters,
                             typeFilters: typeFilters,
                             priorityFilters: priorityFilters,
                             labelFilters: labelFilters,
                             searchText: searchText,
-                            sort: sort,
-                            sortDirection: direction,
                             advancedPredicate: advancedPredicate
                         ),
                         now: savedViewFilterClock,
@@ -396,7 +397,7 @@ extension BeadStore {
             let worker = Task.detached(priority: .utility) { () -> [UUID: Int]? in
                 BeadSavedViewQueryEvaluator.matchingIssueCounts(
                     index: index,
-                    filters: views.map { (id: $0.id, filter: $0.filter) },
+                    filters: views.map { (id: $0.id, filter: $0.query) },
                     now: evaluationNow,
                     shouldCancel: { Task.isCancelled }
                 )

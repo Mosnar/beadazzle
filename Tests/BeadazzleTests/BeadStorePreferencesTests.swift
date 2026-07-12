@@ -478,13 +478,13 @@ final class BeadStorePreferencesTests: XCTestCase {
         let saved = try XCTUnwrap(store.savedViews.first)
         XCTAssertEqual(saved.name, "Open Tasks")
         XCTAssertEqual(saved.symbolName, BeadSavedViewSymbols.fallback)
-        XCTAssertEqual(saved.filter.basePreset, .all)
-        XCTAssertEqual(saved.filter.statusFilters, ["open"])
-        XCTAssertEqual(saved.filter.typeFilters, ["task"])
-        XCTAssertEqual(saved.filter.priorityFilters, [1])
-        XCTAssertEqual(saved.filter.searchText, "Example")
-        XCTAssertEqual(saved.filter.sort, .updated)
-        XCTAssertEqual(saved.filter.sortDirection, .descending)
+        XCTAssertEqual(saved.query.basePreset, .all)
+        XCTAssertEqual(saved.query.statusFilters, ["open"])
+        XCTAssertEqual(saved.query.typeFilters, ["task"])
+        XCTAssertEqual(saved.query.priorityFilters, [1])
+        XCTAssertEqual(saved.query.searchText, "Example")
+        XCTAssertEqual(saved.ordering.fallbackSort.field, .updated)
+        XCTAssertEqual(saved.ordering.fallbackSort.direction, .descending)
         XCTAssertEqual(store.activeSavedViewID, saved.id)
         XCTAssertEqual(store.count(forSavedViewID: saved.id), 1)
 
@@ -593,9 +593,14 @@ final class BeadStorePreferencesTests: XCTestCase {
             operation: .isEqual,
             value: BeadFilterValue(text: "bd-1")
         )
-        var filter = store.currentSavedViewConfiguration
+        var filter = store.currentSavedViewQuery
         filter.advancedPredicate = BeadFilterGroup(children: [.condition(condition)])
-        store.saveConfiguredView(name: "Only One", symbolName: "bookmark", filter: filter)
+        store.saveConfiguredView(
+            name: "Only One",
+            symbolName: "bookmark",
+            query: filter,
+            ordering: store.currentSavedViewOrdering
+        )
         await store.waitForPendingQueryRecompute()
         await store.waitForPendingSavedViewCountRebuild()
 
@@ -610,10 +615,16 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(store.isSavedViewDrifted)
         XCTAssertEqual(store.advancedFilterCount, 1)
 
+        store.sort = .updated
+        store.sortDirection = .descending
         store.updateSavedViewFilterFromCurrentState(id: id)
         XCTAssertEqual(store.activeSavedViewID, id)
         XCTAssertEqual(store.sourceSavedViewID, id)
         XCTAssertFalse(store.isSavedViewDrifted)
+        XCTAssertEqual(store.savedViews.first?.ordering.fallbackSort, BeadSavedViewSort(
+            field: .updated,
+            direction: .descending
+        ))
 
         store.setPriorityFilter(2, isOn: true)
         store.revertToSourceSavedView()
@@ -638,21 +649,20 @@ final class BeadStorePreferencesTests: XCTestCase {
             id: UUID(),
             name: "Valid",
             symbolName: "bookmark",
-            filter: BeadSavedViewFilter(
+            query: BeadSavedViewQuery(
                 basePreset: .all,
                 statusFilters: [],
                 typeFilters: [],
                 priorityFilters: [],
                 labelFilters: [],
-                searchText: "",
-                sort: .priority,
-                sortDirection: .ascending
-            )
+                searchText: ""
+            ),
+            ordering: .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
         )
-        let validObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid))
+        let validObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(BeadSavedViewNode.view(valid)))
         let payload = try JSONSerialization.data(withJSONObject: [
             "version": BeadSavedViewsPayload.currentVersion,
-            "views": [validObject, ["id": "broken"]]
+            "rootNodes": [validObject, ["kind": "broken"]]
         ])
         defaults.set(payload, forKey: BeadazzlePreferenceKeys.savedViews(projectURL: projectURL))
 
@@ -665,12 +675,21 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.savedViewRecoveryIssueCount, 1)
         XCTAssertNotNil(store.savedViewsPersistenceMessage)
         XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), payload)
+
+        store.acceptRecoveredSavedViews()
+        XCTAssertEqual(store.savedViewPersistenceState, .ready)
+        XCTAssertNil(store.savedViewsPersistenceMessage)
+        let persisted = try XCTUnwrap(defaults.data(forKey: key))
+        XCTAssertEqual(
+            try JSONDecoder().decode(BeadSavedViewsPayload.self, from: persisted).rootNodes,
+            [.view(valid)]
+        )
     }
 
     func testUnsupportedFuturePayloadIsPreservedAndReadOnly() async throws {
         let defaults = makeUserDefaults()
         let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
-        let payload = try JSONSerialization.data(withJSONObject: ["version": 99, "views": []])
+        let payload = try JSONSerialization.data(withJSONObject: ["version": 99, "rootNodes": []])
         let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
         defaults.set(payload, forKey: key)
         let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
@@ -684,6 +703,16 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(store.savedViews.isEmpty)
         XCTAssertEqual(defaults.data(forKey: key), payload)
         XCTAssertNotNil(store.lastError)
+
+        store.resetSavedViews()
+        XCTAssertFalse(store.savedViewsPayloadIsCorrupt)
+        XCTAssertNil(store.savedViewsPersistenceMessage)
+        XCTAssertNil(defaults.data(forKey: key))
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), payload)
+
+        store.saveCurrentViewAsBookmark(name: "Fresh", symbolName: "bookmark")
+        XCTAssertEqual(store.savedViews.map(\.name), ["Fresh"])
+        XCTAssertNotNil(defaults.data(forKey: key))
     }
 
     func testCorruptSavedViewPayloadIsPreservedAndReadOnly() async throws {
