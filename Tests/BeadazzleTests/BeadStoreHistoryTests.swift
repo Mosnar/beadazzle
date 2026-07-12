@@ -168,6 +168,83 @@ final class BeadStoreHistoryTests: XCTestCase {
         XCTAssertEqual(store.selectedIDs, Set(["bd-child"]))
     }
 
+    func testSavedViewIdentityAndIdenticalPresetAreSeparateHistorySteps() async throws {
+        let store = try await makeLoadedStore()
+        store.saveCurrentViewAsBookmark(name: "Ready View", symbolName: "bookmark")
+        await store.waitForPendingQueryRecompute()
+        let savedID = try XCTUnwrap(store.activeSavedViewID)
+
+        store.applyBookmark(.ready)
+        XCTAssertNil(store.activeSavedViewID)
+
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.activeSavedViewID, savedID)
+    }
+
+    func testSavedViewMetadataChangesDoNotCreateHistorySteps() async throws {
+        let store = try await makeLoadedStore()
+        store.saveCurrentViewAsBookmark(name: "Ready View", symbolName: "bookmark")
+        await store.waitForPendingQueryRecompute()
+        let savedID = try XCTUnwrap(store.activeSavedViewID)
+
+        store.renameSavedView(id: savedID, to: "Renamed")
+        store.setSavedViewSymbol(id: savedID, symbolName: "star")
+        store.duplicateSavedView(id: savedID)
+
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertNil(store.activeSavedViewID)
+        XCTAssertFalse(store.canGoBack)
+    }
+
+    func testLatestScheduledSidebarSelectionWins() async throws {
+        let store = try await makeLoadedStore()
+
+        store.scheduleSidebarSelection(.preset(.closed))
+        store.scheduleSidebarSelection(.preset(.all))
+        await store.waitForPendingSidebarSelection()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedBookmark, .all)
+    }
+
+    func testBackDoesNotRestoreDeletedSavedViewIdentity() async throws {
+        let store = try await makeLoadedStore()
+        store.saveCurrentViewAsBookmark(name: "Ready View", symbolName: "bookmark")
+        await store.waitForPendingQueryRecompute()
+        let savedID = try XCTUnwrap(store.activeSavedViewID)
+
+        store.deleteSavedView(id: savedID)
+        XCTAssertNil(store.activeSavedViewID)
+
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertNil(store.activeSavedViewID)
+    }
+
+    func testDeletingDriftedSavedViewClearsItsIdentityFromCurrentHistorySnapshot() async throws {
+        let store = try await makeLoadedStore()
+        store.saveCurrentViewAsBookmark(name: "Ready View", symbolName: "bookmark")
+        await store.waitForPendingQueryRecompute()
+        let savedID = try XCTUnwrap(store.activeSavedViewID)
+
+        store.searchText = "Parent"
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.sourceSavedViewID, savedID)
+
+        store.deleteSavedView(id: savedID)
+        XCTAssertNil(store.sourceSavedViewID)
+        store.applyBookmark(.all)
+        await store.waitForPendingQueryRecompute()
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertNil(store.activeSavedViewID)
+        XCTAssertNil(store.sourceSavedViewID)
+        XCTAssertEqual(store.searchText, "Parent")
+    }
+
     func testCreatingBeadRecordsReversibleHistoryStep() async throws {
         let store = try await makeLoadedStore()
 

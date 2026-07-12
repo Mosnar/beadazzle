@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var hierarchySheetRequest: ContentHierarchySheetRequest?
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var searchPresented = false
+    @State private var savedViewEditorRequest: SavedViewEditorRequest?
 
     var body: some View {
         @Bindable var store = store
@@ -67,6 +68,14 @@ struct ContentView: View {
                 )
             }
         }
+        .sheet(item: $savedViewEditorRequest) { request in
+            SaveBookmarkSheet(
+                existing: existingSavedView(for: request),
+                initialFilter: store.currentSavedViewConfiguration,
+                suggestedName: store.suggestedSavedViewName,
+                initialSymbolName: store.selectedBookmark.systemImage
+            )
+        }
         .alert("Beadazzle", isPresented: errorBinding) {
             Button("OK") {
                 store.lastError = nil
@@ -81,17 +90,27 @@ struct ContentView: View {
             newBead: store.canCreateBead ? { store.beginCreatingBead() } : nil,
             openProject: openProject,
             refresh: canRefresh ? { store.refresh() } : nil,
-            find: store.hasReadableProject ? { searchPresented = true } : nil
+            find: store.hasReadableProject ? { searchPresented = true } : nil,
+            saveCurrentViewAsBookmark: store.canCreateSavedView ? presentSaveBookmark : nil
         ))
         .onChange(of: store.projectURL) {
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
+            savedViewEditorRequest = nil
+        }
+        .onChange(of: store.requestedSavedViewEditorID) { _, id in
+            guard let id else { return }
+            savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
+            store.requestedSavedViewEditorID = nil
         }
     }
 
     private func workspaceView(searchText: Binding<String>) -> some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView()
+            SidebarView(
+                onSaveBookmark: presentSaveBookmark,
+                onEditBookmark: { id in savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id)) }
+            )
                 .navigationSplitViewColumnWidth(
                     min: ContentLayout.sidebarMinWidth,
                     ideal: ContentLayout.sidebarIdealWidth,
@@ -123,6 +142,16 @@ struct ContentView: View {
             )
             .frame(width: 0, height: 0)
         }
+    }
+
+    private func presentSaveBookmark() {
+        guard store.canCreateSavedView else { return }
+        savedViewEditorRequest = SavedViewEditorRequest(mode: .create)
+    }
+
+    private func existingSavedView(for request: SavedViewEditorRequest) -> BeadSavedView? {
+        guard case .edit(let id) = request.mode else { return nil }
+        return store.savedViews.first { $0.id == id }
     }
 
     // Keep `IssueListView` in a single, stable structural slot (HSplitView[0]) across

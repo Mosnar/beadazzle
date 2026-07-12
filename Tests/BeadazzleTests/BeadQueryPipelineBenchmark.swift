@@ -126,6 +126,27 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
                 )
             }
 
+            let savedViews = (0..<25).map { offset in
+                let condition = BeadFilterCondition(
+                    field: .owner,
+                    operation: .isAnyOf,
+                    value: BeadFilterValue(strings: ["owner\(offset % 10)"])
+                )
+                return BeadSavedViewFilter(
+                    basePreset: .all,
+                    statusFilters: [], typeFilters: [], priorityFilters: [], labelFilters: [], searchText: "",
+                    sort: .priority, sortDirection: .ascending,
+                    advancedPredicate: BeadFilterGroup(children: [.condition(condition)])
+                )
+            }
+            let savedViewEntries = savedViews.map { (id: UUID(), filter: $0) }
+            time("25 saved-view counts", iterations: 3) {
+                _ = BeadSavedViewQueryEvaluator.matchingIssueCounts(
+                    index: index,
+                    filters: savedViewEntries
+                )
+            }
+
             let sortOrder = BeadIssueSortOrder(sort: .priority, direction: .ascending)
             time("outline rows (collapsed)") {
                 _ = index.issueListRows(for: filtered, mode: .outline, expandedIssueIDs: [], sortOrder: sortOrder)

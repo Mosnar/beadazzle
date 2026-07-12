@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    let onSaveBookmark: () -> Void
+    let onEditBookmark: (UUID) -> Void
 
     var body: some View {
         List(selection: bookmarkSelection) {
@@ -15,7 +17,47 @@ struct SidebarView: View {
             Section {
                 ForEach(BeadBookmark.allCases) { bookmark in
                     BookmarkRow(bookmark: bookmark, count: store.count(for: bookmark))
-                        .tag(bookmark)
+                        .tag(BeadSidebarSelection.preset(bookmark))
+                }
+            }
+
+            Section {
+                if let message = store.savedViewsPersistenceMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                        .accessibilityHint("The original bookmark data was preserved.")
+                }
+                if store.savedViews.isEmpty, store.savedViewsPersistenceMessage == nil {
+                    Text("No bookmarks yet")
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("No saved bookmarks")
+                } else if !store.savedViews.isEmpty {
+                    ForEach(store.savedViews) { savedView in
+                        SavedViewRow(
+                            view: savedView,
+                            count: store.count(forSavedViewID: savedView.id),
+                            countIsLoading: store.isRebuildingSavedViewCounts,
+                            onEdit: { onEditBookmark(savedView.id) }
+                        )
+                            .tag(BeadSidebarSelection.savedView(savedView.id))
+                    }
+                    .onMove(perform: store.moveSavedViews)
+                }
+            } header: {
+                HStack {
+                    Text("Bookmarks")
+                    Spacer()
+                    Button(action: onSaveBookmark) {
+                        Image(systemName: "plus")
+                            .frame(width: 28, height: 28)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 4)
+                    .disabled(!store.canCreateSavedView)
+                    .help("Save Current View as Bookmark")
+                    .accessibilityLabel("Save current view as bookmark")
                 }
             }
         }
@@ -27,13 +69,17 @@ struct SidebarView: View {
         }
     }
 
-    private var bookmarkSelection: Binding<BeadBookmark?> {
+    private var bookmarkSelection: Binding<BeadSidebarSelection?> {
         Binding(
-            get: { store.selectedBookmark },
-            set: { bookmark in
-                if let bookmark {
-                    store.applyBookmark(bookmark)
+            get: {
+                if let id = store.activeSavedViewID {
+                    return .savedView(id)
                 }
+                return .preset(store.selectedBookmark)
+            },
+            set: { selection in
+                guard let selection else { return }
+                store.scheduleSidebarSelection(selection)
             }
         )
     }

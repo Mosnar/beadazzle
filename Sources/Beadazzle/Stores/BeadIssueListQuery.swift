@@ -8,7 +8,8 @@ struct BeadIssueListQuery: Sendable {
         typeFilters: Set<String>,
         priorityFilters: Set<Int>,
         labelFilters: Set<String>,
-        searchText: String
+        searchText: String,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> [String] {
         PerformanceSignposts.query.withIntervalSignpost("Filter") {
             let ignoresFilters = bookmark == .gates
@@ -18,7 +19,8 @@ struct BeadIssueListQuery: Sendable {
                 typeFilters: ignoresFilters ? [] : typeFilters,
                 priorityFilters: ignoresFilters ? [] : priorityFilters,
                 labelFilters: ignoresFilters ? [] : labelFilters,
-                searchText: searchText
+                searchText: searchText,
+                shouldCancel: shouldCancel
             )
         }
     }
@@ -33,7 +35,8 @@ struct BeadIssueListQuery: Sendable {
         typeFilters: Set<String>,
         priorityFilters: Set<Int>,
         labelFilters: Set<String>,
-        searchText: String
+        searchText: String,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> (matchingIDs: [String], counts: BeadFilterCounts) {
         PerformanceSignposts.query.withIntervalSignpost("Filter") {
             index.filteredIssueIDsAndCounts(
@@ -42,7 +45,8 @@ struct BeadIssueListQuery: Sendable {
                 typeFilters: typeFilters,
                 priorityFilters: priorityFilters,
                 labelFilters: labelFilters,
-                searchText: searchText
+                searchText: searchText,
+                shouldCancel: shouldCancel
             )
         }
     }
@@ -92,7 +96,8 @@ struct BeadIssueListQuery: Sendable {
         outlineState: BeadOutlineSelectionState,
         sort: IssueSort,
         direction: SortDirection,
-        bookmark: BeadBookmark = .all
+        bookmark: BeadBookmark = .all,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
         PerformanceSignposts.query.withIntervalSignpost("RowBuild") {
             let sortOrder = bookmark == .gates
@@ -104,7 +109,8 @@ struct BeadIssueListQuery: Sendable {
                 expandedIssueIDs: outlineState.expandedIssueIDs,
                 collapsedIssueIDs: outlineState.collapsedIssueIDs,
                 sortOrder: sortOrder,
-                bookmark: bookmark
+                bookmark: bookmark,
+                shouldCancel: shouldCancel
             )
         }
     }

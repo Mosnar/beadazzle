@@ -50,6 +50,9 @@ struct IssueListView: View {
         .task(id: GateClockTaskID(bookmark: store.selectedBookmark, contentRevision: store.contentRevision)) {
             await runGateClockIfNeeded()
         }
+        .task(id: RelativeFilterClockTaskID(hasRelativeRules: store.hasRelativeSavedViewFilters)) {
+            await runRelativeFilterClockIfNeeded()
+        }
     }
 
     @MainActor
@@ -68,11 +71,31 @@ struct IssueListView: View {
     private var usesGateClock: Bool {
         store.selectedBookmark == .gates || store.selectedBookmark == .blocked
     }
+
+    @MainActor
+    private func runRelativeFilterClockIfNeeded() async {
+        guard store.hasRelativeSavedViewFilters else { return }
+        while !Task.isCancelled, store.hasRelativeSavedViewFilters {
+            let now = Date()
+            let nextDay = Calendar.current.nextDate(
+                after: now,
+                matching: DateComponents(hour: 0, minute: 0, second: 1),
+                matchingPolicy: .nextTime
+            ) ?? now.addingTimeInterval(86_400)
+            try? await Task.sleep(for: .seconds(max(1, nextDay.timeIntervalSinceNow)))
+            guard !Task.isCancelled else { return }
+            store.refreshRelativeSavedViewFilters(now: Date())
+        }
+    }
 }
 
 private struct GateClockTaskID: Hashable {
     var bookmark: BeadBookmark
     var contentRevision: Int
+}
+
+private struct RelativeFilterClockTaskID: Hashable {
+    var hasRelativeRules: Bool
 }
 
 enum IssueListMetrics {
@@ -92,6 +115,38 @@ private struct IssueListHeader: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
                 FilterMenu()
+                if store.advancedFilterCount > 0 || store.isSavedViewDrifted {
+                    Menu {
+                        if store.advancedFilterCount > 0 {
+                            Text("\(store.advancedFilterCount) saved-view rule\(store.advancedFilterCount == 1 ? "" : "s") active")
+                        }
+                        if store.isSavedViewDrifted {
+                            Text("Bookmark filters have been modified")
+                        }
+                        Divider()
+                        Button("Edit Bookmark...") {
+                            store.requestEditingActiveSavedView()
+                        }
+                        .disabled(store.sourceSavedViewID == nil)
+                        if store.isSavedViewDrifted {
+                            Button("Revert to Bookmark") {
+                                store.revertToSourceSavedView()
+                            }
+                        }
+                        if store.advancedFilterCount > 0 {
+                            Button("Clear Advanced Filters", role: .destructive) {
+                                store.clearAdvancedFilters()
+                            }
+                        }
+                    } label: {
+                        Label(
+                            store.isSavedViewDrifted ? "Modified" : "Advanced \(store.advancedFilterCount)",
+                            systemImage: "line.3.horizontal.decrease.circle.fill"
+                        )
+                    }
+                    .menuStyle(.button)
+                    .help(store.isSavedViewDrifted ? "Bookmark filters have been modified" : "Advanced saved-view filters are active")
+                }
                 SortMenu()
                 ViewOptionsMenu()
                 Text(summaryText)
@@ -112,7 +167,7 @@ private struct IssueListHeader: View {
             .controlSize(.small)
             .frame(height: IssueListMetrics.headerControlHeight, alignment: .center)
 
-            if store.hasActiveFilters {
+            if store.hasActiveFilters || store.advancedFilterCount > 0 {
                 ActiveFilterChipsView()
             }
         }

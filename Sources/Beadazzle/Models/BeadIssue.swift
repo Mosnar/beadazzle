@@ -355,7 +355,7 @@ enum IssueMetadataDateUpdate: Equatable, Sendable {
     case set(Date?)
 }
 
-enum IssueSort: String, CaseIterable, Identifiable, Sendable {
+enum IssueSort: String, CaseIterable, Codable, Identifiable, Sendable {
     case priority = "Priority"
     case updated = "Updated"
     case created = "Created"
@@ -366,7 +366,7 @@ enum IssueSort: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 }
 
-enum SortDirection: String, CaseIterable, Identifiable, Sendable {
+enum SortDirection: String, CaseIterable, Codable, Identifiable, Sendable {
     case ascending = "Ascending"
     case descending = "Descending"
 

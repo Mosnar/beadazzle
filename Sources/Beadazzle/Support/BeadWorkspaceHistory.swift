@@ -2,6 +2,8 @@ import Foundation
 
 struct BeadWorkspaceSnapshot: Equatable, Sendable {
     var bookmark: BeadBookmark
+    var activeSavedViewID: UUID?
+    var sourceSavedViewID: UUID? = nil
     var selectedIDs: Set<String>
     var fullPageDetailIssueID: String?
     var searchText: String
@@ -9,6 +11,7 @@ struct BeadWorkspaceSnapshot: Equatable, Sendable {
     var typeFilters: Set<String>
     var priorityFilters: Set<Int>
     var labelFilters: Set<String>
+    var advancedPredicate: BeadFilterGroup?
     var sort: IssueSort
     var sortDirection: SortDirection
     var issueListMode: IssueListMode

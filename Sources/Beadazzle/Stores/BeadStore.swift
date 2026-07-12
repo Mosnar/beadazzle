@@ -39,6 +39,16 @@ final class BeadStore {
     private(set) var selectedIDs: Set<String> = []
     private(set) var fullPageDetailIssueID: String?
     private(set) var selectedBookmark: BeadBookmark = .ready
+    private(set) var savedViews: [BeadSavedView] = []
+    private(set) var activeSavedViewID: UUID?
+    private(set) var sourceSavedViewID: UUID?
+    private(set) var activeAdvancedPredicate: BeadFilterGroup?
+    private(set) var savedViewCounts: [UUID: Int] = [:]
+    private(set) var isRebuildingSavedViewCounts = false
+    private(set) var savedViewsHaveUnsupportedVersion = false
+    private(set) var savedViewsPayloadIsCorrupt = false
+    private(set) var savedViewRecoveryIssueCount = 0
+    private(set) var savedViewsPersistenceMessage: String?
     var creationDraft: IssueDraft? {
         didSet {
             guard oldValue != creationDraft else { return }
@@ -61,6 +71,7 @@ final class BeadStore {
     /// for display fields; `bd gate show` only enriches the selected gate with waiters.
     private(set) var gatesByID: [String: BeadGate] = [:]
     private(set) var gateClock = Date()
+    private(set) var savedViewFilterClock = Date()
     var searchText = "" {
         didSet {
             guard oldValue != searchText else { return }
@@ -178,6 +189,7 @@ final class BeadStore {
     private(set) var isLoadingComments = false
     private(set) var isAddingComment = false
     var lastError: String?
+    var requestedSavedViewEditorID: UUID?
     private(set) var hiddenTypeNames: Set<String> = []
     private(set) var hiddenStatusNames: Set<String> = []
     private(set) var canGoBack = false
@@ -195,6 +207,9 @@ final class BeadStore {
     @ObservationIgnored private var filterTask: Task<Void, Never>?
     @ObservationIgnored private var recomputeTask: Task<Void, Never>?
     @ObservationIgnored private var queryGeneration = 0
+    @ObservationIgnored private var savedViewCountTask: Task<Void, Never>?
+    @ObservationIgnored private var savedViewCountGeneration = 0
+    @ObservationIgnored private var sidebarSelectionTask: Task<Void, Never>?
     @ObservationIgnored private var selectionSideDataTask: Task<Void, Never>?
     @ObservationIgnored private var commentLoadTask: Task<Void, Never>?
     @ObservationIgnored private var gateDetailTask: Task<Void, Never>?
@@ -563,6 +578,14 @@ final class BeadStore {
 
     var availableLabels: [String] {
         index.labelNames
+    }
+
+    var availableOwners: [String] {
+        index.ownerNames
+    }
+
+    var availableAssignees: [String] {
+        index.assigneeNames
     }
 
     var statusCounts: [(String, Int)] {
@@ -971,6 +994,8 @@ final class BeadStore {
         refreshTask?.cancel()
         filterTask?.cancel()
         recomputeTask?.cancel()
+        savedViewCountTask?.cancel()
+        sidebarSelectionTask?.cancel()
         stopDataSourceMonitor()
         projectURL = url
         resetProjectHealthStatus()
@@ -981,6 +1006,10 @@ final class BeadStore {
         clearLoadedProjectData()
         loadProjectPreferences(for: url)
         selectedBookmark = .ready
+        activeSavedViewID = nil
+        sourceSavedViewID = nil
+        activeAdvancedPredicate = nil
+        savedViewFilterClock = Date()
         resetWorkspaceHistory()
         if isMissingDataSourceProject(url) {
             setMissingDataSource(url)
@@ -1083,6 +1112,96 @@ final class BeadStore {
         loadStaleCutoffDaysPreference(for: url)
         loadReadyParentRollUpPreference(for: url)
         loadExternalRefreshPreference(for: url)
+        loadSavedViews(for: url)
+    }
+
+    private func loadSavedViews(for url: URL) {
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: url)
+        savedViewsHaveUnsupportedVersion = false
+        savedViewsPayloadIsCorrupt = false
+        savedViewRecoveryIssueCount = 0
+        savedViewsPersistenceMessage = nil
+        guard let data = userDefaults.data(forKey: key) else {
+            savedViews = []
+            savedViewCounts = [:]
+            return
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["version"] as? Int else {
+            preserveSavedViewRecoveryData(data, key: key)
+            savedViews = []
+            savedViewCounts = [:]
+            savedViewsPayloadIsCorrupt = true
+            savedViewRecoveryIssueCount = 1
+            savedViewsPersistenceMessage = "Bookmarks could not be read. The original data was preserved for recovery."
+            return
+        }
+        guard version == BeadSavedViewsPayload.currentVersion else {
+            preserveSavedViewRecoveryData(data, key: key)
+            savedViews = []
+            savedViewCounts = [:]
+            savedViewsHaveUnsupportedVersion = true
+            savedViewsPersistenceMessage = version > BeadSavedViewsPayload.currentVersion
+                ? "Bookmarks require a newer version of Beadazzle."
+                : "Bookmarks use an older format that this build cannot migrate."
+            return
+        }
+        guard let rawViews = object["views"] as? [Any] else {
+            preserveSavedViewRecoveryData(data, key: key)
+            savedViews = []
+            savedViewCounts = [:]
+            savedViewsPayloadIsCorrupt = true
+            savedViewRecoveryIssueCount = 1
+            savedViewsPersistenceMessage = "Bookmarks could not be read. The original data was preserved for recovery."
+            return
+        }
+
+        let decoder = JSONDecoder()
+        var seenViewIDs: Set<UUID> = []
+        savedViews = rawViews.compactMap { rawView in
+            guard JSONSerialization.isValidJSONObject(rawView),
+                  let itemData = try? JSONSerialization.data(withJSONObject: rawView),
+                  let view = try? decoder.decode(BeadSavedView.self, from: itemData),
+                  view.hasValidQuery,
+                  view.filter.advancedPredicate?.hasUniqueNodeIDs != false,
+                  seenViewIDs.insert(view.id).inserted
+            else { return nil }
+            return normalizedSavedView(view)
+        }
+        savedViewRecoveryIssueCount = rawViews.count - savedViews.count
+        if savedViewRecoveryIssueCount > 0 {
+            preserveSavedViewRecoveryData(data, key: key)
+            savedViewsPersistenceMessage = "\(savedViewRecoveryIssueCount) bookmark\(savedViewRecoveryIssueCount == 1 ? " was" : "s were") skipped because the saved data was invalid. A recovery copy was preserved."
+        }
+        activeSavedViewID = nil
+        sourceSavedViewID = nil
+        scheduleSavedViewCountRebuild()
+    }
+
+    private func persistSavedViews() {
+        guard !savedViewsHaveUnsupportedVersion, !savedViewsPayloadIsCorrupt else {
+            lastError = savedViewsPersistenceMessage ?? "Bookmarks are read-only because their saved data could not be interpreted."
+            return
+        }
+        guard let projectURL,
+              let data = try? JSONEncoder().encode(BeadSavedViewsPayload(views: savedViews))
+        else { return }
+        userDefaults.set(data, forKey: BeadazzlePreferenceKeys.savedViews(projectURL: projectURL))
+    }
+
+    private func preserveSavedViewRecoveryData(_ data: Data, key: String) {
+        let recoveryKey = "\(key).Recovery"
+        if userDefaults.data(forKey: recoveryKey) == nil {
+            userDefaults.set(data, forKey: recoveryKey)
+        }
+    }
+
+    private func normalizedSavedView(_ view: BeadSavedView) -> BeadSavedView {
+        var view = view
+        let name = view.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        view.name = name.isEmpty ? "Saved View" : name
+        view.symbolName = BeadSavedViewSymbols.normalized(view.symbolName)
+        return view
     }
 
     private func loadProjectVisibility(for url: URL) {
@@ -1308,6 +1427,8 @@ final class BeadStore {
         creationDraft = nil
         outlineState.clear()
         filterCounts = .empty
+        savedViewCounts = [:]
+        isRebuildingSavedViewCounts = false
         isLoadingComments = false
         isAddingComment = false
         syncWorkspaceHistoryAvailability()
@@ -1809,7 +1930,20 @@ final class BeadStore {
     }
 
     func applyBookmark(_ bookmark: BeadBookmark) {
-        guard selectedBookmark != bookmark else { return }
+        let changedSelectionIdentity = activeSavedViewID != nil
+        let clearedAdvancedPredicate = activeAdvancedPredicate != nil
+        activeSavedViewID = nil
+        sourceSavedViewID = nil
+        activeAdvancedPredicate = nil
+        guard selectedBookmark != bookmark else {
+            if clearedAdvancedPredicate {
+                applyFilters()
+            }
+            if changedSelectionIdentity || clearedAdvancedPredicate {
+                recordWorkspaceSnapshotIfNeeded()
+            }
+            return
+        }
         selectedBookmark = bookmark
         if bookmark == .gates {
             gateClock = Date()
@@ -1825,6 +1959,316 @@ final class BeadStore {
         }
         applyFilters()
         recordWorkspaceSnapshotIfNeeded()
+    }
+
+    func saveCurrentViewAsBookmark(name: String, symbolName: String) {
+        guard hasReadableProject, canMutateSavedViews else { return }
+        let view = normalizedSavedView(BeadSavedView(
+            id: UUID(),
+            name: name,
+            symbolName: symbolName,
+            filter: currentSavedViewFilter()
+        ))
+        savedViews.append(view)
+        persistSavedViews()
+        scheduleSavedViewCountRebuild()
+        applySavedView(id: view.id)
+    }
+
+    func saveConfiguredView(name: String, symbolName: String, filter: BeadSavedViewFilter) {
+        guard hasReadableProject, canMutateSavedViews, filter.advancedPredicate?.isValid != false else { return }
+        let view = normalizedSavedView(BeadSavedView(id: UUID(), name: name, symbolName: symbolName, filter: filter))
+        savedViews.append(view)
+        persistSavedViews()
+        scheduleSavedViewCountRebuild()
+        applySavedView(id: view.id)
+    }
+
+    func updateConfiguredView(id: UUID, name: String, symbolName: String, filter: BeadSavedViewFilter) {
+        guard canMutateSavedViews, filter.advancedPredicate?.isValid != false,
+              let index = savedViews.firstIndex(where: { $0.id == id }) else { return }
+        savedViews[index] = normalizedSavedView(BeadSavedView(id: id, name: name, symbolName: symbolName, filter: filter))
+        persistSavedViews()
+        scheduleSavedViewCountRebuild()
+        applySavedView(id: id)
+    }
+
+    var suggestedSavedViewName: String {
+        let baseName: String
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSearch.isEmpty {
+            baseName = "Search: \(trimmedSearch)"
+        } else if hasActiveFilters {
+            baseName = "\(selectedBookmark.title) — Filtered"
+        } else {
+            baseName = selectedBookmark.title
+        }
+        return uniqueSavedViewName(baseName)
+    }
+
+    var currentSavedViewSummary: String {
+        var parts = [selectedBookmark.title]
+        if !statusFilters.isEmpty { parts.append("\(statusFilters.count) status filter\(statusFilters.count == 1 ? "" : "s")") }
+        if !typeFilters.isEmpty { parts.append("\(typeFilters.count) type filter\(typeFilters.count == 1 ? "" : "s")") }
+        if !priorityFilters.isEmpty { parts.append("\(priorityFilters.count) priorit\(priorityFilters.count == 1 ? "y" : "ies")") }
+        if !labelFilters.isEmpty { parts.append("\(labelFilters.count) label\(labelFilters.count == 1 ? "" : "s")") }
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append("search text") }
+        parts.append("\(sort.rawValue), \(sortDirection.rawValue.lowercased())")
+        return parts.joined(separator: " · ")
+    }
+
+    func scheduleSidebarSelection(_ selection: BeadSidebarSelection) {
+        sidebarSelectionTask?.cancel()
+        sidebarSelectionTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            switch selection {
+            case .preset(let bookmark):
+                self.applyBookmark(bookmark)
+            case .savedView(let id):
+                self.applySavedView(id: id)
+            }
+        }
+    }
+
+    func applySavedView(id: UUID) {
+        guard let view = savedViews.first(where: { $0.id == id }) else { return }
+        guard view.hasValidQuery else {
+            lastError = "“\(view.name)” contains an invalid filter and was not applied."
+            return
+        }
+        suppressesFilterUpdates = true
+        selectedBookmark = view.filter.basePreset.bookmark
+        statusFilters = view.filter.statusFilters
+        typeFilters = view.filter.typeFilters
+        priorityFilters = view.filter.priorityFilters
+        labelFilters = view.filter.labelFilters
+        searchText = view.filter.searchText
+        sort = view.filter.sort
+        sortDirection = view.filter.sortDirection
+        suppressesFilterUpdates = false
+        activeSavedViewID = id
+        sourceSavedViewID = id
+        activeAdvancedPredicate = view.filter.advancedPredicate?.validatedNormalized
+        savedViewFilterClock = Date()
+        selectedIDs = []
+        fullPageDetailIssueID = nil
+        scheduleSelectionSideDataRefresh()
+        applyFilters()
+        recordWorkspaceSnapshotIfNeeded()
+    }
+
+    func renameSavedView(id: UUID, to name: String) {
+        updateSavedView(id: id, invalidatesCount: false) { view in
+            view.name = name
+        }
+    }
+
+    func setSavedViewSymbol(id: UUID, symbolName: String) {
+        updateSavedView(id: id, invalidatesCount: false) { view in
+            view.symbolName = symbolName
+        }
+    }
+
+    func duplicateSavedView(id: UUID) {
+        guard canMutateSavedViews, let sourceIndex = savedViews.firstIndex(where: { $0.id == id }) else { return }
+        var duplicate = savedViews[sourceIndex]
+        duplicate.id = UUID()
+        duplicate.name = uniqueSavedViewName("\(duplicate.name) Copy")
+        savedViews.insert(normalizedSavedView(duplicate), at: sourceIndex + 1)
+        persistSavedViews()
+        scheduleSavedViewCountRebuild()
+    }
+
+    func updateSavedViewFilterFromCurrentState(id: UUID) {
+        let wasActive = activeSavedViewID == id
+        let wasSource = sourceSavedViewID == id
+        updateSavedView(id: id, invalidatesCount: true) { view in
+            view.filter = currentSavedViewFilter()
+        }
+        if wasActive || wasSource {
+            activeSavedViewID = id
+            sourceSavedViewID = id
+            syncCurrentWorkspaceSnapshotIfNeeded()
+        }
+    }
+
+    func deleteSavedView(id: UUID) {
+        guard canMutateSavedViews, savedViews.contains(where: { $0.id == id }) else { return }
+        let wasActive = activeSavedViewID == id
+        let wasSource = sourceSavedViewID == id
+        savedViews.removeAll { $0.id == id }
+        savedViewCounts[id] = nil
+        if wasActive {
+            activeSavedViewID = nil
+        }
+        if sourceSavedViewID == id {
+            sourceSavedViewID = nil
+        }
+        persistSavedViews()
+        scheduleSavedViewCountRebuild()
+        if wasActive {
+            recordWorkspaceSnapshotIfNeeded()
+        } else if wasSource {
+            syncCurrentWorkspaceSnapshotIfNeeded()
+        }
+    }
+
+    func moveSavedViews(fromOffsets: IndexSet, toOffset: Int) {
+        guard canMutateSavedViews else { return }
+        savedViews.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        persistSavedViews()
+    }
+
+    func moveSavedViewUp(id: UUID) {
+        guard canMutateSavedViews, let index = savedViews.firstIndex(where: { $0.id == id }), index > 0 else { return }
+        savedViews.swapAt(index, index - 1)
+        persistSavedViews()
+    }
+
+    func moveSavedViewDown(id: UUID) {
+        guard canMutateSavedViews, let index = savedViews.firstIndex(where: { $0.id == id }), index < savedViews.index(before: savedViews.endIndex) else { return }
+        savedViews.swapAt(index, index + 1)
+        persistSavedViews()
+    }
+
+    func canMoveSavedViewUp(id: UUID) -> Bool {
+        guard let index = savedViews.firstIndex(where: { $0.id == id }) else { return false }
+        return index > 0
+    }
+
+    func canMoveSavedViewDown(id: UUID) -> Bool {
+        guard let index = savedViews.firstIndex(where: { $0.id == id }) else { return false }
+        return index < savedViews.index(before: savedViews.endIndex)
+    }
+
+    func count(forSavedViewID id: UUID) -> Int? {
+        savedViewCounts[id]
+    }
+
+    var advancedFilterCount: Int {
+        activeAdvancedPredicate?.conditionCount ?? 0
+    }
+
+    func clearAdvancedFilters() {
+        guard activeAdvancedPredicate != nil else { return }
+        activeSavedViewID = nil
+        sourceSavedViewID = nil
+        activeAdvancedPredicate = nil
+        applyFilters()
+        recordWorkspaceSnapshotIfNeeded()
+    }
+
+    func requestEditingActiveSavedView() {
+        requestedSavedViewEditorID = activeSavedViewID ?? sourceSavedViewID
+    }
+
+    var isSavedViewDrifted: Bool {
+        sourceSavedViewID != nil && activeSavedViewID == nil
+    }
+
+    func updateWouldReplaceAdvancedRules(id: UUID) -> Bool {
+        guard let saved = savedViews.first(where: { $0.id == id }) else { return false }
+        return saved.filter.advancedPredicate?.normalized != activeAdvancedPredicate?.normalized
+    }
+
+    func revertToSourceSavedView() {
+        guard let sourceSavedViewID else { return }
+        applySavedView(id: sourceSavedViewID)
+    }
+
+    var hasRelativeSavedViewFilters: Bool {
+        activeAdvancedPredicate?.containsRelativeDateRule == true
+            || savedViews.contains { $0.filter.advancedPredicate?.containsRelativeDateRule == true }
+    }
+
+    func refreshRelativeSavedViewFilters(now: Date = Date()) {
+        guard hasRelativeSavedViewFilters else { return }
+        savedViewFilterClock = now
+        scheduleSavedViewCountRebuild()
+        if activeAdvancedPredicate?.containsRelativeDateRule == true {
+            applyFilters()
+        }
+    }
+
+    private func updateSavedView(
+        id: UUID,
+        invalidatesCount: Bool,
+        update: (inout BeadSavedView) -> Void
+    ) {
+        guard canMutateSavedViews, let index = savedViews.firstIndex(where: { $0.id == id }) else { return }
+        var view = savedViews[index]
+        update(&view)
+        savedViews[index] = normalizedSavedView(view)
+        persistSavedViews()
+        if invalidatesCount {
+            scheduleSavedViewCountRebuild()
+        }
+    }
+
+    private var canMutateSavedViews: Bool {
+        guard !savedViewsHaveUnsupportedVersion, !savedViewsPayloadIsCorrupt else {
+            lastError = savedViewsPersistenceMessage ?? "Bookmarks are read-only because their saved data could not be interpreted."
+            return false
+        }
+        return true
+    }
+
+    var canCreateSavedView: Bool {
+        hasReadableProject && !savedViewsHaveUnsupportedVersion && !savedViewsPayloadIsCorrupt
+    }
+
+    private func currentSavedViewFilter() -> BeadSavedViewFilter {
+        BeadSavedViewFilter(
+            basePreset: BeadBookmarkToken(selectedBookmark),
+            statusFilters: statusFilters,
+            typeFilters: typeFilters,
+            priorityFilters: priorityFilters,
+            labelFilters: labelFilters,
+            searchText: searchText,
+            sort: sort,
+            sortDirection: sortDirection,
+            advancedPredicate: activeAdvancedPredicate
+        )
+    }
+
+    var currentSavedViewConfiguration: BeadSavedViewFilter {
+        currentSavedViewFilter()
+    }
+
+    func previewSavedView(_ filter: BeadSavedViewFilter) async -> BeadSavedViewPreview {
+        let index = index
+        let now = Date()
+        let worker = Task.detached(priority: .userInitiated) {
+            BeadSavedViewQueryEvaluator.filteredIssueIDs(
+                index: index,
+                filter: filter,
+                now: now,
+                shouldCancel: { Task.isCancelled }
+            )
+        }
+        let ids = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        guard !Task.isCancelled else { return BeadSavedViewPreview(count: 0, sample: []) }
+        let sample = ids.prefix(5).compactMap { id in
+            index.issue(with: id).map { BeadSavedViewPreview.Item(id: $0.id, title: $0.title) }
+        }
+        return BeadSavedViewPreview(count: ids.count, sample: sample)
+    }
+
+    private func uniqueSavedViewName(_ proposedName: String) -> String {
+        let normalized = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = normalized.isEmpty ? "Saved View" : normalized
+        let existingNames = Set(savedViews.map { $0.name.localizedLowercase })
+        guard existingNames.contains(base.localizedLowercase) else { return base }
+        var suffix = 2
+        while existingNames.contains("\(base) \(suffix)".localizedLowercase) {
+            suffix += 1
+        }
+        return "\(base) \(suffix)"
     }
 
     // MARK: Optimistic mutations
@@ -1858,6 +2302,7 @@ final class BeadStore {
             reusingSearchTextFrom: index
         )
         contentRevision &+= 1
+        scheduleSavedViewCountRebuild()
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
         syncFullPageDetailWithSelection()
         pruneExpandedIssueIDs()
@@ -2988,6 +3433,7 @@ final class BeadStore {
 
     func clearFilters() {
         guard hasActiveFilters else { return }
+        activeSavedViewID = nil
         suppressesFilterUpdates = true
         statusFilters = []
         typeFilters = []
@@ -3011,12 +3457,14 @@ final class BeadStore {
 
     private func filterStateDidChange(debounce: Bool = false) {
         guard !suppressesFilterUpdates else { return }
+        activeSavedViewID = nil
         scheduleFilterUpdate(debounce: debounce)
         syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     private func sortStateDidChange() {
         guard !suppressesFilterUpdates else { return }
+        activeSavedViewID = nil
         applySortOnly()
         syncCurrentWorkspaceSnapshotIfNeeded()
     }
@@ -3030,6 +3478,8 @@ final class BeadStore {
     private func makeWorkspaceSnapshot() -> BeadWorkspaceSnapshot {
         BeadWorkspaceSnapshot(
             bookmark: selectedBookmark,
+            activeSavedViewID: activeSavedViewID,
+            sourceSavedViewID: sourceSavedViewID,
             selectedIDs: selectedIDs,
             fullPageDetailIssueID: fullPageDetailIssueID,
             searchText: searchText,
@@ -3037,6 +3487,7 @@ final class BeadStore {
             typeFilters: typeFilters,
             priorityFilters: priorityFilters,
             labelFilters: labelFilters,
+            advancedPredicate: activeAdvancedPredicate,
             sort: sort,
             sortDirection: sortDirection,
             issueListMode: issueListMode,
@@ -3068,6 +3519,8 @@ final class BeadStore {
         isRestoringWorkspace = true
         suppressesFilterUpdates = true
         selectedBookmark = snapshot.bookmark
+        activeSavedViewID = validatedSavedViewID(for: snapshot)
+        sourceSavedViewID = validatedSourceSavedViewID(for: snapshot)
         selectedIDs = snapshot.selectedIDs.intersection(index.allIssueIDs)
         fullPageDetailIssueID = snapshot.fullPageDetailIssueID
         creationDraft = snapshot.creationDraft
@@ -3076,6 +3529,7 @@ final class BeadStore {
         typeFilters = snapshot.typeFilters
         priorityFilters = snapshot.priorityFilters
         labelFilters = snapshot.labelFilters
+        activeAdvancedPredicate = snapshot.advancedPredicate?.normalized
         sort = snapshot.sort
         sortDirection = snapshot.sortDirection
         issueListMode = snapshot.issueListMode
@@ -3088,6 +3542,30 @@ final class BeadStore {
         applyFilters()
         scheduleSelectionSideDataRefresh()
         syncWorkspaceHistoryAvailability()
+    }
+
+    private func validatedSavedViewID(for snapshot: BeadWorkspaceSnapshot) -> UUID? {
+        guard let id = snapshot.activeSavedViewID,
+              let view = savedViews.first(where: { $0.id == id })
+        else { return nil }
+        let filter = view.filter
+        guard filter.basePreset.bookmark == snapshot.bookmark,
+              filter.statusFilters == snapshot.statusFilters,
+              filter.typeFilters == snapshot.typeFilters,
+              filter.priorityFilters == snapshot.priorityFilters,
+              filter.labelFilters == snapshot.labelFilters,
+              filter.advancedPredicate?.normalized == snapshot.advancedPredicate?.normalized,
+              filter.searchText == snapshot.searchText,
+              filter.sort == snapshot.sort,
+              filter.sortDirection == snapshot.sortDirection
+        else { return nil }
+        return id
+    }
+
+    private func validatedSourceSavedViewID(for snapshot: BeadWorkspaceSnapshot) -> UUID? {
+        guard let id = snapshot.sourceSavedViewID,
+              savedViews.contains(where: { $0.id == id }) else { return nil }
+        return id
     }
 
     private func syncWorkspaceHistoryAvailability() {
@@ -3201,17 +3679,19 @@ final class BeadStore {
         let priorityFilters = priorityFilters
         let labelFilters = labelFilters
         let searchText = searchText
+        let advancedPredicate = activeAdvancedPredicate
         let sort = sort
         let direction = sortDirection
         let mode = issueListMode
         let gateClock = gateClock
+        let savedViewFilterClock = savedViewFilterClock
         let outlineSnapshot = outlineState
 
         recomputeTask = Task { @MainActor [weak self] in
-            let results = await Task.detached(priority: .userInitiated) { () -> QueryResults in
+            let worker = Task.detached(priority: .userInitiated) { () -> QueryResults in
                 let filteredIDs: [String]
                 var counts: BeadFilterCounts?
-                if recomputeCounts, bookmark != .gates {
+                if advancedPredicate == nil, recomputeCounts, bookmark != .gates {
                     (filteredIDs, counts) = BeadIssueListQuery.filteredIssueIDsAndCounts(
                         index: index,
                         bookmark: bookmark,
@@ -3219,17 +3699,25 @@ final class BeadStore {
                         typeFilters: typeFilters,
                         priorityFilters: priorityFilters,
                         labelFilters: labelFilters,
-                        searchText: searchText
+                        searchText: searchText,
+                        shouldCancel: { Task.isCancelled }
                     )
                 } else {
-                    filteredIDs = BeadIssueListQuery.filteredIssueIDs(
+                    filteredIDs = BeadSavedViewQueryEvaluator.filteredIssueIDs(
                         index: index,
-                        bookmark: bookmark,
-                        statusFilters: statusFilters,
-                        typeFilters: typeFilters,
-                        priorityFilters: priorityFilters,
-                        labelFilters: labelFilters,
-                        searchText: searchText
+                        filter: BeadSavedViewFilter(
+                            basePreset: BeadBookmarkToken(bookmark),
+                            statusFilters: statusFilters,
+                            typeFilters: typeFilters,
+                            priorityFilters: priorityFilters,
+                            labelFilters: labelFilters,
+                            searchText: searchText,
+                            sort: sort,
+                            sortDirection: direction,
+                            advancedPredicate: advancedPredicate
+                        ),
+                        now: savedViewFilterClock,
+                        shouldCancel: { Task.isCancelled }
                     )
                     counts = recomputeCounts
                         ? BeadIssueListQuery.filterCounts(
@@ -3260,7 +3748,8 @@ final class BeadStore {
                     outlineState: outlineState,
                     sort: sort,
                     direction: direction,
-                    bookmark: bookmark
+                    bookmark: bookmark,
+                    shouldCancel: { Task.isCancelled }
                 )
                 let didPruneExpansion = pruneExpansion && outlineState.prune(toVisibleRows: rows)
                 if didPruneExpansion {
@@ -3271,7 +3760,8 @@ final class BeadStore {
                         outlineState: outlineState,
                         sort: sort,
                         direction: direction,
-                        bookmark: bookmark
+                        bookmark: bookmark,
+                        shouldCancel: { Task.isCancelled }
                     )
                 }
 
@@ -3281,10 +3771,54 @@ final class BeadStore {
                     outlineState: didPruneExpansion ? outlineState : nil,
                     filterCounts: counts
                 )
-            }.value
+            }
+            let results = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
 
             guard !Task.isCancelled, let self, self.queryGeneration == generation else { return }
             self.applyQueryResults(results)
+        }
+    }
+
+    private func scheduleSavedViewCountRebuild() {
+        savedViewCountGeneration &+= 1
+        let generation = savedViewCountGeneration
+        savedViewCountTask?.cancel()
+
+        let index = index
+        let views = savedViews
+        let expectedProjectURL = projectURL
+        let expectedContentRevision = contentRevision
+        let evaluationNow = Date()
+        isRebuildingSavedViewCounts = !views.isEmpty
+        savedViewCountTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(75))
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .utility) { () -> [UUID: Int]? in
+                BeadSavedViewQueryEvaluator.matchingIssueCounts(
+                    index: index,
+                    filters: views.map { (id: $0.id, filter: $0.filter) },
+                    now: evaluationNow,
+                    shouldCancel: { Task.isCancelled }
+                )
+            }
+            let counts = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled,
+                  let counts,
+                  let self,
+                  self.savedViewCountGeneration == generation,
+                  self.projectURL == expectedProjectURL,
+                  self.contentRevision == expectedContentRevision
+            else { return }
+            self.savedViewCounts = counts
+            self.isRebuildingSavedViewCounts = false
         }
     }
 
@@ -3327,6 +3861,19 @@ final class BeadStore {
         }
     }
 
+    func waitForPendingSavedViewCountRebuild() async {
+        while let task = savedViewCountTask {
+            await task.value
+            if savedViewCountTask == task {
+                return
+            }
+        }
+    }
+
+    func waitForPendingSidebarSelection() async {
+        await sidebarSelectionTask?.value
+    }
+
     func waitForPendingProjectHealthLoad() async {
         await projectHealthTask?.value
     }
@@ -3342,6 +3889,7 @@ final class BeadStore {
             reusingSearchTextFrom: index
         )
         contentRevision &+= 1
+        scheduleSavedViewCountRebuild()
         selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
         pruneExpandedIssueIDs()
         applyFilters()
@@ -3403,6 +3951,7 @@ final class BeadStore {
         projectReadiness = .ready
         index = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
         contentRevision &+= 1
+        scheduleSavedViewCountRebuild()
         if let definitions = loadedProject.definitions {
             cachedDefinitions = definitions
         }

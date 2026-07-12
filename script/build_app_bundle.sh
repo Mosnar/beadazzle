@@ -66,7 +66,10 @@ beadazzle_release_require_command swift
 beadazzle_release_prepare_dist_dir "$output_dir"
 beadazzle_release_resolve_version_context "$release_tag" "$build_number"
 
-app_bundle="$output_dir/$BEADAZZLE_APP_NAME.app"
+final_app_bundle="$output_dir/$BEADAZZLE_APP_NAME.app"
+staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/beadazzle-bundle.XXXXXX")"
+trap 'rm -rf "$staging_dir"' EXIT
+app_bundle="$staging_dir/$BEADAZZLE_APP_NAME.app"
 app_contents="$app_bundle/Contents"
 app_macos="$app_contents/MacOS"
 app_binary="$app_macos/$BEADAZZLE_APP_NAME"
@@ -134,10 +137,6 @@ if beadazzle_release_write_app_icon "$BEADAZZLE_APP_ICON_SOURCE" "$app_resources
 fi
 
 /usr/bin/xattr -cr "$app_bundle"
-# File Provider/Finder metadata can survive `xattr -c` on some local synced
-# folders and makes codesign reject the generated app bundle.
-/usr/bin/xattr -d -r com.apple.FinderInfo "$app_bundle" 2>/dev/null || true
-/usr/bin/xattr -d -r 'com.apple.fileprovider.fpfs#P' "$app_bundle" 2>/dev/null || true
 beadazzle_release_sign_sparkle "$codesign_identity" "$app_contents/Frameworks"
 beadazzle_release_sign_app_bundle "$codesign_identity" "$app_bundle"
 beadazzle_release_verify_app_bundle_signature "$app_bundle"
@@ -146,4 +145,6 @@ if [[ $validate_gatekeeper -eq 1 ]]; then
   beadazzle_release_validate_spctl_app "$app_bundle"
 fi
 
-printf '%s\n' "$app_bundle"
+rm -rf "$final_app_bundle"
+/usr/bin/ditto --norsrc "$app_bundle" "$final_app_bundle"
+printf '%s\n' "$final_app_bundle"

@@ -435,7 +435,8 @@ final class BeadStorePreferencesTests: XCTestCase {
             "showsOwnerInBeadList",
             "showsAssigneeInBeadList",
             "showsDueDateInBeadList",
-            "showsCommentsInBeadList"
+            "showsCommentsInBeadList",
+            "savedViews"
         ]
 
         XCTAssertEqual(Set(entries.map(\.id)), expectedIDs)
@@ -446,8 +447,263 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
         XCTAssertEqual(
             Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
-            Set(["Issue List > View Options"])
+            Set(["Issue List > View Options", "Sidebar > Bookmarks"])
         )
+    }
+
+    func testSavedViewsCapturePersistPerProjectAndRebuildCounts() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject([
+            issueLine(id: "bd-1", status: "open", type: "task"),
+            issueLine(id: "bd-2", status: "closed", type: "bug")
+        ].joined(separator: "\n"))
+        let otherProjectURL = try makeProject(issueLine(id: "other-1", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        store.applyBookmark(.all)
+        store.statusFilters = ["open"]
+        store.typeFilters = ["task"]
+        store.priorityFilters = [1]
+        store.labelFilters = []
+        store.searchText = "Example"
+        store.sort = .updated
+        store.sortDirection = .descending
+        await store.waitForPendingQueryRecompute()
+        store.saveCurrentViewAsBookmark(name: "  Open Tasks  ", symbolName: "not.a.real.symbol")
+        await store.waitForPendingQueryRecompute()
+        await store.waitForPendingSavedViewCountRebuild()
+
+        let saved = try XCTUnwrap(store.savedViews.first)
+        XCTAssertEqual(saved.name, "Open Tasks")
+        XCTAssertEqual(saved.symbolName, BeadSavedViewSymbols.fallback)
+        XCTAssertEqual(saved.filter.basePreset, .all)
+        XCTAssertEqual(saved.filter.statusFilters, ["open"])
+        XCTAssertEqual(saved.filter.typeFilters, ["task"])
+        XCTAssertEqual(saved.filter.priorityFilters, [1])
+        XCTAssertEqual(saved.filter.searchText, "Example")
+        XCTAssertEqual(saved.filter.sort, .updated)
+        XCTAssertEqual(saved.filter.sortDirection, .descending)
+        XCTAssertEqual(store.activeSavedViewID, saved.id)
+        XCTAssertEqual(store.count(forSavedViewID: saved.id), 1)
+
+        store.statusFilters = []
+        XCTAssertNil(store.activeSavedViewID)
+        store.applyBookmark(.all)
+        store.typeFilters = []
+        store.priorityFilters = []
+        store.searchText = ""
+
+        store.applySavedView(id: saved.id)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1"])
+        XCTAssertEqual(store.activeSavedViewID, saved.id)
+
+        let reloaded = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloaded.openProject(projectURL)
+        try await waitUntil { !reloaded.isLoading && reloaded.issue(with: "bd-1") != nil }
+        await reloaded.waitForPendingSavedViewCountRebuild()
+        XCTAssertEqual(reloaded.savedViews, [saved])
+        XCTAssertEqual(reloaded.count(forSavedViewID: saved.id), 1)
+
+        reloaded.duplicateSavedView(id: saved.id)
+        XCTAssertEqual(reloaded.savedViews.count, 2)
+        XCTAssertNotEqual(reloaded.savedViews[0].id, reloaded.savedViews[1].id)
+        XCTAssertEqual(reloaded.savedViews[1].name, "Open Tasks Copy")
+
+        let otherStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "other-1") != nil }
+        XCTAssertTrue(otherStore.savedViews.isEmpty)
+    }
+
+    func testSavedViewCRUDAndOrderingPersist() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        store.saveCurrentViewAsBookmark(name: "First", symbolName: "bookmark")
+        store.saveCurrentViewAsBookmark(name: "Second", symbolName: "star")
+        let firstID = try XCTUnwrap(store.savedViews.first?.id)
+        let secondID = try XCTUnwrap(store.savedViews.last?.id)
+
+        store.renameSavedView(id: firstID, to: "Renamed")
+        store.setSavedViewSymbol(id: firstID, symbolName: "flag")
+        store.moveSavedViewDown(id: firstID)
+        XCTAssertEqual(store.savedViews.map(\.id), [secondID, firstID])
+        store.moveSavedViewUp(id: firstID)
+        XCTAssertEqual(store.savedViews.map(\.id), [firstID, secondID])
+        store.moveSavedViews(fromOffsets: IndexSet(integer: 0), toOffset: 2)
+        XCTAssertEqual(store.savedViews.map(\.id), [secondID, firstID])
+        store.duplicateSavedView(id: firstID)
+        let duplicateID = try XCTUnwrap(store.savedViews.last?.id)
+        XCTAssertNotEqual(duplicateID, firstID)
+        XCTAssertEqual(store.savedViews.last?.name, "Renamed Copy")
+        store.deleteSavedView(id: secondID)
+        await store.waitForPendingSavedViewCountRebuild()
+        XCTAssertEqual(Set(store.savedViewCounts.keys), Set([firstID, duplicateID]))
+
+        let reloaded = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloaded.openProject(projectURL)
+        try await waitUntil { !reloaded.isLoading && reloaded.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(reloaded.savedViews.map(\.id), [firstID, duplicateID])
+        XCTAssertEqual(reloaded.savedViews.first?.name, "Renamed")
+        XCTAssertEqual(reloaded.savedViews.first?.symbolName, "flag")
+    }
+
+    func testSavingWithoutReadableProjectDoesNothing() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
+
+        store.saveCurrentViewAsBookmark(name: "Should Not Save", symbolName: "bookmark")
+
+        XCTAssertTrue(store.savedViews.isEmpty)
+        XCTAssertNil(store.activeSavedViewID)
+    }
+
+    func testSuggestedSavedViewNamesAreContextualAndUnique() async throws {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(store.suggestedSavedViewName, "Ready")
+        store.saveCurrentViewAsBookmark(name: "Ready", symbolName: "bookmark")
+        XCTAssertEqual(store.suggestedSavedViewName, "Ready 2")
+        store.searchText = "crash"
+        XCTAssertEqual(store.suggestedSavedViewName, "Search: crash")
+        XCTAssertTrue(store.currentSavedViewSummary.contains("search text"))
+    }
+
+    func testAdvancedSavedViewAppliesCountsAndSurvivesToolbarDrift() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject([
+            issueLine(id: "bd-1", status: "open", type: "task"),
+            issueLine(id: "bd-2", status: "open", type: "task")
+        ].joined(separator: "\n"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let condition = BeadFilterCondition(
+            field: .id,
+            operation: .isEqual,
+            value: BeadFilterValue(text: "bd-1")
+        )
+        var filter = store.currentSavedViewConfiguration
+        filter.advancedPredicate = BeadFilterGroup(children: [.condition(condition)])
+        store.saveConfiguredView(name: "Only One", symbolName: "bookmark", filter: filter)
+        await store.waitForPendingQueryRecompute()
+        await store.waitForPendingSavedViewCountRebuild()
+
+        let id = try XCTUnwrap(store.activeSavedViewID)
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1"])
+        XCTAssertEqual(store.count(forSavedViewID: id), 1)
+        XCTAssertEqual(store.advancedFilterCount, 1)
+
+        store.setPriorityFilter(1, isOn: true)
+        XCTAssertNil(store.activeSavedViewID)
+        XCTAssertEqual(store.sourceSavedViewID, id)
+        XCTAssertTrue(store.isSavedViewDrifted)
+        XCTAssertEqual(store.advancedFilterCount, 1)
+
+        store.updateSavedViewFilterFromCurrentState(id: id)
+        XCTAssertEqual(store.activeSavedViewID, id)
+        XCTAssertEqual(store.sourceSavedViewID, id)
+        XCTAssertFalse(store.isSavedViewDrifted)
+
+        store.setPriorityFilter(2, isOn: true)
+        store.revertToSourceSavedView()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.activeSavedViewID, id)
+        XCTAssertFalse(store.isSavedViewDrifted)
+
+        store.applyBookmark(.all)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertNil(store.sourceSavedViewID)
+        XCTAssertEqual(store.advancedFilterCount, 0)
+
+        store.applySavedView(id: id)
+        store.clearAdvancedFilters()
+        XCTAssertTrue(store.updateWouldReplaceAdvancedRules(id: id))
+    }
+
+    func testSavedViewLoadingSkipsMalformedSibling() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let valid = BeadSavedView(
+            id: UUID(),
+            name: "Valid",
+            symbolName: "bookmark",
+            filter: BeadSavedViewFilter(
+                basePreset: .all,
+                statusFilters: [],
+                typeFilters: [],
+                priorityFilters: [],
+                labelFilters: [],
+                searchText: "",
+                sort: .priority,
+                sortDirection: .ascending
+            )
+        )
+        let validObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid))
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "version": BeadSavedViewsPayload.currentVersion,
+            "views": [validObject, ["id": "broken"]]
+        ])
+        defaults.set(payload, forKey: BeadazzlePreferenceKeys.savedViews(projectURL: projectURL))
+
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        XCTAssertEqual(store.savedViews, [valid])
+        XCTAssertEqual(store.savedViewRecoveryIssueCount, 1)
+        XCTAssertNotNil(store.savedViewsPersistenceMessage)
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), payload)
+    }
+
+    func testUnsupportedFuturePayloadIsPreservedAndReadOnly() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let payload = try JSONSerialization.data(withJSONObject: ["version": 99, "views": []])
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        defaults.set(payload, forKey: key)
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertTrue(store.savedViewsHaveUnsupportedVersion)
+        XCTAssertNotNil(store.savedViewsPersistenceMessage)
+        XCTAssertTrue(store.savedViews.isEmpty)
+        store.saveCurrentViewAsBookmark(name: "Must Not Overwrite", symbolName: "bookmark")
+        XCTAssertTrue(store.savedViews.isEmpty)
+        XCTAssertEqual(defaults.data(forKey: key), payload)
+        XCTAssertNotNil(store.lastError)
+    }
+
+    func testCorruptSavedViewPayloadIsPreservedAndReadOnly() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let payload = Data("not-json".utf8)
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        defaults.set(payload, forKey: key)
+
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertTrue(store.savedViewsPayloadIsCorrupt)
+        XCTAssertEqual(store.savedViewRecoveryIssueCount, 1)
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), payload)
+        store.saveCurrentViewAsBookmark(name: "Must Not Overwrite", symbolName: "bookmark")
+        XCTAssertTrue(store.savedViews.isEmpty)
+        XCTAssertEqual(defaults.data(forKey: key), payload)
+        XCTAssertNotNil(store.lastError)
     }
 
     private func issueLine(

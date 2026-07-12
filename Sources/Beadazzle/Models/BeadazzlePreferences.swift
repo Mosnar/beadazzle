@@ -44,6 +44,10 @@ enum BeadazzlePreferenceKeys {
     static func automaticallyRefreshesExternalChanges(projectURL: URL) -> String {
         "AutomaticallyRefreshExternalChanges.\(projectURL.standardizedFileURL.path)"
     }
+
+    static func savedViews(projectURL: URL) -> String {
+        "SavedViews.\(projectURL.standardizedFileURL.path)"
+    }
 }
 
 struct BeadListDisplayOptions: Equatable, Sendable {
@@ -180,6 +184,15 @@ enum BeadazzleOptionInventory {
             defaultValue: "On",
             uiLocation: "Issue List > View Options",
             behavior: "Shows comment counts in issue rows for the active project."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "savedViews",
+            title: "Sidebar bookmarks",
+            scope: .projectViewOption,
+            persistence: "SavedViews.<project path>",
+            defaultValue: "None",
+            uiLocation: "Sidebar > Bookmarks",
+            behavior: "Stores private per-project filter and sort bookmarks on this Mac."
         )
     ]
 }

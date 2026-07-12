@@ -9,6 +9,7 @@ struct WorkspaceCommandActions {
     var openProject: () -> Void
     var refresh: (() -> Void)?
     var find: (() -> Void)?
+    var saveCurrentViewAsBookmark: (() -> Void)?
 }
 
 private struct WorkspaceCommandActionsKey: FocusedValueKey {
@@ -54,6 +55,13 @@ struct WorkspaceCommands: Commands {
             }
             .keyboardShortcut("f")
             .disabled(actions?.find == nil)
+        }
+
+        CommandGroup(after: .saveItem) {
+            Button("Save View as Bookmark...") {
+                actions?.saveCurrentViewAsBookmark?()
+            }
+            .disabled(actions?.saveCurrentViewAsBookmark == nil)
         }
     }
 }

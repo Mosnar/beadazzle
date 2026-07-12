@@ -66,6 +66,8 @@ struct BeadProjectIndex: Sendable {
     let childProgressByParentID: [String: IssueChildProgress]
     let dependencyTypeNames: [String]
     let labelNames: [String]
+    let ownerNames: [String]
+    let assigneeNames: [String]
     /// Per-issue searchable text, pre-folded once at build time (case-, diacritic-, and
     /// width-insensitive), prefixed with the issue id, and stored as UTF-8 bytes. Searching
     /// folds the query the same way and does a byte-subsequence scan — equivalent to
@@ -104,6 +106,8 @@ struct BeadProjectIndex: Sendable {
         var foldedSearchBytesByID: [String: ContiguousArray<UInt8>] = [:]
         var parentIDCandidatesByIssueID: [String: String] = [:]
         var childIDsByParentID: [String: [String]] = [:]
+        var ownerNames: Set<String> = []
+        var assigneeNames: Set<String> = []
         issueByID.reserveCapacity(issues.count)
         foldedSearchBytesByID.reserveCapacity(issues.count)
 
@@ -124,8 +128,12 @@ struct BeadProjectIndex: Sendable {
             for label in issue.labels {
                 issueIDsByLabel[label, default: []].insert(issue.id)
             }
+            if let owner = issue.owner, !owner.isEmpty { ownerNames.insert(owner) }
+            if let assignee = issue.assignee, !assignee.isEmpty { assigneeNames.insert(assignee) }
         }
         self.issueByID = issueByID
+        self.ownerNames = ownerNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        self.assigneeNames = assigneeNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         self.issueIDsByStatus = issueIDsByStatus
         self.issueIDsByStatusCategory = issueIDsByStatusCategory
         self.issueIDsByType = issueIDsByType
@@ -297,6 +305,24 @@ struct BeadProjectIndex: Sendable {
             .compactMap { issueByID[$0.issueID] }
             .filter(canBeActivelyBlocked)
             .sorted(by: sortOrder.areInIncreasingOrder)
+    }
+
+    func activeBlockingIssueCount(for issueID: String) -> Int {
+        guard let issue = issueByID[issueID], canBeActivelyBlocked(issue) else { return 0 }
+        return (dependenciesByIssueID[issueID] ?? []).lazy
+            .filter(\.isBlocking)
+            .compactMap { issueByID[$0.dependsOnID] }
+            .filter(isActiveBlocker)
+            .count
+    }
+
+    func activelyBlockedIssueCount(by issueID: String) -> Int {
+        guard let issue = issueByID[issueID], isActiveBlocker(issue) else { return 0 }
+        return (dependentsByIssueID[issueID] ?? []).lazy
+            .filter(\.isBlocking)
+            .compactMap { issueByID[$0.issueID] }
+            .filter(canBeActivelyBlocked)
+            .count
     }
 
     private func isActiveBlocker(_ issue: BeadIssue) -> Bool {
@@ -614,13 +640,20 @@ struct BeadProjectIndex: Sendable {
             searchText: searchText,
             shouldCancel: shouldCancel
         )
-        let counts = filterCounts(for: bookmark, nonLabelFilteredIDs: nonLabelIDs, selectedLabels: labelFilters)
+        guard !shouldCancel() else { return ([], .empty) }
+        let counts = filterCounts(
+            for: bookmark,
+            nonLabelFilteredIDs: nonLabelIDs,
+            selectedLabels: labelFilters,
+            shouldCancel: shouldCancel
+        )
 
         guard !labelFilters.isEmpty else {
             return (nonLabelIDs, counts)
         }
         var matchingIDs = Set(nonLabelIDs)
         for label in labelFilters {
+            guard !shouldCancel() else { return ([], .empty) }
             matchingIDs.formIntersection(issueIDsByLabel[label, default: []])
         }
         return (Array(matchingIDs), counts)
@@ -629,13 +662,15 @@ struct BeadProjectIndex: Sendable {
     private func filterCounts(
         for bookmark: BeadBookmark,
         nonLabelFilteredIDs: [String],
-        selectedLabels: Set<String>
+        selectedLabels: Set<String>,
+        shouldCancel: @Sendable () -> Bool = { false }
     ) -> BeadFilterCounts {
         let baseCounts = baseFilterCountsByBookmark[bookmark]
             ?? Self.baseFilterCounts(for: issueIDs(for: bookmark), issueByID: issueByID, semantics: semantics)
 
         var labelCounts: [String: Int] = [:]
         for id in nonLabelFilteredIDs {
+            guard !shouldCancel() else { return .empty }
             guard let issue = issueByID[id] else { continue }
             for label in issue.labels {
                 labelCounts[label, default: 0] += 1
