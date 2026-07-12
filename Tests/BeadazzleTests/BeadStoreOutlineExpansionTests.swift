@@ -119,6 +119,27 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertFalse(store.navigateIssueOutlineLeft())
     }
 
+    func testSelectingVisibleStaleChildDoesNotRevealFreshSiblings() async throws {
+        let store = try await makeLoadedStore(
+            issuesJSONL: """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic","updated_at":"2099-01-01T00:00:00Z"}
+            {"_type":"issue","id":"bd-stale-child","title":"Stale child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent","updated_at":"2020-01-01T00:00:00Z"}
+            {"_type":"issue","id":"bd-fresh-sibling","title":"Fresh sibling","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent","updated_at":"2099-01-01T00:00:00Z"}
+            """
+        )
+
+        store.applyBookmark(.stale)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent", "bd-stale-child"])
+
+        store.select(["bd-stale-child"])
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedIDs, ["bd-stale-child"])
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent", "bd-stale-child"])
+        XCTAssertFalse(store.issueListRows.contains { $0.issueID == "bd-fresh-sibling" })
+    }
+
     func testParentIssueUsesParentIDField() async throws {
         let store = try await makeLoadedStore()
 

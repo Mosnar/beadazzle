@@ -3022,7 +3022,7 @@ final class BeadStore {
     }
 
     private func selectionDidChange() {
-        expandAncestorsForSelection()
+        expandAncestorsForSelection(rebuildRows: true, unlessAlreadyVisible: true)
         scheduleSelectionSideDataRefresh()
         recordWorkspaceSnapshotIfNeeded()
     }
@@ -3366,8 +3366,18 @@ final class BeadStore {
         )
     }
 
-    private func expandAncestorsForSelection(rebuildRows: Bool) {
+    private func expandAncestorsForSelection(
+        rebuildRows: Bool,
+        unlessAlreadyVisible: Bool = false
+    ) {
         guard let issue = selectedIssue else { return }
+        if unlessAlreadyVisible,
+           issueListRows.contains(where: { $0.issueID == issue.id }) {
+            // Rows already visible through filtered outline context do not need revealing.
+            // Treating their ancestors as explicitly expanded would inject non-matching
+            // siblings into the filtered list when the row is merely selected.
+            return
+        }
         expandAncestors(of: issue.id, rebuildRows: rebuildRows)
     }
 

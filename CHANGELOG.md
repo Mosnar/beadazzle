@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Fixed selecting a bead in a filtered outline from revealing sibling beads that do not match the active filter.
+
 ## [1.1.0] - 2026-07-11
 
 ### Added
