@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DetailView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var workspace: BeadWorkspaceStore { store.workspace }
     let requestClose: (BeadIssue) -> Void
     @State private var draft: IssueDraft?
     @State private var draftIssueID: String?
@@ -161,7 +162,7 @@ struct DetailView: View {
         Binding(
             get: { store.creationDraft ?? store.blankDraft() },
             set: { nextDraft in
-                guard !suppressesCreationDraftUpdates, store.selectedIDs.isEmpty else { return }
+                guard !suppressesCreationDraftUpdates, workspace.selectedIDs.isEmpty else { return }
                 store.creationDraft = nextDraft
             }
         )
@@ -211,7 +212,7 @@ struct DetailView: View {
 
     private func cancelCreation() {
         suppressesCreationDraftUpdates = true
-        if store.canGoBack {
+        if workspace.canGoBack {
             store.goBack()
         } else {
             store.cancelCreation()

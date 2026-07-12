@@ -2,13 +2,14 @@ import SwiftUI
 
 struct ProjectStorageSettingsPane: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
 
     var body: some View {
         Form {
             preflightSection
             actionsSection
 
-            if let actionError = store.projectHealthActionError {
+            if let actionError = project.projectHealthActionError {
                 Section("Last Action") {
                     ProjectHealthMessageRow(
                         title: "Error",
@@ -26,7 +27,7 @@ struct ProjectStorageSettingsPane: View {
             }
         }
         .settingsGroupedForm()
-        .task(id: store.projectURL) {
+        .task(id: project.projectURL) {
             store.loadProjectHealthStatus()
         }
     }
@@ -34,13 +35,13 @@ struct ProjectStorageSettingsPane: View {
     private var preflightSection: some View {
         Section("Pre-flight") {
             let preflight = ProjectPreflightHealth.evaluate(
-                projectURL: store.projectURL,
+                projectURL: project.projectURL,
                 missingDataSourceURL: store.missingDataSourceURL,
-                activeDataSource: store.currentDataSource,
-                snapshotFreshness: store.snapshotFreshness,
-                health: store.projectHealthSnapshot,
+                activeDataSource: project.currentDataSource,
+                snapshotFreshness: project.snapshotFreshness,
+                health: project.projectHealthSnapshot,
                 automaticallyRefreshesExternalChanges: store.automaticallyRefreshesExternalChanges,
-                isLoading: store.isLoading || store.isLoadingProjectHealth || store.projectHealthSnapshot == nil
+                isLoading: project.isLoading || project.isLoadingProjectHealth || project.projectHealthSnapshot == nil
             )
 
             ProjectPreflightSummaryView(preflight: preflight)
@@ -55,9 +56,9 @@ struct ProjectStorageSettingsPane: View {
         Section("Status") {
             VStack(alignment: .leading, spacing: 10) {
                 ProjectHealthStatusSummary(
-                    action: store.projectHealthAction,
-                    isLoading: store.isLoadingProjectHealth,
-                    loadedAt: store.projectHealthSnapshot?.loadedAt
+                    action: project.projectHealthAction,
+                    isLoading: project.isLoadingProjectHealth,
+                    loadedAt: project.projectHealthSnapshot?.loadedAt
                 )
 
                 if !isInitialProjectHealthLoad {
@@ -84,7 +85,7 @@ struct ProjectStorageSettingsPane: View {
                             }
                         }
 
-                        if store.projectHealthSnapshot?.hooks.value?.hasMissingHooks == true {
+                        if project.projectHealthSnapshot?.hooks.value?.hasMissingHooks == true {
                             ProjectHealthActionButton(
                                 title: "Install Hooks",
                                 systemImage: "wrench.and.screwdriver",
@@ -96,7 +97,7 @@ struct ProjectStorageSettingsPane: View {
                             }
                         }
 
-                        if store.projectHealthSnapshot?.backup.value?.isConfigured == true {
+                        if project.projectHealthSnapshot?.backup.value?.isConfigured == true {
                             ProjectHealthActionButton(
                                 title: "Backup Now",
                                 systemImage: "arrow.triangle.2.circlepath",
@@ -116,7 +117,7 @@ struct ProjectStorageSettingsPane: View {
 
     private var storageSection: some View {
         Section("Storage") {
-            if let context = store.projectHealthSnapshot?.context.value {
+            if let context = project.projectHealthSnapshot?.context.value {
                 LabeledContent("Source of truth") {
                     HStack(spacing: 8) {
                         ProjectHealthValueText(context.usesCurrentEmbeddedDolt ? "Embedded Dolt" : context.storageSummary)
@@ -139,7 +140,7 @@ struct ProjectStorageSettingsPane: View {
                     ProjectHealthValueText(context.database)
                 }
                 LabeledContent("Database Path") {
-                    ProjectHealthPathText(context.databasePath(projectURL: store.projectURL ?? URL(fileURLWithPath: "")))
+                    ProjectHealthPathText(context.databasePath(projectURL: project.projectURL ?? URL(fileURLWithPath: "")))
                 }
                 LabeledContent("Role") {
                     ProjectHealthValueText(context.role)
@@ -151,7 +152,7 @@ struct ProjectStorageSettingsPane: View {
                     ProjectHealthPathText(context.projectID)
                 }
             } else {
-                ProjectHealthUnavailableRow(errorMessage: store.projectHealthSnapshot?.context.errorMessage)
+                ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.context.errorMessage)
             }
         }
     }
@@ -160,7 +161,7 @@ struct ProjectStorageSettingsPane: View {
         @Bindable var store = store
 
         return Section("Beadazzle Snapshot") {
-            let snapshotFile = store.projectHealthSnapshot?.snapshotFile
+            let snapshotFile = project.projectHealthSnapshot?.snapshotFile
 
             Toggle(
                 "Automatically refresh external changes",
@@ -194,13 +195,13 @@ struct ProjectStorageSettingsPane: View {
             }
             LabeledContent("Freshness") {
                 HStack(spacing: 8) {
-                    ProjectHealthValueText(store.snapshotFreshness.message)
+                    ProjectHealthValueText(project.snapshotFreshness.message)
                     ProjectHealthBadge(
                         title: freshnessBadgeTitle,
                         style: freshnessBadgeStyle
                     )
                 }
-                .help(store.snapshotFreshness.detail ?? store.snapshotFreshness.message)
+                .help(project.snapshotFreshness.detail ?? project.snapshotFreshness.message)
             }
             LabeledContent("Path") {
                 ProjectHealthPathText(snapshotFile?.url.path)
@@ -212,7 +213,7 @@ struct ProjectStorageSettingsPane: View {
                 ProjectHealthValueText(snapshotFile?.modifiedAt.map(Self.formattedDate))
             }
 
-            if let config = store.projectHealthSnapshot?.storageConfig.value {
+            if let config = project.projectHealthSnapshot?.storageConfig.value {
                 LabeledContent("Export") {
                     HStack(spacing: 8) {
                         ProjectHealthConfigValueText(
@@ -246,14 +247,14 @@ struct ProjectStorageSettingsPane: View {
                     )
                 }
             } else {
-                ProjectHealthUnavailableRow(errorMessage: store.projectHealthSnapshot?.storageConfig.errorMessage)
+                ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
             }
         }
     }
 
     private var syncSection: some View {
         Section("Sync Model") {
-            if let config = store.projectHealthSnapshot?.storageConfig.value {
+            if let config = project.projectHealthSnapshot?.storageConfig.value {
                 LabeledContent("JSONL Import") {
                     HStack(spacing: 8) {
                         ProjectHealthConfigValueText(
@@ -283,10 +284,10 @@ struct ProjectStorageSettingsPane: View {
                     }
                 }
             } else {
-                ProjectHealthUnavailableRow(errorMessage: store.projectHealthSnapshot?.storageConfig.errorMessage)
+                ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
             }
 
-            if let hooks = store.projectHealthSnapshot?.hooks.value {
+            if let hooks = project.projectHealthSnapshot?.hooks.value {
                 LabeledContent("Git Hooks") {
                     HStack(spacing: 8) {
                         ProjectHealthValueText(hooks.summary)
@@ -302,14 +303,14 @@ struct ProjectStorageSettingsPane: View {
                     }
                 }
             } else {
-                ProjectHealthUnavailableRow(errorMessage: store.projectHealthSnapshot?.hooks.errorMessage)
+                ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.hooks.errorMessage)
             }
         }
     }
 
     private var backupSection: some View {
         Section("Backup") {
-            if let backup = store.projectHealthSnapshot?.backup.value {
+            if let backup = project.projectHealthSnapshot?.backup.value {
                 LabeledContent("Status") {
                     HStack(spacing: 8) {
                         ProjectHealthValueText(backup.isConfigured ? "Configured" : "Not configured")
@@ -338,19 +339,19 @@ struct ProjectStorageSettingsPane: View {
                     ProjectHealthValueText(backup.databaseSize?.displayValue, placeholder: "Not reported")
                 }
             } else {
-                ProjectHealthUnavailableRow(errorMessage: store.projectHealthSnapshot?.backup.errorMessage)
+                ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.backup.errorMessage)
             }
         }
     }
 
     private var isBusy: Bool {
-        store.isLoadingProjectHealth || store.projectHealthAction != nil
+        project.isLoadingProjectHealth || project.projectHealthAction != nil
     }
 
     private var isInitialProjectHealthLoad: Bool {
-        store.isLoadingProjectHealth
-            && store.projectHealthSnapshot == nil
-            && store.projectHealthAction == nil
+        project.isLoadingProjectHealth
+            && project.projectHealthSnapshot == nil
+            && project.projectHealthAction == nil
     }
 
     private static func formattedBytes(_ bytes: Int64) -> String {
@@ -366,7 +367,7 @@ struct ProjectStorageSettingsPane: View {
     }
 
     private var freshnessBadgeTitle: String {
-        switch store.snapshotFreshness.state {
+        switch project.snapshotFreshness.state {
         case .current:
             "Current"
         case .refreshing:
@@ -379,7 +380,7 @@ struct ProjectStorageSettingsPane: View {
     }
 
     private var freshnessBadgeStyle: ProjectHealthBadge.Style {
-        switch store.snapshotFreshness.state {
+        switch project.snapshotFreshness.state {
         case .current:
             .ok
         case .refreshing, .unknown:

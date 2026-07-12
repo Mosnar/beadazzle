@@ -38,17 +38,27 @@ struct BeadProjectLoader: Sendable {
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil
     ) async throws -> LoadedProject {
-        let loadedSnapshot = try await Task.detached(priority: .userInitiated) {
-            try PerformanceSignposts.load.withIntervalSignpost("SnapshotRead") {
+        let snapshotTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let snapshot = try PerformanceSignposts.load.withIntervalSignpost("SnapshotRead") {
                 try BeadsSnapshotReader().loadProject(projectURL: projectURL)
             }
-        }.value
+            try Task.checkCancellation()
+            return snapshot
+        }
+        let loadedSnapshot = try await withTaskCancellationHandler {
+            try await snapshotTask.value
+        } onCancel: {
+            snapshotTask.cancel()
+        }
+        try Task.checkCancellation()
         let definitions: BeadSemanticDefinitions?
         if let cachedDefinitions {
             definitions = cachedDefinitions
         } else {
             definitions = await loadDefinitions(projectURL: projectURL)
         }
+        try Task.checkCancellation()
         let metadata = BeadsMetadataService()
         let semantics = metadata.loadSemantics(
             projectURL: projectURL,
@@ -57,7 +67,8 @@ struct BeadProjectLoader: Sendable {
             typeDefinitions: definitions?.types
         )
 
-        return await Task.detached(priority: .userInitiated) {
+        let indexTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             let index = PerformanceSignposts.load.withIntervalSignpost("IndexBuild") {
                 BeadProjectIndex(
                     issues: loadedSnapshot.snapshot.issues,
@@ -67,6 +78,7 @@ struct BeadProjectLoader: Sendable {
                     hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
                 )
             }
+            try Task.checkCancellation()
             return LoadedProject(
                 source: loadedSnapshot.source,
                 snapshot: loadedSnapshot.snapshot,
@@ -74,7 +86,12 @@ struct BeadProjectLoader: Sendable {
                 snapshotRefreshWarning: nil,
                 definitions: definitions
             )
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await indexTask.value
+        } onCancel: {
+            indexTask.cancel()
+        }
     }
 
     func initializeAndLoadProject(

@@ -11,6 +11,7 @@ import SwiftUI
 struct IssueListTableView: NSViewRepresentable {
     let rows: [IssueListRow]
     let selectedIDs: Set<String>
+    let bookmark: BeadBookmark
     let mode: IssueListMode
     let displayOptions: BeadListDisplayOptions
     let contentRevision: Int
@@ -231,7 +232,7 @@ struct IssueListTableView: NSViewRepresentable {
                         gate: gate,
                         now: parent.gateClock,
                         // Gate rows disclose their blocked beads in the Gates section.
-                        showsDisclosure: parent.mode == .outline || parent.store.selectedBookmark == .gates,
+                        showsDisclosure: parent.mode == .outline || parent.bookmark == .gates,
                         toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
                     ),
                     itemID: itemID,
@@ -259,7 +260,7 @@ struct IssueListTableView: NSViewRepresentable {
                         statusCategory: store.statusCategory(for: issue.status),
                         blockedReason: store.blockedReasonPresentation(
                             for: itemID,
-                            bookmark: store.selectedBookmark,
+                            bookmark: parent.bookmark,
                             now: parent.gateClock
                         ),
                         blockedByItems: blockedByItems,
@@ -292,7 +293,7 @@ struct IssueListTableView: NSViewRepresentable {
         }
 
         private func computeReadyGateGroupRange(_ rows: [IssueListRow]) -> Range<Int>? {
-            guard parent.store.selectedBookmark == .gates else { return nil }
+            guard parent.bookmark == .gates else { return nil }
 
             var groupStart: Int?
             var groupEnd: Int?

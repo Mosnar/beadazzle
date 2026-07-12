@@ -4,6 +4,7 @@ import SwiftUI
 struct BeadPickerPopover: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
     let configuration: BeadPickerConfiguration
     let onApplied: (String?) -> Void
     let onDismiss: () -> Void
@@ -18,7 +19,7 @@ struct BeadPickerPopover: View {
     var body: some View {
         @Bindable var model = model
         let defaultDraft = store.beadPickerDefaultDraft(for: configuration)
-        let queryToken = model.queryToken(configuration: configuration, contentRevision: store.contentRevision)
+        let queryToken = model.queryToken(configuration: configuration, contentRevision: project.contentRevision)
 
         VStack(alignment: .leading, spacing: 0) {
             header

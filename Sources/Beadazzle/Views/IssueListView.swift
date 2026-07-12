@@ -2,6 +2,9 @@ import SwiftUI
 
 struct IssueListView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
+    private var workspace: BeadWorkspaceStore { store.workspace }
+    private var detail: BeadDetailStore { store.detail }
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
     let requestDelete: (Set<String>) -> Void
@@ -9,13 +12,13 @@ struct IssueListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if store.selectedBookmark != .gates {
+            if workspace.selectedBookmark != .gates {
                 IssueListHeader()
                 Divider()
             }
 
             Group {
-                if store.projectURL == nil {
+                if project.projectURL == nil {
                     ContentUnavailableView("Open a Beads Project", systemImage: "folder.badge.plus")
                 } else if store.issues.isEmpty && !store.hasActiveFilters && store.searchText.isEmpty {
                     ContentUnavailableView(
@@ -23,19 +26,20 @@ struct IssueListView: View {
                         systemImage: "circle.hexagongrid",
                         description: Text("Create a bead to start tracking work in this project.")
                     )
-                } else if store.filteredIssueIDs.isEmpty {
+                } else if workspace.filteredIssueIDs.isEmpty {
                     ContentUnavailableView("No Beads Match", systemImage: "line.3.horizontal.decrease.circle")
                 } else {
                     // Fixed-height NSTableView (see IssueListTableView): SwiftUI's List/Table
                     // measure every row's height via Auto Layout on any wholesale change,
                     // which hangs the main thread for seconds at ~1200 rows.
                     IssueListTableView(
-                        rows: store.issueListRows,
-                        selectedIDs: store.selectedIDs,
+                        rows: workspace.issueListRows,
+                        selectedIDs: workspace.selectedIDs,
+                        bookmark: workspace.selectedBookmark,
                         mode: store.issueListMode,
                         displayOptions: store.beadListDisplayOptions,
-                        contentRevision: store.contentRevision,
-                        gateClock: store.gateClock,
+                        contentRevision: project.contentRevision,
+                        gateClock: detail.gateClock,
                         store: store,
                         requestClose: requestClose,
                         requestSetStatus: requestSetStatus,
@@ -47,7 +51,7 @@ struct IssueListView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
-        .task(id: GateClockTaskID(bookmark: store.selectedBookmark, contentRevision: store.contentRevision)) {
+        .task(id: GateClockTaskID(bookmark: workspace.selectedBookmark, contentRevision: project.contentRevision)) {
             await runGateClockIfNeeded()
         }
         .task(id: RelativeFilterClockTaskID(hasRelativeRules: store.hasRelativeSavedViewFilters)) {
@@ -69,7 +73,7 @@ struct IssueListView: View {
     }
 
     private var usesGateClock: Bool {
-        store.selectedBookmark == .gates || store.selectedBookmark == .blocked
+        workspace.selectedBookmark == .gates || workspace.selectedBookmark == .blocked
     }
 
     @MainActor
@@ -110,6 +114,7 @@ enum IssueListMetrics {
 
 private struct IssueListHeader: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var workspace: BeadWorkspaceStore { store.workspace }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -127,7 +132,7 @@ private struct IssueListHeader: View {
                         Button("Edit Bookmark...") {
                             store.requestEditingActiveSavedView()
                         }
-                        .disabled(store.sourceSavedViewID == nil)
+                        .disabled(workspace.sourceSavedViewID == nil)
                         if store.isSavedViewDrifted {
                             Button("Revert to Bookmark") {
                                 store.revertToSourceSavedView()
@@ -160,7 +165,7 @@ private struct IssueListHeader: View {
 
                 // The Gates section always shows gate → blocked beads, so the flat/outline
                 // toggle has no meaning there.
-                if store.selectedBookmark != .gates {
+                if workspace.selectedBookmark != .gates {
                     IssueListModePicker()
                 }
             }
@@ -180,13 +185,14 @@ private struct IssueListHeader: View {
         let count = store.filteredIssueCount == store.issues.count
             ? "\(store.issues.count.formatted()) beads"
             : "\(store.filteredIssueCount.formatted()) of \(store.issues.count.formatted())"
-        guard !store.selectedIDs.isEmpty else { return count }
-        return "\(count), \(store.selectedIDs.count.formatted()) selected"
+        guard !workspace.selectedIDs.isEmpty else { return count }
+        return "\(count), \(workspace.selectedIDs.count.formatted()) selected"
     }
 }
 
 private struct ViewOptionsMenu: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
 
     var body: some View {
         @Bindable var store = store
@@ -206,8 +212,8 @@ private struct ViewOptionsMenu: View {
         .menuStyle(.button)
         .controlSize(.small)
         .fixedSize()
-        .disabled(store.projectURL == nil)
-        .help(store.projectURL == nil ? "Open a project to change view options" : "View Options")
+        .disabled(project.projectURL == nil)
+        .help(project.projectURL == nil ? "Open a project to change view options" : "View Options")
         .accessibilityLabel("View Options")
     }
 }

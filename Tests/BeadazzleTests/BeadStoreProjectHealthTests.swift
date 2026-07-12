@@ -13,6 +13,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         store.loadProjectHealthStatus()
         await store.waitForPendingProjectHealthLoad()
 
+        XCTAssertNil(store.projectHealthTask)
         let health = try XCTUnwrap(store.projectHealthSnapshot)
         XCTAssertTrue(health.context.value?.usesCurrentEmbeddedDolt == true)
         XCTAssertEqual(health.storageConfig.value?.exportAuto, true)

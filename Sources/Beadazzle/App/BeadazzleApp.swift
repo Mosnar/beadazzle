@@ -10,7 +10,7 @@ struct BeadazzleApp: App {
     var body: some Scene {
         WindowGroup("Beadazzle", id: "main") {
             ContentView()
-                .environment(store)
+                .beadStoreEnvironment(store)
                 .frame(minWidth: WindowLayout.minWidth, minHeight: WindowLayout.minHeight)
         }
         .windowToolbarStyle(.unified(showsTitle: false))
@@ -54,7 +54,7 @@ struct BeadazzleApp: App {
 
         Settings {
             SettingsView()
-                .environment(store)
+                .beadStoreEnvironment(store)
                 .environmentObject(updaterController)
         }
         .windowToolbarStyle(.unifiedCompact)
@@ -62,7 +62,7 @@ struct BeadazzleApp: App {
 
         WindowGroup("Project Settings", for: URL.self) { projectURL in
             ProjectSettingsView(projectURL: projectURL.wrappedValue)
-                .environment(store)
+                .beadStoreEnvironment(store)
         }
         .defaultSize(width: 760, height: 500)
         .windowToolbarStyle(.unifiedCompact)

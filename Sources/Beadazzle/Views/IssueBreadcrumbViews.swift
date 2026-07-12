@@ -2,6 +2,7 @@ import SwiftUI
 
 struct IssueCreationToolbar: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var workspace: BeadWorkspaceStore { store.workspace }
     let draft: IssueDraft
     let canCreate: Bool
     let isCreating: Bool
@@ -15,7 +16,7 @@ struct IssueCreationToolbar: View {
             }
             .disabled(isCreating)
             BreadcrumbSeparator()
-            BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
+            BreadcrumbLabel(workspace.selectedBookmark.title, systemImage: workspace.selectedBookmark.systemImage)
             BreadcrumbSeparator()
 
             BreadcrumbIssueLabel(
@@ -72,6 +73,7 @@ struct IssueCreationToolbar: View {
 
 struct IssueBreadcrumbBar: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var workspace: BeadWorkspaceStore { store.workspace }
     let issue: BeadIssue
     let isDirty: Bool
     let canSave: Bool
@@ -91,9 +93,9 @@ struct IssueBreadcrumbBar: View {
             }
             // The Gates crumb is dropped here — a task nested under a gate doesn't belong to
             // "Gates", and hiding it reclaims horizontal space.
-            if store.selectedBookmark != .gates {
+            if workspace.selectedBookmark != .gates {
                 BreadcrumbSeparator()
-                BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
+                BreadcrumbLabel(workspace.selectedBookmark.title, systemImage: workspace.selectedBookmark.systemImage)
             }
 
             if let parentIssue = store.parentIssue(for: issue.id) {

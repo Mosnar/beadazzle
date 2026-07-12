@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
+    private var workspace: BeadWorkspaceStore { store.workspace }
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsSidebar = true
     @State private var workspaceWidth: CGFloat = 0
@@ -30,7 +32,7 @@ struct ContentView: View {
                     Label("New Bead", systemImage: "plus")
                 }
                 .disabled(!store.canCreateBead)
-                .help(store.selectedBookmark == .gates ? "Gates are created from a bead's ⋯ menu, not here" : "New Bead")
+                .help(workspace.selectedBookmark == .gates ? "Gates are created from a bead's ⋯ menu, not here" : "New Bead")
 
                 BulkActionsMenu(
                     requestDeleteSelected: requestDeleteSelected,
@@ -73,7 +75,7 @@ struct ContentView: View {
                 existing: existingSavedView(for: request),
                 initialFilter: store.currentSavedViewConfiguration,
                 suggestedName: store.suggestedSavedViewName,
-                initialSymbolName: store.selectedBookmark.systemImage
+                initialSymbolName: workspace.selectedBookmark.systemImage
             )
         }
         .alert("Beadazzle", isPresented: errorBinding) {
@@ -93,15 +95,15 @@ struct ContentView: View {
             find: store.hasReadableProject ? { searchPresented = true } : nil,
             saveCurrentViewAsBookmark: store.canCreateSavedView ? presentSaveBookmark : nil
         ))
-        .onChange(of: store.projectURL) {
+        .onChange(of: project.projectURL) {
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
             savedViewEditorRequest = nil
         }
-        .onChange(of: store.requestedSavedViewEditorID) { _, id in
+        .onChange(of: workspace.requestedSavedViewEditorID) { _, id in
             guard let id else { return }
             savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
-            store.requestedSavedViewEditorID = nil
+            store.clearRequestedSavedViewEditor()
         }
     }
 
@@ -135,8 +137,8 @@ struct ContentView: View {
         .searchable(text: searchText, isPresented: $searchPresented, placement: .toolbar, prompt: "Search beads")
         .background {
             WorkspaceMouseNavigationBridge(
-                canGoBack: store.canGoBack,
-                canGoForward: store.canGoForward,
+                canGoBack: workspace.canGoBack,
+                canGoForward: workspace.canGoForward,
                 goBack: store.goBack,
                 goForward: store.goForward
             )
@@ -151,7 +153,7 @@ struct ContentView: View {
 
     private func existingSavedView(for request: SavedViewEditorRequest) -> BeadSavedView? {
         guard case .edit(let id) = request.mode else { return nil }
-        return store.savedViews.first { $0.id == id }
+        return workspace.savedViews.first { $0.id == id }
     }
 
     // Keep `IssueListView` in a single, stable structural slot (HSplitView[0]) across
@@ -192,11 +194,11 @@ struct ContentView: View {
     private func workspaceDetailContent(for presentation: WorkspacePresentation) -> some View {
         switch presentation {
         case .missingDataSource:
-            if let missingDataSourceURL = store.missingDataSourceURL {
+            if let missingDataSourceURL = project.projectReadiness.missingDataSourceURL {
                 MissingDatabaseView(
                     projectURL: missingDataSourceURL,
-                    isInitializing: store.isInitializingBeads,
-                    isRecovering: store.isLoading && !store.isInitializingBeads,
+                    isInitializing: project.isInitializingBeads,
+                    isRecovering: project.isLoading && !project.isInitializingBeads,
                     onInitialize: store.initializeBeads,
                     onOpenProject: openProject
                 )
@@ -210,10 +212,10 @@ struct ContentView: View {
 
     private var workspacePresentation: WorkspacePresentation {
         ContentLayout.presentation(
-            selectionCount: store.selectedIDs.count,
-            isFullPageDetailPresented: store.fullPageDetailIssueID != nil,
+            selectionCount: workspace.selectedIDs.count,
+            isFullPageDetailPresented: workspace.fullPageDetailIssueID != nil,
             hasCreationDraft: store.creationDraft != nil,
-            hasMissingDataSource: store.missingDataSourceURL != nil
+            hasMissingDataSource: project.projectReadiness.missingDataSourceURL != nil
         )
     }
 
@@ -225,7 +227,7 @@ struct ContentView: View {
     }
 
     private var canRefresh: Bool {
-        store.projectURL != nil && !store.isInitializingBeads && !store.isLoading
+        project.projectURL != nil && !project.isInitializingBeads && !project.isLoading
     }
 
     private var errorBinding: Binding<Bool> {
@@ -247,7 +249,7 @@ struct ContentView: View {
     }
 
     private func requestDeleteSelected() {
-        requestDelete(store.selectedIDs)
+        requestDelete(workspace.selectedIDs)
     }
 
     private func requestDelete(_ issueIDs: Set<String>) {
@@ -274,7 +276,7 @@ struct ContentView: View {
     }
 
     private func requestCloseSelected() {
-        let selectedIssues = store.selectedIDs
+        let selectedIssues = workspace.selectedIDs
             .sorted()
             .compactMap { store.issue(with: $0) }
         guard !selectedIssues.isEmpty else { return }
@@ -289,7 +291,7 @@ struct ContentView: View {
     }
 
     private func requestSetSelectedStatus(_ status: String) {
-        requestSetStatus(store.selectedIDs, status)
+        requestSetStatus(workspace.selectedIDs, status)
     }
 
     private func requestSetStatus(_ issueIDs: Set<String>, _ status: String) {

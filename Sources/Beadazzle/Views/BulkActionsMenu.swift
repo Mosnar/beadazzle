@@ -2,18 +2,19 @@ import SwiftUI
 
 struct BulkActionsMenu: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var workspace: BeadWorkspaceStore { store.workspace }
     let requestDeleteSelected: () -> Void
     let requestCloseSelected: () -> Void
     let requestSetStatus: (String) -> Void
 
     var body: some View {
-        let statusOptions = store.statusChangeOptions(forIssueIDs: store.selectedIDs)
+        let statusOptions = store.statusChangeOptions(forIssueIDs: workspace.selectedIDs)
 
         Menu {
             Button(closeTitle) {
                 requestCloseSelected()
             }
-            .disabled(store.selectedIDs.isEmpty)
+            .disabled(workspace.selectedIDs.isEmpty)
 
             if !statusOptions.isEmpty {
                 Menu("Set Status") {
@@ -45,20 +46,20 @@ struct BulkActionsMenu: View {
                     }
                 }
             }
-            .disabled(store.selectedIDs.isEmpty)
+            .disabled(workspace.selectedIDs.isEmpty)
 
             Divider()
 
             Button("Delete Selected", role: .destructive) {
                 requestDeleteSelected()
             }
-            .disabled(store.selectedIDs.isEmpty)
+            .disabled(workspace.selectedIDs.isEmpty)
         } label: {
             Label("Bulk Actions", systemImage: "checklist")
         }
     }
 
     private var closeTitle: String {
-        store.completionActionTitle(for: store.selectedIDs.sorted())
+        store.completionActionTitle(for: workspace.selectedIDs.sorted())
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ProjectPickerButton: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
     @State private var showsProjectPicker = false
 
     var body: some View {
@@ -51,11 +52,11 @@ struct ProjectPickerButton: View {
     }
 
     private var projectHelp: String {
-        store.projectURL?.path ?? "Open a Beads project"
+        project.projectURL?.path ?? "Open a Beads project"
     }
 
     private var projectState: ProjectPickerButtonState {
-        if store.projectURL == nil {
+        if project.projectURL == nil {
             return .noProject
         }
         if store.missingDataSourceURL != nil {
@@ -111,6 +112,7 @@ private enum ProjectPickerFocus: Hashable {
 
 private struct ProjectPickerPopover: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
     @Environment(\.openWindow) private var openWindow
     @Binding var isPresented: Bool
     @State private var query = ""
@@ -118,12 +120,12 @@ private struct ProjectPickerPopover: View {
     @FocusState private var focusedRow: ProjectPickerFocus?
 
     private var currentProject: RecentProject? {
-        guard let projectURL = store.projectURL else { return nil }
+        guard let projectURL = project.projectURL else { return nil }
         return RecentProject(url: projectURL)
     }
 
     private var visibleRecentProjects: [RecentProject] {
-        let recentProjects = store.recentProjects
+        let recentProjects = project.recentProjects
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return recentProjects }
 
@@ -276,7 +278,7 @@ private struct ProjectPickerPopover: View {
     }
 
     private func openProjectSettings() {
-        guard let projectURL = store.projectURL else { return }
+        guard let projectURL = project.projectURL else { return }
         openWindow(value: projectURL.standardizedFileURL)
         isPresented = false
     }

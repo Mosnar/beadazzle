@@ -37,6 +37,7 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
 
 struct ProjectSettingsView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
     let projectURL: URL?
 
     @SceneStorage("Beadazzle.ProjectSettings.SelectedPane") private var selectedPaneRawValue = ProjectSettingsPane.storage.rawValue
@@ -68,7 +69,7 @@ struct ProjectSettingsView: View {
     }
 
     private var isActiveProject: Bool {
-        guard let projectURL, let activeProjectURL = store.projectURL else { return false }
+        guard let projectURL, let activeProjectURL = project.projectURL else { return false }
         return projectURL.standardizedFileURL.path == activeProjectURL.standardizedFileURL.path
     }
 }
@@ -199,6 +200,7 @@ private struct ProjectTypesSettingsPane: View {
 
 private struct ProjectStatusesSettingsPane: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var detail: BeadDetailStore { store.detail }
     @State private var newStatusName = ""
     @State private var newStatusCategory = BeadStatusCategory.active
     @State private var pendingDeleteName: String?

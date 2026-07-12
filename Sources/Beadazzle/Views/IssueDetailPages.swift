@@ -193,6 +193,7 @@ struct IssueDetailContent: View {
 
 private struct IssueDetailBody: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var detail: BeadDetailStore { store.detail }
     let documentIDPrefix: String
     let issue: BeadIssue
     @Binding var draft: IssueDraft
@@ -246,7 +247,7 @@ private struct IssueDetailBody: View {
     private var blockedActionPresentation: BlockedActionPresentation? {
         BlockedActionPresentation.make(
             issueID: issue.id,
-            reason: store.blockedReasonPresentation(for: issue.id, now: store.gateClock),
+            reason: store.blockedReasonPresentation(for: issue.id, now: detail.gateClock),
             canCreateGate: store.canCreateGate(blocking: issue),
             readyDecisionGate: readyDecisionGate
         )
@@ -256,7 +257,7 @@ private struct IssueDetailBody: View {
     /// rejected right now, so the banner surfaces those actions inline.
     private var readyDecisionGate: BeadGate? {
         store.gatesBlocking(issueID: issue.id).first { gate in
-            gate.awaitType == .human && gate.actionState(now: store.gateClock).isReady
+            gate.awaitType == .human && gate.actionState(now: detail.gateClock).isReady
         }
     }
 

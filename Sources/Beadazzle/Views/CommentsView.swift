@@ -2,6 +2,8 @@ import SwiftUI
 
 struct CommentsView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
+    private var detail: BeadDetailStore { store.detail }
     let issue: BeadIssue
     @State private var draftText = ""
     @FocusState private var composerFocused: Bool
@@ -10,7 +12,7 @@ struct CommentsView: View {
         let comments = store.comments(for: issue.id)
         let isLoadingComments = store.isLoadingComments(for: issue.id)
         let commentLoadError = store.commentLoadError(for: issue.id)
-        let issueReferenceLookup = store.issueReferenceLookup
+        let issueReferenceLookup = project.issueReferenceLookup
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -82,7 +84,7 @@ struct CommentsView: View {
                         Label("Comment", systemImage: "paperplane")
                     }
                     .keyboardShortcut(.return, modifiers: [.command])
-                    .disabled(normalizedDraft.isEmpty || store.isAddingComment)
+                    .disabled(normalizedDraft.isEmpty || detail.isAddingComment)
                 }
             }
         }

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
+    private var workspace: BeadWorkspaceStore { store.workspace }
     let onSaveBookmark: () -> Void
     let onEditBookmark: (UUID) -> Void
 
@@ -9,8 +11,8 @@ struct SidebarView: View {
         List(selection: bookmarkSelection) {
             Section("Project") {
                 ProjectPickerButton()
-                if store.snapshotFreshness.state == .possiblyStale {
-                    SnapshotFreshnessSidebarRow(freshness: store.snapshotFreshness)
+                if project.snapshotFreshness.state == .possiblyStale {
+                    SnapshotFreshnessSidebarRow(freshness: project.snapshotFreshness)
                 }
             }
 
@@ -22,22 +24,22 @@ struct SidebarView: View {
             }
 
             Section {
-                if let message = store.savedViewsPersistenceMessage {
+                if let message = workspace.savedViewsPersistenceMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
                         .font(.caption)
                         .accessibilityHint("The original bookmark data was preserved.")
                 }
-                if store.savedViews.isEmpty, store.savedViewsPersistenceMessage == nil {
+                if workspace.savedViews.isEmpty, workspace.savedViewsPersistenceMessage == nil {
                     Text("No bookmarks yet")
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("No saved bookmarks")
-                } else if !store.savedViews.isEmpty {
-                    ForEach(store.savedViews) { savedView in
+                } else if !workspace.savedViews.isEmpty {
+                    ForEach(workspace.savedViews) { savedView in
                         SavedViewRow(
                             view: savedView,
                             count: store.count(forSavedViewID: savedView.id),
-                            countIsLoading: store.isRebuildingSavedViewCounts,
+                            countIsLoading: workspace.isRebuildingSavedViewCounts,
                             onEdit: { onEditBookmark(savedView.id) }
                         )
                             .tag(BeadSidebarSelection.savedView(savedView.id))
@@ -63,7 +65,7 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .overlay {
-            if store.isLoading {
+            if project.isLoading {
                 ProgressView()
             }
         }
@@ -72,10 +74,10 @@ struct SidebarView: View {
     private var bookmarkSelection: Binding<BeadSidebarSelection?> {
         Binding(
             get: {
-                if let id = store.activeSavedViewID {
+                if let id = workspace.activeSavedViewID {
                     return .savedView(id)
                 }
-                return .preset(store.selectedBookmark)
+                return .preset(workspace.selectedBookmark)
             },
             set: { selection in
                 guard let selection else { return }

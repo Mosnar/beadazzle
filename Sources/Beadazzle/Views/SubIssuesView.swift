@@ -75,6 +75,7 @@ private struct SubIssueListItem: Identifiable {
 
 private struct SubIssueRow: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var detail: BeadDetailStore { store.detail }
     let issue: BeadIssue
     let row: IssueListRow
     @State private var isHovered = false
@@ -94,7 +95,7 @@ private struct SubIssueRow: View {
                 showsOwner: false,
                 showsAssignee: false,
                 showsDueDate: false,
-                blockedReason: store.blockedReasonPresentation(for: issue.id, now: store.gateClock),
+                blockedReason: store.blockedReasonPresentation(for: issue.id, now: detail.gateClock),
                 showsDependencyCounts: false,
                 showsComments: false,
                 showsLabels: false

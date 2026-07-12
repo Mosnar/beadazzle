@@ -4,6 +4,8 @@ import SwiftUI
 
 struct MarkdownFieldEditor: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
+    private var workspace: BeadWorkspaceStore { store.workspace }
     @Binding var text: String
     let placeholder: String
     let documentID: String
@@ -45,13 +47,13 @@ struct MarkdownFieldEditor: View {
         .onChange(of: documentID) {
             dismissPreview()
         }
-        .onChange(of: store.projectURL) {
+        .onChange(of: project.projectURL) {
             dismissPreview()
         }
-        .onChange(of: store.selectedIDs) {
+        .onChange(of: workspace.selectedIDs) {
             dismissPreview()
         }
-        .onChange(of: store.issueReferenceLookup.revision) {
+        .onChange(of: project.issueReferenceLookup.revision) {
             dismissPreview()
         }
         .onDisappear {
@@ -70,7 +72,7 @@ struct MarkdownFieldEditor: View {
             grammarChecking: false,
             automaticSpellingCorrection: false
         )
-        config.services.automaticLinks = store.issueReferenceLookup
+        config.services.automaticLinks = project.issueReferenceLookup
         return config
     }
 

@@ -226,6 +226,7 @@ struct GateDetailPage: View {
 
 private struct GateBreadcrumbBar: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var workspace: BeadWorkspaceStore { store.workspace }
     let gate: BeadGate
     let isBusy: Bool
     let onApprove: () -> Void
@@ -239,9 +240,9 @@ private struct GateBreadcrumbBar: View {
             BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
                 store.clearSelection()
             }
-            if store.selectedBookmark != .gates {
+            if workspace.selectedBookmark != .gates {
                 BreadcrumbSeparator()
-                BreadcrumbLabel(store.selectedBookmark.title, systemImage: store.selectedBookmark.systemImage)
+                BreadcrumbLabel(workspace.selectedBookmark.title, systemImage: workspace.selectedBookmark.systemImage)
             }
             BreadcrumbSeparator()
 
