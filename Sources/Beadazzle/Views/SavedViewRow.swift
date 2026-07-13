@@ -38,8 +38,6 @@ struct SavedViewRow: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2, perform: beginRename)
                 }
             }
             .layoutPriority(1)

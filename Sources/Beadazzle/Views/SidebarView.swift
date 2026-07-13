@@ -38,8 +38,14 @@ struct SidebarView: View {
                         .accessibilityLabel("No saved bookmarks")
                 } else if !workspace.savedViewTree.isEmpty {
                     if workspace.savedViewTree.containsFolders {
-                        OutlineGroup(workspace.savedViewTree.rootNodes, children: \.outlineChildren) { node in
-                            SavedViewNodeRow(node: node, onEditBookmark: onEditBookmark)
+                        ForEach(workspace.savedViews) { savedView in
+                            SavedViewRow(
+                                view: savedView,
+                                count: store.count(forSavedViewID: savedView.id),
+                                countIsLoading: workspace.isRebuildingSavedViewCounts,
+                                onEdit: { onEditBookmark(savedView.id) }
+                            )
+                            .tag(BeadSidebarSelection.savedView(savedView.id))
                         }
                     } else {
                         ForEach(workspace.savedViews) { savedView in
@@ -125,31 +131,6 @@ private struct SavedViewPersistenceNotice: View {
                     .buttonStyle(.link)
             }
             .font(.caption)
-        }
-    }
-}
-
-private struct SavedViewNodeRow: View {
-    @Environment(BeadStore.self) private var store
-    private var workspace: BeadWorkspaceStore { store.workspace }
-    let node: BeadSavedViewNode
-    let onEditBookmark: (UUID) -> Void
-
-    var body: some View {
-        Group {
-            switch node {
-            case .folder(let folder):
-                Label(folder.name, systemImage: "folder")
-                    .foregroundStyle(.secondary)
-            case .view(let savedView):
-                SavedViewRow(
-                    view: savedView,
-                    count: store.count(forSavedViewID: savedView.id),
-                    countIsLoading: workspace.isRebuildingSavedViewCounts,
-                    onEdit: { onEditBookmark(savedView.id) }
-                )
-                .tag(BeadSidebarSelection.savedView(savedView.id))
-            }
         }
     }
 }

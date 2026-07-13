@@ -15,6 +15,7 @@ for users, not for the commit log.
 
 - Added customizable per-project sidebar bookmarks with searchable multi-select filters, nested boolean rules, consistent relative-date results, live previews, modified-bookmark Edit/Revert controls, custom names and icons, counts, editing, duplication, reordering, deletion, and recovery warnings for damaged saved data.
 - Added actions to keep valid bookmarks recovered from damaged data or reset incompatible bookmark data, with every explicit reset archived separately for recovery.
+- Fixed sidebar bookmarks so clicking their name or icon selects them like a native source-list row.
 - Fixed selecting a bead in a filtered outline from revealing sibling beads that do not match the active filter.
 
 ## [1.1.0] - 2026-07-11
