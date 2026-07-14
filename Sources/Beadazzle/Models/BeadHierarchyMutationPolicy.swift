@@ -49,6 +49,34 @@ struct BeadHierarchyMutationPolicy: Sendable {
         }
     }
 
+    func descendants(of issueIDs: [String], excluding excludedIssueIDs: [String]) -> [BeadIssue] {
+        let excludedIDSet = Set(excludedIssueIDs)
+        var visitedIDs = Set(issueIDs)
+        var parentIDsToVisit = issueIDs.sorted()
+        var parentIndex = 0
+        var descendants: [BeadIssue] = []
+
+        while parentIndex < parentIDsToVisit.count {
+            let parentID = parentIDsToVisit[parentIndex]
+            parentIndex += 1
+
+            for childID in (index.childIDsByParentID[parentID] ?? []).sorted() {
+                guard visitedIDs.insert(childID).inserted,
+                      let child = index.issue(with: childID)
+                else { continue }
+
+                parentIDsToVisit.append(childID)
+                if !excludedIDSet.contains(childID) {
+                    descendants.append(child)
+                }
+            }
+        }
+
+        return descendants.sorted { lhs, rhs in
+            lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
+        }
+    }
+
     func doneAncestorsPreventingUncompletion(
         of issueIDs: [String],
         includedIssueIDs: [String]

@@ -430,8 +430,9 @@ extension BeadStore {
     }
 
     @discardableResult
-    func delete(issueIDs: [String]) async -> Bool {
+    func delete(issueIDs: [String], expectedProjectURL: URL? = nil) async -> Bool {
         guard let projectURL else { return false }
+        guard expectedProjectURL == nil || expectedProjectURL == projectURL else { return false }
         let ids = issueIDs.sorted()
         guard !ids.isEmpty else { return false }
 

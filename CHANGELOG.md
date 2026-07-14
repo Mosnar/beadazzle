@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Improved deletion for parent beads with a choice to also permanently delete their descendant beads instead of promoting surviving direct children to the top level.
 - Added customizable per-project sidebar bookmarks with searchable multi-select filters, nested boolean rules, consistent relative-date results, live previews, modified-bookmark Edit/Revert controls, custom names and icons, counts, editing, duplication, reordering, deletion, and recovery warnings for damaged saved data.
 - Added actions to keep valid bookmarks recovered from damaged data or reset incompatible bookmark data, with every explicit reset archived separately for recovery.
 - Fixed sidebar bookmarks so clicking their name or icon selects them like a native source-list row.

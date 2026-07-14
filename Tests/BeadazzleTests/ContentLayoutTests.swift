@@ -3,6 +3,29 @@ import XCTest
 @testable import Beadazzle
 
 final class ContentLayoutTests: XCTestCase {
+    func testDeleteRequestOffersChildDeletionWithoutDuplicatingSelectedChildren() {
+        let request = DeleteBeadsRequest(
+            projectURL: URL(fileURLWithPath: "/tmp/project"),
+            issueIDs: ["bd-parent", "bd-child"],
+            childIssueIDs: ["bd-grandchild"]
+        )
+
+        XCTAssertEqual(request.allIssueIDs, ["bd-child", "bd-grandchild", "bd-parent"])
+        XCTAssertEqual(request.dialogTitle, "Delete selected beads?")
+        XCTAssertEqual(request.deleteAllActionTitle, "Delete Selected and 1 Descendant Bead")
+        XCTAssertEqual(request.deleteSelectedActionTitle, "Delete Selected Only")
+        XCTAssertTrue(request.message.contains("Neither action can be undone"))
+        XCTAssertTrue(request.message.contains("surviving direct children top-level"))
+
+        let singleRequest = DeleteBeadsRequest(
+            projectURL: request.projectURL,
+            issueIDs: ["bd-parent"],
+            childIssueIDs: ["bd-child"]
+        )
+        XCTAssertEqual(singleRequest.dialogTitle, "Delete selected bead?")
+        XCTAssertEqual(singleRequest.deleteSelectedActionTitle, "Delete Parent Only")
+    }
+
     func testSidebarStaysVisibleAtListOnlyBreakpointAndCollapsesBelowIt() {
         XCTAssertTrue(
             ContentLayout.showsSidebar(

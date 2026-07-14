@@ -3,6 +3,69 @@ import XCTest
 
 @MainActor
 final class BeadStoreHierarchyMutationTests: XCTestCase {
+    func testChildIssuesForDeletingIncludesAllUnselectedDescendants() async throws {
+        let loaded = try await makeLoadedStore(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", status: "closed", dependencies: [("bd-parent", "parent-child")]))
+            \(issueLine(id: "bd-grandchild", title: "Grandchild", dependencies: [("bd-child", "parent-child")]))
+            """
+        )
+
+        XCTAssertEqual(
+            loaded.store.childIssues(forDeleting: ["bd-parent"]).map(\.id),
+            ["bd-child", "bd-grandchild"]
+        )
+        XCTAssertEqual(
+            loaded.store.childIssues(forDeleting: ["bd-parent", "bd-child"]).map(\.id),
+            ["bd-grandchild"]
+        )
+    }
+
+    func testDeleteCanIncludeAllChildIssues() async throws {
+        let loaded = try await makeLoadedStore(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", parentID: "bd-parent"))
+            \(issueLine(id: "bd-grandchild", title: "Grandchild", parentID: "bd-child"))
+            """
+        )
+        let childIDs = loaded.store.childIssues(forDeleting: ["bd-parent"]).map(\.id)
+
+        let didDelete = await loaded.store.delete(issueIDs: ["bd-parent"] + childIDs)
+
+        XCTAssertTrue(didDelete)
+        XCTAssertTrue(loaded.store.issues.isEmpty)
+        let calls = await loaded.commands.deleteCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-child", "bd-grandchild", "bd-parent"]])
+    }
+
+    func testDeleteRejectsRequestFromPreviouslyOpenProject() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-shared", title: "First project"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-shared", title: "Second project"))
+        let commands = RecordingHierarchyBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil("first project load") {
+            !store.isLoading && store.issue(with: "bd-shared")?.title == "First project"
+        }
+        store.openProject(secondProjectURL)
+        XCTAssertEqual(store.projectURL, secondProjectURL.standardizedFileURL)
+        try await waitUntil("second project load") {
+            !store.isLoading && store.issue(with: "bd-shared")?.title == "Second project"
+        }
+
+        let didDelete = await store.delete(
+            issueIDs: ["bd-shared"],
+            expectedProjectURL: firstProjectURL
+        )
+
+        XCTAssertFalse(didDelete)
+        XCTAssertNotNil(store.issue(with: "bd-shared"))
+        let calls = await commands.deleteCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
     func testCloseRejectsParentOnlyWhenDescendantsAreUnresolved() async throws {
         let store = try await makeLoadedStore(
             """
@@ -387,13 +450,14 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
     }
 
     private func waitUntil(
+        _ label: String = "condition",
         timeout: TimeInterval = 3.0,
         _ condition: @escaping @MainActor () -> Bool
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
             if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
+                XCTFail("Timed out waiting for \(label)")
                 return
             }
             try await Task.sleep(for: .milliseconds(50))
@@ -404,6 +468,7 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
 private actor RecordingHierarchyBeadsCommands: BeadsCommanding {
     private(set) var updateCalls: [(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?)] = []
     private(set) var closeCalls: [(projectURL: URL, ids: [String], reason: String?)] = []
+    private(set) var deleteCalls: [(projectURL: URL, ids: [String])] = []
     private(set) var bulkUpdateCalls: [
         (
             projectURL: URL,
@@ -438,7 +503,9 @@ private actor RecordingHierarchyBeadsCommands: BeadsCommanding {
         closeCalls.append((projectURL, ids, reason))
     }
 
-    func delete(projectURL: URL, ids: [String]) async throws {}
+    func delete(projectURL: URL, ids: [String]) async throws {
+        deleteCalls.append((projectURL, ids))
+    }
 
     func bulkUpdate(
         projectURL: URL,

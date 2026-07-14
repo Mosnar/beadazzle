@@ -1,6 +1,10 @@
 import Foundation
 
 extension BeadStore {
+    func childIssues(forDeleting issueIDs: [String]) -> [BeadIssue] {
+        hierarchyMutationPolicy.descendants(of: issueIDs, excluding: issueIDs)
+    }
+
     func openChildIssues(forClosing issueIDs: [String]) -> [BeadIssue] {
         unresolvedChildIssues(forCompleting: issueIDs, includedIssueIDs: issueIDs)
     }

@@ -43,19 +43,20 @@ struct ContentView: View {
             }
         }
         .confirmationDialog(
-            "Delete selected beads?",
+            pendingDeleteRequest?.dialogTitle ?? "Delete selected beads?",
             isPresented: deleteConfirmationBinding,
             titleVisibility: .visible,
             presenting: pendingDeleteRequest
         ) { request in
-            Button(request.actionTitle, role: .destructive) {
-                Task {
-                    await store.delete(issueIDs: request.issueIDs)
-                }
+            if request.childIssueIDs.isEmpty {
+                deleteButton(request.actionTitle, request: request, issueIDs: request.issueIDs)
+            } else {
+                deleteButton(request.deleteAllActionTitle, request: request, issueIDs: request.allIssueIDs)
+                deleteButton(request.deleteSelectedActionTitle, request: request, issueIDs: request.issueIDs)
             }
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Beads deletes are destructive. Dependencies involving the selected beads will be cleaned up by bd.")
+        } message: { request in
+            Text(request.message)
         }
         .sheet(item: $hierarchySheetRequest) { request in
             hierarchySheet(for: request)
@@ -97,6 +98,7 @@ struct ContentView: View {
             saveCurrentViewAsBookmark: store.canCreateSavedView ? presentSaveBookmark : nil
         ))
         .onChange(of: project.projectURL) {
+            pendingDeleteRequest = nil
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
             savedViewEditorRequest = nil
@@ -254,8 +256,22 @@ struct ContentView: View {
     }
 
     private func requestDelete(_ issueIDs: Set<String>) {
-        guard !issueIDs.isEmpty else { return }
-        pendingDeleteRequest = DeleteBeadsRequest(issueIDs: issueIDs.sorted())
+        guard !issueIDs.isEmpty, let projectURL = project.projectURL else { return }
+        let sortedIssueIDs = issueIDs.sorted()
+        pendingDeleteRequest = DeleteBeadsRequest(
+            projectURL: projectURL,
+            issueIDs: sortedIssueIDs,
+            childIssueIDs: store.childIssues(forDeleting: sortedIssueIDs).map(\.id)
+        )
+    }
+
+    @ViewBuilder
+    private func deleteButton(_ title: String, request: DeleteBeadsRequest, issueIDs: [String]) -> some View {
+        Button(title, role: .destructive) {
+            Task {
+                await store.delete(issueIDs: issueIDs, expectedProjectURL: request.projectURL)
+            }
+        }
     }
 
     private func openProject() {
@@ -425,11 +441,37 @@ private enum ContentHierarchySheetRequest: Identifiable, Equatable {
     }
 }
 
-private struct DeleteBeadsRequest: Equatable {
+struct DeleteBeadsRequest: Equatable {
+    let projectURL: URL
     let issueIDs: [String]
+    let childIssueIDs: [String]
+
+    var allIssueIDs: [String] {
+        uniqueSortedIssueIDs(issueIDs + childIssueIDs)
+    }
 
     var actionTitle: String {
         "Delete \(issueIDs.count) Bead\(issueIDs.count == 1 ? "" : "s")"
+    }
+
+    var dialogTitle: String {
+        issueIDs.count == 1 ? "Delete selected bead?" : "Delete selected beads?"
+    }
+
+    var deleteAllActionTitle: String {
+        "Delete Selected and \(childIssueIDs.count.formatted()) Descendant Bead\(childIssueIDs.count == 1 ? "" : "s")"
+    }
+
+    var deleteSelectedActionTitle: String {
+        issueIDs.count == 1 ? "Delete Parent Only" : "Delete Selected Only"
+    }
+
+    var message: String {
+        guard !childIssueIDs.isEmpty else {
+            return "Beads deletes are destructive. Dependencies involving the selected beads will be cleaned up by bd."
+        }
+        let descendantText = childIssueIDs.count == 1 ? "descendant bead" : "descendant beads"
+        return "The selection has \(childIssueIDs.count.formatted()) \(descendantText). Neither action can be undone. Deleting only the selected beads will make any surviving direct children top-level."
     }
 }
 
