@@ -83,7 +83,7 @@ struct IssueCreationToolbar: View {
             .layoutPriority(2)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .frame(height: ContentLayout.workspaceToolbarHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -254,7 +254,7 @@ struct IssueBreadcrumbBar: View {
             .layoutPriority(2)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .frame(height: ContentLayout.workspaceToolbarHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

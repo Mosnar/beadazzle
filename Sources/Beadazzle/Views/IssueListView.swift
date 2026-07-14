@@ -178,6 +178,7 @@ private struct IssueListHeader: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
+        .frame(minHeight: ContentLayout.workspaceToolbarHeight)
         .fixedSize(horizontal: false, vertical: true)
     }
 

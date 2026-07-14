@@ -501,10 +501,11 @@ enum WorkspacePresentation: Equatable {
 }
 
 enum ContentLayout {
+    static let workspaceToolbarHeight: CGFloat = 40
     static let sidebarMinWidth: CGFloat = 190
     static let sidebarIdealWidth: CGFloat = 240
     static let sidebarMaxWidth: CGFloat = 320
-    static let listMinWidth: CGFloat = 320
+    static let listMinWidth: CGFloat = 420
     static let listIdealWidth: CGFloat = 420
     static let listMaxWidth: CGFloat = 560
     static let sidebarCollapseBuffer: CGFloat = 24

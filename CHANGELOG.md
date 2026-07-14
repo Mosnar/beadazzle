@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Fixed issue-list controls being clipped off both edges when the list pane was narrowed.
+- Aligned the issue-list and breadcrumb toolbar dividers across the split workspace.
 - New beads can now be assigned and labeled before creation, with the same compact assignee editor available from existing bead details.
 - Fixed unrelated bead saves from clearing an assignment made elsewhere, and made rapid failed metadata changes reliably restore the last confirmed value.
 - Improved deletion for parent beads with a choice to also permanently delete their descendant beads instead of promoting surviving direct children to the top level.
