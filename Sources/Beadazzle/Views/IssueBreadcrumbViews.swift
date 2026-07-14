@@ -1,8 +1,23 @@
 import SwiftUI
 
+struct IssueCreationToolbarPresentation: Equatable {
+    let projectName: String
+    let draftTitle: String
+
+    static let createButtonTitle = "Create"
+
+    init(projectName: String, draftTitle: String) {
+        self.projectName = projectName
+        self.draftTitle = draftTitle.nilIfBlank ?? "Untitled bead"
+    }
+
+    var breadcrumbTitles: [String] {
+        [projectName, draftTitle]
+    }
+}
+
 struct IssueCreationToolbar: View {
     @Environment(BeadStore.self) private var store: BeadStore
-    private var workspace: BeadWorkspaceStore { store.workspace }
     let draft: IssueDraft
     let canCreate: Bool
     let isCreating: Bool
@@ -10,18 +25,21 @@ struct IssueCreationToolbar: View {
     let cancelAction: () -> Void
 
     var body: some View {
+        let presentation = IssueCreationToolbarPresentation(
+            projectName: store.projectName,
+            draftTitle: draft.title
+        )
+
         HStack(spacing: 8) {
-            BreadcrumbButton(store.projectName, systemImage: "folder", help: cancelButtonHelp) {
+            BreadcrumbButton(presentation.projectName, systemImage: "folder", help: cancelButtonHelp) {
                 cancelAction()
             }
             .disabled(isCreating)
             BreadcrumbSeparator()
-            BreadcrumbLabel(workspace.selectedBookmark.title, systemImage: workspace.selectedBookmark.systemImage)
-            BreadcrumbSeparator()
 
             BreadcrumbIssueLabel(
                 issueID: "New",
-                title: draft.title.nilIfBlank ?? "Untitled bead",
+                title: presentation.draftTitle,
                 statusDescription: "new",
                 statusSymbol: "plus.circle.fill",
                 statusColor: .green
@@ -38,18 +56,11 @@ struct IssueCreationToolbar: View {
                 .disabled(isCreating)
                 .help(cancelButtonHelp)
 
-                Button {
-                    createAction()
-                } label: {
-                    Label("Create Bead", systemImage: "checkmark.circle.fill")
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(canCreate ? .green : .secondary)
-                }
-                .buttonStyle(.borderless)
+                Button(IssueCreationToolbarPresentation.createButtonTitle, action: createAction)
+                .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(!canCreate)
                 .help(createButtonHelp)
-                .accessibilityLabel("Create Bead")
             }
             .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(2)

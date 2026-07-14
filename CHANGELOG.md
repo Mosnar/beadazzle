@@ -18,6 +18,7 @@ for users, not for the commit log.
 - Fixed sidebar bookmarks so clicking their name or icon selects them like a native source-list row.
 - Fixed selecting a bead in a filtered outline from revealing sibling beads that do not match the active filter.
 - Fixed project switching so searches and filters from the previous project no longer carry into the next one.
+- Improved new-bead creation with a clear Create button and breadcrumbs that no longer imply the draft belongs to the currently selected sidebar view.
 
 ## [1.1.0] - 2026-07-11
 
