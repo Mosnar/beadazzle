@@ -17,6 +17,7 @@ for users, not for the commit log.
 - Added actions to keep valid bookmarks recovered from damaged data or reset incompatible bookmark data, with every explicit reset archived separately for recovery.
 - Fixed sidebar bookmarks so clicking their name or icon selects them like a native source-list row.
 - Fixed selecting a bead in a filtered outline from revealing sibling beads that do not match the active filter.
+- Fixed project switching so searches and filters from the previous project no longer carry into the next one.
 
 ## [1.1.0] - 2026-07-11
 

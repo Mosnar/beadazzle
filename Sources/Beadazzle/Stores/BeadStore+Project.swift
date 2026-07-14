@@ -21,11 +21,7 @@ extension BeadStore {
         }
         clearLoadedProjectData()
         loadProjectPreferences(for: url)
-        _selectedBookmark = .ready
-        _activeSavedViewID = nil
-        _sourceSavedViewID = nil
-        _activeAdvancedPredicate = nil
-        _savedViewFilterClock = Date()
+        resetWorkspaceQueryForProjectSwitch()
         resetWorkspaceHistory()
         if isMissingDataSourceProject(url) {
             setMissingDataSource(url)

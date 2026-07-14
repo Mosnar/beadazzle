@@ -42,6 +42,28 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "LastProjectPath"), firstProjectURL.standardizedFileURL.path)
     }
 
+    func testSwitchingProjectsResetsSearchAndFilters() throws {
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        let firstProjectURL = try makeProject(named: "First")
+        let secondProjectURL = try makeProject(named: "Second")
+
+        store.openProject(firstProjectURL)
+        store.searchText = "stale query"
+        store.statusFilters = ["open"]
+        store.typeFilters = ["bug"]
+        store.priorityFilters = [1]
+        store.labelFilters = ["urgent"]
+
+        store.openProject(secondProjectURL)
+
+        XCTAssertEqual(store.searchText, "")
+        XCTAssertTrue(store.statusFilters.isEmpty)
+        XCTAssertTrue(store.typeFilters.isEmpty)
+        XCTAssertTrue(store.priorityFilters.isEmpty)
+        XCTAssertTrue(store.labelFilters.isEmpty)
+        XCTAssertFalse(store.hasActiveFilters)
+    }
+
     func testRemoveOnlyRecentProjectClearsLegacyLastProjectPath() throws {
         let defaults = makeUserDefaults()
         let store = BeadStore(userDefaults: defaults)

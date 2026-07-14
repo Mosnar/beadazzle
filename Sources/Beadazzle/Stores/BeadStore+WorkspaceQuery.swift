@@ -1,6 +1,21 @@
 import Foundation
 
 extension BeadStore {
+    internal func resetWorkspaceQueryForProjectSwitch() {
+        suppressesFilterUpdates = true
+        _selectedBookmark = .ready
+        _activeSavedViewID = nil
+        _sourceSavedViewID = nil
+        _activeAdvancedPredicate = nil
+        searchText = ""
+        statusFilters = []
+        typeFilters = []
+        priorityFilters = []
+        labelFilters = []
+        _savedViewFilterClock = Date()
+        suppressesFilterUpdates = false
+    }
+
     func setStatusFilter(_ status: String, isOn: Bool) {
         setFilter(&statusFilters, value: status, isOn: isOn)
     }
