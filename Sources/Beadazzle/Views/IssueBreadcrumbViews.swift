@@ -16,13 +16,20 @@ struct IssueCreationToolbarPresentation: Equatable {
     }
 }
 
-struct DetailActionsMenuPresentationState: Equatable {
+struct DetailToolbarActionPresentationState: Equatable {
     var isHovered = false
     var isPressed = false
     var isFocused = false
 
     var isHighlighted: Bool {
         isHovered || isPressed || isFocused
+    }
+
+    var backgroundOpacity: Double {
+        if isPressed {
+            return 0.20
+        }
+        return isHighlighted ? 0.12 : 0
     }
 }
 
@@ -103,19 +110,13 @@ struct IssueBreadcrumbBar: View {
     let requestClose: (BeadIssue) -> Void
     @State private var showingGateCreation = false
     @State private var pickerConfiguration: BeadPickerConfiguration?
-    @State private var isMoreMenuHovered = false
-    @GestureState private var isMoreMenuPressed = false
+    @FocusState private var isCopyButtonFocused: Bool
     @FocusState private var isMoreMenuFocused: Bool
 
     var body: some View {
         let canCreateGate = store.canCreateGate(blocking: issue)
         let completionTitle = store.completionActionTitle(for: [issue.id])
         let completionSystemImage = store.completionActionSystemImage(for: [issue.id])
-        let moreMenuPresentation = DetailActionsMenuPresentationState(
-            isHovered: isMoreMenuHovered,
-            isPressed: isMoreMenuPressed,
-            isFocused: isMoreMenuFocused
-        )
         HStack(spacing: 8) {
             BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
                 store.clearSelection()
@@ -173,11 +174,17 @@ struct IssueBreadcrumbBar: View {
                 Button {
                     IssueClipboard.copyIssueID(issue.id)
                 } label: {
-                    Label("Copy Bead ID", systemImage: "doc.on.doc")
-                        .labelStyle(.iconOnly)
+                    Color.clear
+                        .frame(width: 28, height: 24)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(
+                    DetailToolbarButtonStyle(
+                        systemImage: "doc.on.doc",
+                        isFocused: isCopyButtonFocused
+                    )
+                )
                 .controlSize(.small)
+                .focused($isCopyButtonFocused)
                 .help("Copy \(issue.id)")
                 .accessibilityLabel("Copy Bead ID")
 
@@ -215,35 +222,12 @@ struct IssueBreadcrumbBar: View {
                         )
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(moreMenuPresentation.isHighlighted ? Color.white : Color.secondary)
+                    Color.clear
                         .frame(width: 28, height: 24)
-                        .background {
-                            if moreMenuPresentation.isHighlighted {
-                                RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
-                                    .fill(Color.white.opacity(isMoreMenuPressed ? 0.20 : 0.12))
-                            }
-                        }
-                        .overlay {
-                            if isMoreMenuFocused {
-                                RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
-                                    .stroke(.tint.opacity(0.75), lineWidth: 1)
-                            }
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
-                        .simultaneousGesture(
-                            DragGesture(minimumDistance: 0)
-                                .updating($isMoreMenuPressed) { _, isPressed, _ in
-                                    isPressed = true
-                                }
-                        )
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+                .menuStyle(DetailActionsMenuStyle(isFocused: isMoreMenuFocused))
                 .controlSize(.small)
                 .focused($isMoreMenuFocused)
-                .onHover { isMoreMenuHovered = $0 }
                 .help("More actions")
                 .accessibilityLabel("More")
                 .popover(isPresented: $showingGateCreation, arrowEdge: .bottom) {
@@ -272,6 +256,123 @@ struct IssueBreadcrumbBar: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct DetailActionsMenuStyle: MenuStyle {
+    let isFocused: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        DetailActionsMenuControl(
+            configuration: configuration,
+            isFocused: isFocused
+        )
+    }
+}
+
+private struct DetailActionsMenuControl: View {
+    let configuration: MenuStyleConfiguration
+    let isFocused: Bool
+    @State private var isHovered = false
+    @GestureState private var isPressed = false
+
+    var body: some View {
+        let presentation = DetailToolbarActionPresentationState(
+            isHovered: isHovered,
+            isPressed: isPressed,
+            isFocused: isFocused
+        )
+
+        ZStack {
+            Menu(configuration)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+
+            DetailToolbarActionChrome(
+                systemImage: "ellipsis.circle",
+                presentation: presentation,
+                isFocused: isFocused
+            )
+                .allowsHitTesting(false)
+        }
+        .frame(width: 28, height: 24)
+        .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
+        .onHover { isHovered = $0 }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .updating($isPressed) { _, isPressed, _ in
+                    isPressed = true
+                }
+        )
+    }
+}
+
+struct DetailToolbarButtonStyle: ButtonStyle {
+    let systemImage: String
+    let isFocused: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        DetailToolbarButtonControl(
+            label: configuration.label,
+            systemImage: systemImage,
+            isPressed: configuration.isPressed,
+            isFocused: isFocused
+        )
+    }
+}
+
+private struct DetailToolbarButtonControl<Label: View>: View {
+    let label: Label
+    let systemImage: String
+    let isPressed: Bool
+    let isFocused: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        let presentation = DetailToolbarActionPresentationState(
+            isHovered: isHovered,
+            isPressed: isPressed,
+            isFocused: isFocused
+        )
+
+        ZStack {
+            label
+
+            DetailToolbarActionChrome(
+                systemImage: systemImage,
+                presentation: presentation,
+                isFocused: isFocused
+            )
+            .allowsHitTesting(false)
+        }
+        .frame(width: 28, height: 24)
+        .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
+        .onHover { isHovered = $0 }
+    }
+}
+
+private struct DetailToolbarActionChrome: View {
+    let systemImage: String
+    let presentation: DetailToolbarActionPresentationState
+    let isFocused: Bool
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(presentation.isHighlighted ? Color.white : Color.secondary)
+            .frame(width: 28, height: 24)
+            .background {
+                if presentation.isHighlighted {
+                    RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
+                        .fill(Color.white.opacity(presentation.backgroundOpacity))
+                }
+            }
+            .overlay {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
+                        .stroke(.tint.opacity(0.75), lineWidth: 1)
+                }
+            }
     }
 }
 
