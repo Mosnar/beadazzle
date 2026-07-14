@@ -93,6 +93,7 @@ struct IssueBreadcrumbBar: View {
     let requestClose: (BeadIssue) -> Void
     @State private var showingGateCreation = false
     @State private var pickerConfiguration: BeadPickerConfiguration?
+    @State private var isMoreMenuHovered = false
 
     var body: some View {
         let canCreateGate = store.canCreateGate(blocking: issue)
@@ -197,11 +198,21 @@ struct IssueBreadcrumbBar: View {
                         )
                     }
                 } label: {
-                    Label("More", systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isMoreMenuHovered ? .primary : .secondary)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            isMoreMenuHovered ? Color.primary.opacity(0.08) : .clear,
+                            in: Circle()
+                        )
+                        .contentShape(Circle())
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .controlSize(.small)
+                .onHover { isMoreMenuHovered = $0 }
+                .help("More actions")
                 .accessibilityLabel("More")
                 .popover(isPresented: $showingGateCreation, arrowEdge: .bottom) {
                     GateCreationForm(blockedIssueID: issue.id, blockedTitle: issue.title) {
