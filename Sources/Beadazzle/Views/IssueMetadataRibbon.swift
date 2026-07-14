@@ -44,6 +44,12 @@ struct IssueMetadataRibbon: View {
                     )
                 }
 
+                IssueMetadataAssigneeControl(
+                    assignee: $draft.assignee,
+                    availableAssignees: store.availableAssignees,
+                    presentation: .ribbonChip
+                )
+
                 IssueMetadataLabelsControl(
                     draft: $draft,
                     availableLabels: store.availableLabels,

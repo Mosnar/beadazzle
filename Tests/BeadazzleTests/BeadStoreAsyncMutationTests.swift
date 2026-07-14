@@ -304,10 +304,10 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(succeeded)
     }
 
-    func testMetadataUpdateAppliesLabelsAndDatesOptimisticallyWithoutSavingDraftText() async throws {
+    func testMetadataUpdateAppliesAssigneeLabelsAndDatesOptimisticallyWithoutSavingDraftText() async throws {
         let projectURL = try makeProject(
             """
-            {"_type":"issue","id":"bd-1","title":"Saved title","description":"Saved description","design":"Saved design","acceptance_criteria":"Saved acceptance","notes":"Saved notes","status":"open","priority":1,"issue_type":"task","labels":["old"],"due_at":"2026-07-10","defer_until":"2026-07-11","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-1","title":"Saved title","description":"Saved description","design":"Saved design","acceptance_criteria":"Saved acceptance","notes":"Saved notes","status":"open","priority":1,"issue_type":"task","assignee":"Before","labels":["old"],"due_at":"2026-07-10","defer_until":"2026-07-11","updated_at":"2026-07-03T20:58:35Z"}
             """
         )
         let commands = RecordingBeadsCommands()
@@ -320,6 +320,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let task = Task { @MainActor in
             await store.updateMetadata(
                 issueID: "bd-1",
+                assignee: "Sasha",
                 labels: ["new", "area:ui"],
                 dueAt: .set(dueAt),
                 deferUntil: .set(nil)
@@ -327,7 +328,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         }
 
         try await waitUntil {
-            store.issue(with: "bd-1")?.labels == ["new", "area:ui"]
+            store.issue(with: "bd-1")?.assignee == "Sasha"
+                && store.issue(with: "bd-1")?.labels == ["new", "area:ui"]
                 && store.issue(with: "bd-1")?.dueAt == dueAt
                 && store.issue(with: "bd-1")?.deferUntil == nil
         }
@@ -341,6 +343,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let metadataUpdateCalls = await commands.metadataUpdateCalls
         let metadataCall = try XCTUnwrap(metadataUpdateCalls.first)
         XCTAssertEqual(metadataCall.issueID, "bd-1")
+        XCTAssertEqual(metadataCall.assignee, "Sasha")
         XCTAssertEqual(metadataCall.labels, ["new", "area:ui"])
         XCTAssertEqual(metadataCall.originalLabels, ["old"])
         XCTAssertEqual(metadataCall.dueAt, .set(dueAt))
@@ -377,6 +380,1120 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(secondSucceeded)
         let metadataUpdateCalls = await commands.metadataUpdateCalls
         XCTAssertEqual(metadataUpdateCalls.map { $0.labels ?? [] }, [["first"], ["second"]])
+    }
+
+    func testRapidFailedMetadataUpdatesRestoreTheLastConfirmedAssignee() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(400), nil])
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let firstTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "First")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "First" }
+
+        let secondTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Second")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Second" }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertFalse(secondSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Before")
+    }
+
+    func testRapidMetadataUpdatesKeepALaterSuccessWhenAnEarlierWriteFails() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(400), nil])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let firstTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "First")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "First" }
+
+        let secondTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Second")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Second" }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Second")
+    }
+
+    func testRapidMetadataUpdatesRetainAnEarlierSuccessWhenALaterWriteFails() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(400), nil])
+        await commands.setMetadataUpdateErrors([nil, StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let firstTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "First")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "First" }
+
+        let secondTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Second")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Second" }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertFalse(secondSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "First")
+    }
+
+    func testMetadataSettlementPreservesAnUnrelatedOptimisticSave() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(400)])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Sasha" }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Updated"
+        let saveTask = Task { @MainActor in
+            await store.save(draft)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Updated" }
+
+        let metadataSucceeded = await metadataTask.value
+        let saveSucceeded = await saveTask.value
+        XCTAssertTrue(metadataSucceeded)
+        XCTAssertTrue(saveSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Sasha")
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Updated")
+    }
+
+    func testFailedLabelReplacementThenClearUsesEveryPossiblePersistedLabel() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(400), nil])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let replacementTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == ["new"] }
+
+        let clearTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: [])
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == [] }
+
+        let replacementSucceeded = await replacementTask.value
+        let clearSucceeded = await clearTask.value
+        let metadataUpdateCalls = await commands.metadataUpdateCalls
+        XCTAssertFalse(replacementSucceeded)
+        XCTAssertTrue(clearSucceeded)
+        let clearCall = try XCTUnwrap(metadataUpdateCalls.last)
+        XCTAssertEqual(Set(clearCall.originalLabels ?? []), Set(["old", "new"]))
+    }
+
+    func testRefreshDefersDuringPendingLabelWriteAndRetainsClearCandidates() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(400), nil])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let replacementTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == ["new"] }
+
+        let exportsBeforeRefresh = await commands.exportCallCount
+        store.refresh()
+        try await Task.sleep(for: .milliseconds(100))
+        let exportsDuringMutation = await commands.exportCallCount
+        XCTAssertEqual(exportsDuringMutation, exportsBeforeRefresh)
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["new"])
+
+        let clearTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: [])
+        }
+        let replacementSucceeded = await replacementTask.value
+        let clearSucceeded = await clearTask.value
+        let metadataUpdateCalls = await commands.metadataUpdateCalls
+        XCTAssertFalse(replacementSucceeded)
+        XCTAssertTrue(clearSucceeded)
+        let clearCall = try XCTUnwrap(metadataUpdateCalls.last)
+        XCTAssertEqual(Set(clearCall.originalLabels ?? []), Set(["old", "new"]))
+    }
+
+    func testRefreshPreservesMetadataSettledAfterLoadBegan() async throws {
+        let projectURL = try makeProject(
+            #"{"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}"#
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let definitionCallsBeforeRefresh = await commands.definitionLoadCallCount
+        await commands.setDefinitionLoadDelay(.milliseconds(300))
+
+        store.refresh()
+        try await waitUntilAsync {
+            await commands.definitionLoadCallCount >= definitionCallsBeforeRefresh + 2
+        }
+        let updateSucceeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        await commands.setDefinitionLoadDelay(nil)
+        try await waitUntil { !store.isLoading }
+
+        XCTAssertTrue(updateSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["new"])
+    }
+
+    func testSettledFailedLabelReplacementRetainsPossibleLabelsForImmediateClear() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let replacementSucceeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        XCTAssertFalse(replacementSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["old"])
+        XCTAssertEqual(
+            Set(store.mutations.possiblyPersistedLabels(for: "bd-1")),
+            Set(["old", "new"])
+        )
+
+        let clearSucceeded = await store.updateMetadata(issueID: "bd-1", labels: [])
+        XCTAssertTrue(clearSucceeded)
+        let metadataUpdateCalls = await commands.metadataUpdateCalls
+        let clearCall = try XCTUnwrap(metadataUpdateCalls.last)
+        XCTAssertEqual(Set(clearCall.originalLabels ?? []), Set(["old", "new"]))
+        XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+    }
+
+    func testFailedLabelReplacementFromEmptyStillWritesImmediateClear() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let replacementSucceeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        XCTAssertFalse(replacementSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, [])
+
+        let clearSucceeded = await store.updateMetadata(issueID: "bd-1", labels: [])
+        XCTAssertTrue(clearSucceeded)
+        let metadataUpdateCalls = await commands.metadataUpdateCalls
+        let clearCall = try XCTUnwrap(metadataUpdateCalls.last)
+        XCTAssertEqual(clearCall.labels, [])
+        XCTAssertEqual(clearCall.originalLabels, ["new"])
+    }
+
+    func testExcessiveLabelUncertaintyBlocksClearUntilRefresh() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let labels = (0...BeadMutationStore.maximumPossiblyPersistedLabelsPerIssue).map { "label-\($0)" }
+        store.mutations.recordPossiblyPersistedLabels(labels, for: "bd-1")
+        let exportsBeforeClear = await commands.exportCallCount
+
+        let succeeded = await store.updateMetadata(issueID: "bd-1", labels: [])
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(
+            store.mutations.possiblyPersistedLabels(for: "bd-1").count,
+            BeadMutationStore.maximumPossiblyPersistedLabelsPerIssue
+        )
+        XCTAssertTrue(store.mutations.labelUncertaintyOverflowed(for: "bd-1"))
+        XCTAssertTrue(store.lastError?.contains("Refresh the project") == true)
+        let metadataUpdateCalls = await commands.metadataUpdateCalls
+        XCTAssertTrue(metadataUpdateCalls.isEmpty)
+        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeClear }
+    }
+
+    func testPendingLabelCandidatesReachTheBoundBeforeClearCanEnqueue() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let candidateCount = BeadMutationStore.maximumPossiblyPersistedLabelsPerIssue + 1
+        await commands.setMetadataUpdateDelays([.milliseconds(400)])
+        await commands.setMetadataUpdateErrors(
+            Array(repeating: StoreMutationTestError.commandFailed, count: candidateCount)
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let tasks = (0..<candidateCount).map { index in
+            Task { @MainActor in
+                await store.updateMetadata(issueID: "bd-1", labels: ["candidate-\(index)"])
+            }
+        }
+        try await waitUntil { store.mutations.labelUncertaintyOverflowed(for: "bd-1") }
+
+        let clearSucceeded = await store.updateMetadata(issueID: "bd-1", labels: [])
+
+        XCTAssertFalse(clearSucceeded)
+        XCTAssertEqual(
+            store.mutations.possiblyPersistedLabels(for: "bd-1").count,
+            BeadMutationStore.maximumPossiblyPersistedLabelsPerIssue
+        )
+        for task in tasks {
+            _ = await task.value
+        }
+    }
+
+    func testSameValueLabelReplacementRecoversOverflowedUncertainty() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let labels = (0...BeadMutationStore.maximumPossiblyPersistedLabelsPerIssue).map { "label-\($0)" }
+        store.mutations.recordPossiblyPersistedLabels(labels, for: "bd-1")
+
+        let succeeded = await store.updateMetadata(issueID: "bd-1", labels: ["old"])
+
+        XCTAssertTrue(succeeded)
+        XCTAssertFalse(store.mutations.labelUncertaintyOverflowed(for: "bd-1"))
+        XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+        let calls = await commands.metadataUpdateCalls
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.labels, ["old"])
+    }
+
+    func testSuccessfulDeleteClearsFailedLabelUncertainty() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let replacementSucceeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        XCTAssertFalse(replacementSucceeded)
+        XCTAssertFalse(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+
+        let deleteSucceeded = await store.delete(issueIDs: ["bd-1"])
+
+        XCTAssertTrue(deleteSucceeded)
+        XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+    }
+
+    func testSuccessfulDeleteInvalidatesOverlappingFailedLabelSettlement() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == ["new"] }
+        let deleteTask = Task { @MainActor in
+            await store.delete(issueIDs: ["bd-1"])
+        }
+
+        let metadataSucceeded = await metadataTask.value
+        let deleteSucceeded = await deleteTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertTrue(deleteSucceeded)
+        XCTAssertNil(store.issue(with: "bd-1"))
+        XCTAssertNil(store.mutations.metadataMutations["bd-1"])
+        XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+    }
+
+    func testFailedFullSaveContributesLabelsToImmediateClearRecovery() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        await commands.setMetadataUpdateErrors([nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.labels = ["new"]
+        let saveTask = Task { @MainActor in
+            await store.save(draft)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == ["new"] }
+        let clearTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: [])
+        }
+
+        let saveSucceeded = await saveTask.value
+        XCTAssertFalse(saveSucceeded)
+        let clearSucceeded = await clearTask.value
+        XCTAssertTrue(clearSucceeded)
+        let calls = await commands.metadataUpdateCalls
+        XCTAssertEqual(Set(calls.last?.originalLabels ?? []), Set(["old", "new"]))
+    }
+
+    func testFailedFullSavePreservesLaterSuccessfulSameValueLabelWrite() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        await commands.setMetadataUpdateErrors([nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.labels = ["new"]
+        let saveTask = Task { @MainActor in
+            await store.save(draft)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == ["new"] }
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        }
+
+        let saveSucceeded = await saveTask.value
+        let metadataSucceeded = await metadataTask.value
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertTrue(metadataSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["new"])
+    }
+
+    func testFailedFocusedDateDoesNotOverwriteLaterSuccessfulBulkDate() async throws {
+        let originalDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-10"))
+        let focusedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let bulkDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-30"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, originalDate)
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(focusedDate))
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == focusedDate }
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(bulkDate))
+        }
+
+        let metadataSucceeded = await metadataTask.value
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertTrue(bulkSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, bulkDate)
+    }
+
+    func testFailedFocusedDateDoesNotOverwriteLaterSuccessfulFullSaveDate() async throws {
+        let focusedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let saveDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-30"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(focusedDate))
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == focusedDate }
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Saved"
+        draft.deferUntil = saveDate
+        let saveTask = Task { @MainActor in
+            await store.save(draft)
+        }
+
+        let metadataSucceeded = await metadataTask.value
+        let saveSucceeded = await saveTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertTrue(saveSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Saved")
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, saveDate)
+    }
+
+    func testFailedFocusedDateDoesNotOverwriteLaterSuccessfulSameValueFullSaveDate() async throws {
+        let attemptedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(attemptedDate))
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == attemptedDate }
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Saved"
+        let saveTask = Task { @MainActor in await store.save(draft) }
+
+        let metadataSucceeded = await metadataTask.value
+        let saveSucceeded = await saveTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertTrue(saveSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Saved")
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, attemptedDate)
+    }
+
+    func testFailedBulkDateRestoresSettledFocusedFailureEvenAtSameValue() async throws {
+        let originalDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-10"))
+        let attemptedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(attemptedDate))
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == attemptedDate }
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(attemptedDate))
+        }
+
+        let metadataSucceeded = await metadataTask.value
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertFalse(bulkSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, originalDate)
+    }
+
+    func testTwoFailedBulkDateWritesRestoreOriginalValueEvenAtSameValue() async throws {
+        let originalDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-10"))
+        let attemptedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(300))
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let firstTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(attemptedDate))
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == attemptedDate }
+        let secondTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(attemptedDate))
+        }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertFalse(secondSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, originalDate)
+    }
+
+    func testFailedFullSaveThenFailedBulkDateRestoresOriginalValueEvenAtSameValue() async throws {
+        let originalDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-10"))
+        let attemptedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.deferUntil = attemptedDate
+        let saveTask = Task { @MainActor in await store.save(draft) }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == attemptedDate }
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(attemptedDate))
+        }
+
+        let saveSucceeded = await saveTask.value
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertFalse(bulkSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, originalDate)
+    }
+
+    func testFailedFullSaveThenSuccessfulBulkPreservesBothResults() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Failed save"
+        let saveTask = Task { @MainActor in await store.save(draft) }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Failed save" }
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], priority: 2)
+        }
+
+        let saveSucceeded = await saveTask.value
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertTrue(bulkSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "One")
+        XCTAssertEqual(store.issue(with: "bd-1")?.priority, 2)
+    }
+
+    func testQueuedFullSaveRefreshesIssueBaselineAfterEarlierFailure() async throws {
+        let projectURL = try makeProject(
+            #"{"_type":"issue","id":"bd-1","title":"Original","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}"#
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelays([.milliseconds(300), nil])
+        await commands.setUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var firstDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        firstDraft.title = "First save"
+        firstDraft.labels = ["new"]
+        let firstTask = Task { @MainActor in await store.save(firstDraft) }
+        try await waitUntil { store.issue(with: "bd-1")?.labels == ["new"] }
+
+        var secondDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        secondDraft.title = "Second save"
+        let secondTask = Task { @MainActor in await store.save(secondDraft) }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Second save")
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["new"])
+        let calls = await commands.updateCalls
+        XCTAssertEqual(calls.map { $0.originalIssue?.title }, ["Original"])
+        XCTAssertEqual(calls.map { $0.originalIssue?.labels }, [["old", "new"]])
+        XCTAssertEqual(calls.map(\.draft.labels), [["new"]])
+    }
+
+    func testFailedFullSaveCannotResurrectLaterSuccessfulDelete() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Failed save"
+        let saveTask = Task { @MainActor in await store.save(draft) }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Failed save" }
+        let deleteTask = Task { @MainActor in await store.delete(issueIDs: ["bd-1"]) }
+
+        let saveSucceeded = await saveTask.value
+        let deleteSucceeded = await deleteTask.value
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertTrue(deleteSucceeded)
+        XCTAssertNil(store.issue(with: "bd-1"))
+    }
+
+    func testLaterSuccessfulBulkDateSurvivesFocusedFailureAndThirdRollback() async throws {
+        let attemptedDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","defer_until":"2026-07-10","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let focusedTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(attemptedDate))
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.deferUntil == attemptedDate }
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(attemptedDate))
+        }
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Will fail"
+        let saveTask = Task { @MainActor in await store.save(draft) }
+
+        let focusedSucceeded = await focusedTask.value
+        let bulkSucceeded = await bulkTask.value
+        let saveSucceeded = await saveTask.value
+        XCTAssertFalse(focusedSucceeded)
+        XCTAssertTrue(bulkSucceeded)
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, attemptedDate)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "One")
+    }
+
+    func testFailedBulkSetCannotResurrectFailedMetadata() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Sasha" }
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], priority: 2)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.priority == 2 }
+
+        let metadataSucceeded = await metadataTask.value
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertFalse(bulkSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Before")
+        XCTAssertEqual(store.issue(with: "bd-1")?.priority, 1)
+    }
+
+    func testFailedDeleteCannotResurrectFailedMetadata() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        await commands.setDeleteError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Sasha" }
+        let deleteTask = Task { @MainActor in
+            await store.delete(issueIDs: ["bd-1"])
+        }
+        try await waitUntil { store.issue(with: "bd-1") == nil }
+
+        let metadataSucceeded = await metadataTask.value
+        let deleteSucceeded = await deleteTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertFalse(deleteSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Before")
+        XCTAssertNil(store.mutations.metadataMutations["bd-1"])
+    }
+
+    func testDelayedDeleteCannotRollBackAcrossProjectABA() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Original A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setDeleteDelay(.milliseconds(400))
+        await commands.setDeleteError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let deleteTask = Task { @MainActor in
+            await store.delete(issueIDs: ["bd-1"])
+        }
+        try await waitUntil { store.issue(with: "bd-1") == nil }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        store.openProject(firstProjectURL)
+        try await waitUntil {
+            !store.isLoading && store.issue(with: "bd-1")?.title == "Original A"
+        }
+
+        let deleteSucceeded = await deleteTask.value
+        XCTAssertFalse(deleteSucceeded)
+        XCTAssertEqual(store.projectURL, firstProjectURL)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Original A")
+        XCTAssertNil(store.lastError)
+    }
+
+    func testAuthoritativeRefreshClearsFailedLabelUncertainty() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(
+            Set(store.mutations.possiblyPersistedLabels(for: "bd-1")),
+            Set(["old", "new"])
+        )
+
+        let exportsBeforeRefresh = await commands.exportCallCount
+        store.refresh()
+        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+        try await waitUntil { !store.isLoading }
+
+        XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+    }
+
+    func testBlankFullSavePreservesNewerOptimisticAssignee() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var staleDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        staleDraft.title = "Updated"
+        let metadataSucceeded = await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        XCTAssertTrue(metadataSucceeded)
+        await commands.setUpdateDelay(.milliseconds(400))
+
+        let saveTask = Task { @MainActor in
+            await store.save(staleDraft)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Updated" }
+
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Sasha")
+        let saveSucceeded = await saveTask.value
+        XCTAssertTrue(saveSucceeded)
+    }
+
+    func testFailedFullSaveDoesNotResurrectFailedMetadata() async throws {
+        let originalUpdatedAt = try XCTUnwrap(BeadFormatters.parseDate("2026-07-03T20:58:35Z"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateDelays([.milliseconds(300)])
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed])
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Sasha" }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Updated"
+        let saveTask = Task { @MainActor in
+            await store.save(draft)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Updated" }
+
+        let metadataSucceeded = await metadataTask.value
+        let saveSucceeded = await saveTask.value
+        XCTAssertFalse(metadataSucceeded)
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Before")
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "One")
+        XCTAssertEqual(store.issue(with: "bd-1")?.updatedAt, originalUpdatedAt)
+    }
+
+    func testSuccessfulFocusedMutationDoesNotResurrectMetadataFromFailedFullSave() async throws {
+        let originalDueAt = try XCTUnwrap(BeadFormatters.parseDate("2026-07-10"))
+        let originalDeferUntil = try XCTUnwrap(BeadFormatters.parseDate("2026-07-11"))
+        let failedDueAt = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let failedDeferUntil = try XCTUnwrap(BeadFormatters.parseDate("2026-07-21"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","labels":["old"],"due_at":"2026-07-10","defer_until":"2026-07-11","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        await commands.setMetadataUpdateErrors([nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var draft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        draft.title = "Failed save"
+        draft.labels = ["failed-save"]
+        draft.dueAt = failedDueAt
+        draft.deferUntil = failedDeferUntil
+        let saveTask = Task { @MainActor in
+            await store.save(draft)
+        }
+        try await waitUntil {
+            store.issue(with: "bd-1")?.labels == ["failed-save"]
+                && store.issue(with: "bd-1")?.dueAt == failedDueAt
+                && store.issue(with: "bd-1")?.deferUntil == failedDeferUntil
+        }
+
+        let metadataTask = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.assignee == "Sasha" }
+
+        let saveSucceeded = await saveTask.value
+        let metadataSucceeded = await metadataTask.value
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertTrue(metadataSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "One")
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "Sasha")
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["old"])
+        XCTAssertEqual(store.issue(with: "bd-1")?.dueAt, originalDueAt)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, originalDeferUntil)
+    }
+
+    func testFailedMetadataUpdateRestoresUpdatedTimestamp() async throws {
+        let originalUpdatedAt = try XCTUnwrap(BeadFormatters.parseDate("2026-07-03T20:58:35Z"))
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.updatedAt, originalUpdatedAt)
+    }
+
+    func testSuccessfulMetadataSettlementDoesNotRebuildUnchangedIndex() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let revisionBeforeUpdate = store.contentRevision
+
+        let succeeded = await store.updateMetadata(issueID: "bd-1", assignee: "Sasha")
+        XCTAssertTrue(succeeded)
+
+        XCTAssertEqual(store.contentRevision, revisionBeforeUpdate + 1)
+    }
+
+    func testMetadataMutationStateDrainsOutOfOrderCompletionsInSubmissionOrder() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let firstID = UUID()
+        let secondID = UUID()
+        var state = BeadMetadataMutationState(
+            confirmedIssue: try XCTUnwrap(store.issue(with: "bd-1")),
+            pendingMutations: [
+                BeadPendingMetadataMutation(
+                    id: firstID,
+                    patch: BeadMetadataMutationPatch(
+                        assignee: "First",
+                        labels: nil,
+                        dueAt: .unchanged,
+                        deferUntil: .unchanged
+                    )
+                ),
+                BeadPendingMetadataMutation(
+                    id: secondID,
+                    patch: BeadMetadataMutationPatch(
+                        assignee: "Second",
+                        labels: nil,
+                        dueAt: .unchanged,
+                        deferUntil: .unchanged
+                    )
+                )
+            ]
+        )
+
+        XCTAssertEqual(state.recordCompletion(id: secondID, succeeded: true)?.count, 0)
+        XCTAssertEqual(state.confirmedIssue.assignee, "Before")
+        XCTAssertEqual(state.resolvedIssue.assignee, "Second")
+
+        XCTAssertEqual(state.recordCompletion(id: firstID, succeeded: true)?.count, 2)
+        XCTAssertTrue(state.pendingMutations.isEmpty)
+        XCTAssertEqual(state.confirmedIssue.assignee, "Second")
+    }
+
+    func testMetadataSettlementProvenanceUpdatesOnlyItsOwnedFields() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","assignee":"Before","labels":["old"],"updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let originalIssue = try XCTUnwrap(store.issue(with: "bd-1"))
+        var assigneeSettlement = originalIssue
+        assigneeSettlement.assignee = "Sasha"
+        var labelSettlement = originalIssue
+        labelSettlement.labels = ["new"]
+
+        let assigneeVersions = store.mutations.recordMetadataWrite(.assignee, for: "bd-1")
+        store.mutations.recordMetadataSettlement(
+            .assignee,
+            issue: assigneeSettlement,
+            sourceWriteVersions: assigneeVersions
+        )
+        let labelVersions = store.mutations.recordMetadataWrite(.labels, for: "bd-1")
+        store.mutations.recordMetadataSettlement(
+            .labels,
+            issue: labelSettlement,
+            sourceWriteVersions: labelVersions
+        )
+
+        let settlement = try XCTUnwrap(store.mutations.metadataSettlement(for: "bd-1"))
+        XCTAssertEqual(settlement.issue.assignee, "Sasha")
+        XCTAssertEqual(settlement.issue.labels, ["new"])
     }
 
     func testMetadataUpdateRollsBackOnCommandFailure() async throws {
@@ -503,6 +1620,53 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
     }
 
+    func testManualRefreshWaitsForActiveGenericMutation() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        var editedDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        editedDraft.title = "Optimistic title"
+
+        let saveTask = Task { @MainActor in await store.save(editedDraft) }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Optimistic title" }
+        let exportsBeforeRefresh = await commands.exportCallCount
+        store.refresh()
+        try await Task.sleep(for: .milliseconds(100))
+        let exportsDuringMutation = await commands.exportCallCount
+
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Optimistic title")
+        XCTAssertEqual(exportsDuringMutation, exportsBeforeRefresh)
+        XCTAssertFalse(store.isLoading)
+        let saveSucceeded = await saveTask.value
+        XCTAssertTrue(saveSucceeded)
+    }
+
+    func testGenericMutationInvalidatesManualRefreshThatStartedFirst() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let definitionCallsBeforeRefresh = await commands.definitionLoadCallCount
+        await commands.setDefinitionLoadDelay(.milliseconds(400))
+
+        store.refresh()
+        try await waitUntilAsync {
+            await commands.definitionLoadCallCount >= definitionCallsBeforeRefresh + 2
+        }
+        var editedDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        editedDraft.title = "Optimistic title"
+        let saveSucceeded = await store.save(editedDraft)
+        XCTAssertTrue(saveSucceeded)
+        await commands.setDefinitionLoadDelay(nil)
+        try await waitUntil { !store.isLoading }
+
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Optimistic title")
+    }
+
     func testManualRefreshPreservesSnapshotAndWarnsWhenExportFails() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -532,6 +1696,190 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         XCTAssertFalse(succeeded)
         XCTAssertEqual(store.lastError, StoreMutationTestError.commandFailed.localizedDescription)
+    }
+
+    func testDelayedBulkFailureCannotRollBackAcrossProjectABA() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Original A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], priority: 2)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.priority == 2 }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        store.openProject(firstProjectURL)
+        try await waitUntil {
+            !store.isLoading && store.issue(with: "bd-1")?.title == "Original A"
+        }
+
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(bulkSucceeded)
+        XCTAssertEqual(store.projectURL, firstProjectURL)
+        XCTAssertEqual(store.issue(with: "bd-1")?.priority, 1)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testSameProjectABARequestsReconcileAfterStaleSuccessfulWrite() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Original A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], priority: 2)
+        }
+        try await waitUntil { store.issue(with: "bd-1")?.priority == 2 }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let exportsAfterReopen = await commands.exportCallCount
+
+        let bulkSucceeded = await bulkTask.value
+        XCTAssertFalse(bulkSucceeded)
+        try await waitUntilAsync { await commands.exportCallCount > exportsAfterReopen }
+    }
+
+    func testProjectSwitchDoesNotDelayNewProjectOptimisticMutation() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-a", title: "Project A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-b", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelays([.milliseconds(400), nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-a") != nil }
+
+        let firstTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-a"], priority: 2)
+        }
+        try await waitUntil { store.issue(with: "bd-a")?.priority == 2 }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-b") != nil }
+
+        let secondTask = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-b"], priority: 3)
+        }
+        try await waitUntil { store.issue(with: "bd-b")?.priority == 3 }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        XCTAssertEqual(store.projectURL, secondProjectURL)
+        XCTAssertEqual(store.issue(with: "bd-b")?.priority, 3)
+    }
+
+    func testOldProjectMutationDoesNotDelayNewProjectManualRefresh() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Project A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.seconds(1))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        var editedDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        editedDraft.title = "Delayed A edit"
+
+        let saveTask = Task { @MainActor in await store.save(editedDraft) }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Delayed A edit" }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        let exportsBeforeRefresh = await commands.exportCallCount
+
+        store.refresh()
+        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+
+        let oldProjectSaveSucceeded = await saveTask.value
+        XCTAssertFalse(oldProjectSaveSucceeded)
+    }
+
+    func testMultiIssueBulkSettlementCompletesBeforeOverlappingDelete() async throws {
+        let deferredDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            \(issueLine(id: "bd-2", title: "Two"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(300))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let bulkTask = Task { @MainActor in
+            await store.bulkSet(
+                issueIDs: ["bd-1", "bd-2"],
+                deferUntil: .set(deferredDate)
+            )
+        }
+        try await waitUntil { store.issue(with: "bd-2")?.deferUntil == deferredDate }
+        let deleteTask = Task { @MainActor in await store.delete(issueIDs: ["bd-1"]) }
+
+        let bulkSucceeded = await bulkTask.value
+        let deleteSucceeded = await deleteTask.value
+        XCTAssertTrue(bulkSucceeded)
+        XCTAssertTrue(deleteSucceeded)
+        XCTAssertNil(store.issue(with: "bd-1"))
+        XCTAssertEqual(store.issue(with: "bd-2")?.deferUntil, deferredDate)
+        XCTAssertNil(store.mutations.metadataMutations["bd-2"])
+    }
+
+    func testBulkSetDeduplicatesIssueIDsBeforeRegisteringMetadataMutations() async throws {
+        let deferredDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.bulkSet(
+            issueIDs: ["bd-1", "bd-1"],
+            deferUntil: .set(deferredDate)
+        )
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.issue(with: "bd-1")?.deferUntil, deferredDate)
+        XCTAssertNil(store.mutations.metadataMutations["bd-1"])
+        let calls = await commands.bulkUpdateCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"]])
+    }
+
+    func testFailedMultiIssueBulkSettlesAndRollsBackWithTwoStateApplications() async throws {
+        let deferredDate = try XCTUnwrap(BeadFormatters.parseDate("2026-07-20"))
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            \(issueLine(id: "bd-2", title: "Two"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        let revisionBeforeMutation = store.contentRevision
+
+        let succeeded = await store.bulkSet(
+            issueIDs: ["bd-1", "bd-2"],
+            deferUntil: .set(deferredDate)
+        )
+
+        XCTAssertFalse(succeeded)
+        XCTAssertNil(store.issue(with: "bd-1")?.deferUntil)
+        XCTAssertNil(store.issue(with: "bd-2")?.deferUntil)
+        XCTAssertEqual(store.contentRevision, revisionBeforeMutation + 2)
+        XCTAssertTrue(store.mutations.metadataMutations.isEmpty)
     }
 
     func testBulkSetReturnsFalseWhenProjectChangesBeforeCommandCompletes() async throws {
@@ -722,6 +2070,109 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let calls = await commands.createCalls
         XCTAssertEqual(calls.count, 1)
+    }
+
+    func testDirectCreateReturnsCommittedIDWhenPostCreateReloadFails() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateResult(issueID: "bd-created")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await commands.setAppendsCreatedIssue(false)
+
+        let createdIssueID = await store.createBead(
+            draft(title: "Committed before reload failure"),
+            revealCreated: true
+        )
+
+        XCTAssertEqual(createdIssueID, "bd-created")
+        XCTAssertFalse(store.selectedIDs.contains("bd-created"))
+        let calls = await commands.createCalls
+        XCTAssertEqual(calls.count, 1)
+    }
+
+    func testDirectCreateWaitsForEarlierOptimisticMutationLifetime() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(StoreMutationTestError.commandFailed)
+        await commands.setCreateResult(issueID: "bd-created")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        var editedDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
+        editedDraft.title = "Optimistic title"
+        let saveTask = Task { @MainActor in await store.save(editedDraft) }
+        try await waitUntil { store.issue(with: "bd-1")?.title == "Optimistic title" }
+        let createTask = Task { @MainActor in
+            await store.createBead(self.draft(title: "Created after rollback"), revealCreated: true)
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        let createCallsWhileSaveIsPending = await commands.createCalls
+        XCTAssertTrue(createCallsWhileSaveIsPending.isEmpty)
+
+        let saveSucceeded = await saveTask.value
+        let createdIssueID = await createTask.value
+        XCTAssertFalse(saveSucceeded)
+        XCTAssertEqual(createdIssueID, "bd-created")
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "One")
+        XCTAssertEqual(store.issue(with: "bd-created")?.title, "Created after rollback")
+    }
+
+    func testDirectCreateCannotRevealAcrossSameProjectABA() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Original A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateDelay(.milliseconds(400))
+        await commands.setCreateResult(issueID: "bd-created")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let createTask = Task { @MainActor in
+            await store.createBead(self.draft(title: "Stale create"), revealCreated: true)
+        }
+        try await waitUntilAsync { await !commands.createCalls.isEmpty }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let exportsAfterReopen = await commands.exportCallCount
+
+        let createdIssueID = await createTask.value
+        XCTAssertNil(createdIssueID)
+        XCTAssertFalse(store.selectedIDs.contains("bd-created"))
+        try await waitUntilAsync { await commands.exportCallCount > exportsAfterReopen }
+    }
+
+    func testManualRefreshWaitsForDirectCreateReload() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateResult(issueID: "bd-created")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let definitionCallsBeforeCreate = await commands.definitionLoadCallCount
+        await commands.setDefinitionLoadDelay(.milliseconds(400))
+
+        let createTask = Task { @MainActor in
+            await store.createBead(self.draft(title: "Committed create"), revealCreated: true)
+        }
+        try await waitUntilAsync {
+            await commands.definitionLoadCallCount >= definitionCallsBeforeCreate + 2
+        }
+        let exportsBeforeRefresh = await commands.exportCallCount
+        store.refresh()
+        try await Task.sleep(for: .milliseconds(100))
+        let exportsDuringCreate = await commands.exportCallCount
+        XCTAssertEqual(exportsDuringCreate, exportsBeforeRefresh)
+        await commands.setDefinitionLoadDelay(nil)
+
+        let createdIssueID = await createTask.value
+        XCTAssertEqual(createdIssueID, "bd-created")
+        XCTAssertEqual(store.issue(with: "bd-created")?.title, "Committed create")
     }
 
     func testCreateRejectsGateDraftWithoutInvokingNormalCreate() async throws {
@@ -1347,6 +2798,37 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.map(\.parentID), ["bd-parent"])
     }
 
+    func testQueuedSetParentRetriesSameValueAfterEarlierFailureRollsBack() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetParentDelays([.milliseconds(300), nil])
+        await commands.setSetParentErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-child") != nil }
+
+        let firstTask = Task { @MainActor in
+            await store.setParent(issueID: "bd-child", parentID: "bd-parent")
+        }
+        try await waitUntil { store.issue(with: "bd-child")?.parentID == "bd-parent" }
+        let secondTask = Task { @MainActor in
+            await store.setParent(issueID: "bd-child", parentID: "bd-parent")
+        }
+
+        let firstSucceeded = await firstTask.value
+        let secondSucceeded = await secondTask.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        XCTAssertEqual(store.issue(with: "bd-child")?.parentID, "bd-parent")
+        let calls = await commands.setParentCalls
+        XCTAssertEqual(calls.map(\.parentID), ["bd-parent", "bd-parent"])
+    }
+
     func testSetParentClearsExistingParent() async throws {
         let projectURL = try makeProject(
             """
@@ -1572,6 +3054,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         (
             projectURL: URL,
             issueID: String,
+            assignee: String?,
             labels: [String]?,
             originalLabels: [String]?,
             dueAt: IssueMetadataDateUpdate,
@@ -1601,13 +3084,23 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var addGateWaiterCalls: [(projectURL: URL, id: String, waiter: String)] = []
     private(set) var loadCommentsCalls: [(projectURL: URL, issueID: String)] = []
     private(set) var exportCallCount = 0
+    private(set) var definitionLoadCallCount = 0
     private var createIssueID = "bd-created"
     private var createError: Error?
+    private var createDelay: Duration?
     private var updateError: Error?
     private var updateDelay: Duration?
+    private var updateDelays: [Duration?] = []
+    private var updateErrors: [Error?] = []
     private var metadataUpdateDelays: [Duration?] = []
+    private var metadataUpdateErrors: [Error?] = []
     private var bulkUpdateError: Error?
     private var bulkUpdateDelay: Duration?
+    private var bulkUpdateDelays: [Duration?] = []
+    private var deleteError: Error?
+    private var deleteDelay: Duration?
+    private var setParentDelays: [Duration?] = []
+    private var setParentErrors: [Error?] = []
     private var exportError: Error?
     private var commentsByIssueID: [String: [BeadComment]] = [:]
     private var commentLoadError: Error?
@@ -1615,9 +3108,19 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var gateDetail: BeadGate?
     private var checkGatesOutput = ""
     private var initializationDelay: Duration?
+    private var definitionLoadDelay: Duration?
+    private var appendsCreatedIssue = true
 
     func setInitializationDelay(_ delay: Duration?) {
         initializationDelay = delay
+    }
+
+    func setDefinitionLoadDelay(_ delay: Duration?) {
+        definitionLoadDelay = delay
+    }
+
+    func setAppendsCreatedIssue(_ appendsCreatedIssue: Bool) {
+        self.appendsCreatedIssue = appendsCreatedIssue
     }
 
     func setCreateResult(issueID: String) {
@@ -1628,6 +3131,10 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         createError = error
     }
 
+    func setCreateDelay(_ delay: Duration?) {
+        createDelay = delay
+    }
+
     func setUpdateError(_ error: Error?) {
         updateError = error
     }
@@ -1636,8 +3143,20 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         updateDelay = delay
     }
 
+    func setUpdateDelays(_ delays: [Duration?]) {
+        updateDelays = delays
+    }
+
+    func setUpdateErrors(_ errors: [Error?]) {
+        updateErrors = errors
+    }
+
     func setMetadataUpdateDelays(_ delays: [Duration?]) {
         metadataUpdateDelays = delays
+    }
+
+    func setMetadataUpdateErrors(_ errors: [Error?]) {
+        metadataUpdateErrors = errors
     }
 
     func setBulkUpdateError(_ error: Error?) {
@@ -1646,6 +3165,26 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setBulkUpdateDelay(_ delay: Duration?) {
         bulkUpdateDelay = delay
+    }
+
+    func setBulkUpdateDelays(_ delays: [Duration?]) {
+        bulkUpdateDelays = delays
+    }
+
+    func setDeleteError(_ error: Error?) {
+        deleteError = error
+    }
+
+    func setDeleteDelay(_ delay: Duration?) {
+        deleteDelay = delay
+    }
+
+    func setSetParentDelays(_ delays: [Duration?]) {
+        setParentDelays = delays
+    }
+
+    func setSetParentErrors(_ errors: [Error?]) {
+        setParentErrors = errors
     }
 
     func setExportError(_ error: Error?) {
@@ -1693,20 +3232,27 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {
         createCalls.append((projectURL: projectURL, draft: draft))
+        if let createDelay {
+            try await Task.sleep(for: createDelay)
+        }
         if let createError {
             throw createError
         }
 
-        try appendCreatedIssue(projectURL: projectURL, issueID: createIssueID, draft: draft)
+        if appendsCreatedIssue {
+            try appendCreatedIssue(projectURL: projectURL, issueID: createIssueID, draft: draft)
+        }
         return createIssueID
     }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {
-        if let updateDelay {
-            try await Task.sleep(for: updateDelay)
+        let delay = updateDelays.isEmpty ? updateDelay : updateDelays.removeFirst()
+        if let delay {
+            try await Task.sleep(for: delay)
         }
-        if let updateError {
-            throw updateError
+        let error = updateErrors.isEmpty ? updateError : updateErrors.removeFirst()
+        if let error {
+            throw error
         }
         updateCalls.append((projectURL: projectURL, draft: draft, originalIssue: originalIssue))
         mutationEvents.append("update:\(draft.id ?? "new")")
@@ -1715,6 +3261,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     func updateMetadata(
         projectURL: URL,
         issueID: String,
+        assignee: String?,
         labels: [String]?,
         originalLabels: [String]?,
         dueAt: IssueMetadataDateUpdate,
@@ -1729,12 +3276,19 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         if let delay {
             try await Task.sleep(for: delay)
         }
-        if let updateError {
-            throw updateError
+        let error: Error?
+        if metadataUpdateErrors.isEmpty {
+            error = updateError
+        } else {
+            error = metadataUpdateErrors.removeFirst()
+        }
+        if let error {
+            throw error
         }
         metadataUpdateCalls.append((
             projectURL: projectURL,
             issueID: issueID,
+            assignee: assignee,
             labels: labels,
             originalLabels: originalLabels,
             dueAt: dueAt,
@@ -1748,7 +3302,14 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         mutationEvents.append("close:\(ids.joined(separator: ","))")
     }
 
-    func delete(projectURL: URL, ids: [String]) async throws {}
+    func delete(projectURL: URL, ids: [String]) async throws {
+        if let deleteDelay {
+            try await Task.sleep(for: deleteDelay)
+        }
+        if let deleteError {
+            throw deleteError
+        }
+    }
 
     func bulkUpdate(
         projectURL: URL,
@@ -1758,8 +3319,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         priority: Int?,
         deferUntil: IssueMetadataDateUpdate
     ) async throws {
-        if let bulkUpdateDelay {
-            try await Task.sleep(for: bulkUpdateDelay)
+        let delay = bulkUpdateDelays.isEmpty ? bulkUpdateDelay : bulkUpdateDelays.removeFirst()
+        if let delay {
+            try await Task.sleep(for: delay)
         }
         if let bulkUpdateError {
             throw bulkUpdateError
@@ -1777,6 +3339,12 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws {
         setParentCalls.append((projectURL: projectURL, issueID: issueID, parentID: parentID))
+        if !setParentDelays.isEmpty, let delay = setParentDelays.removeFirst() {
+            try await Task.sleep(for: delay)
+        }
+        if !setParentErrors.isEmpty, let error = setParentErrors.removeFirst() {
+            throw error
+        }
         mutationEvents.append("parent:\(issueID)")
     }
 
@@ -1826,11 +3394,19 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     }
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
-        []
+        definitionLoadCallCount += 1
+        if let definitionLoadDelay {
+            try await Task.sleep(for: definitionLoadDelay)
+        }
+        return []
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
-        []
+        definitionLoadCallCount += 1
+        if let definitionLoadDelay {
+            try await Task.sleep(for: definitionLoadDelay)
+        }
+        return []
     }
 
     func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws {}

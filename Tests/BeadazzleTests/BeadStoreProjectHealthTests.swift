@@ -209,6 +209,7 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     func updateMetadata(
         projectURL: URL,
         issueID: String,
+        assignee: String?,
         labels: [String]?,
         originalLabels: [String]?,
         dueAt: IssueMetadataDateUpdate,

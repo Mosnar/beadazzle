@@ -153,6 +153,13 @@ extension BeadStore {
     @discardableResult
     func addDependency(issueID: String, dependsOnID: String, type: String) async -> Bool {
         guard let projectURL else { return false }
+        let mutationGeneration = mutations.metadataMutationGeneration
+        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
+        await optimisticMutationQueue.acquire()
+        defer { optimisticMutationQueue.release() }
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return false
+        }
         guard guardHierarchyAllowsParentChildDependency(
             issueID: issueID,
             dependsOnID: dependsOnID,
@@ -166,8 +173,8 @@ extension BeadStore {
 
         let snapshot = currentMutationSnapshot()
         let newDependency = BeadDependency(issueID: issueID, dependsOnID: dependsOnID, type: type, createdAt: Date())
-        beginMutation()
-        defer { endMutation() }
+        let mutationLifetimeGeneration = beginMutation()
+        defer { endMutation(generation: mutationLifetimeGeneration) }
         if !snapshot.dependencies.contains(where: { $0.id == newDependency.id }) {
             applyOptimisticState(issues: snapshot.issues, dependencies: snapshot.dependencies + [newDependency])
         }
@@ -177,12 +184,17 @@ extension BeadStore {
             try await enqueueMutationWrite {
                 try await commands.addDependency(projectURL: projectURL, issueID: issueID, dependsOnID: dependsOnID, type: type)
             }
-            guard self.projectURL == projectURL else { return false }
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                return rejectStaleMutation(targeting: projectURL)
+            }
             reconcileState.request(.mutation)
             return true
         } catch {
-            guard self.projectURL == projectURL else { return false }
-            rollbackOptimisticState(to: snapshot)
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                return rejectStaleMutation(targeting: projectURL)
+            }
+            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: snapshot.issues)
+            reconcileState.request(.mutation)
             lastError = error.localizedDescription
             return false
         }
@@ -331,23 +343,42 @@ extension BeadStore {
     @discardableResult
     func removeDependency(_ dependency: BeadDependency) async -> Bool {
         guard let projectURL else { return false }
+        let mutationGeneration = mutations.metadataMutationGeneration
+        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
+        await optimisticMutationQueue.acquire()
+        defer { optimisticMutationQueue.release() }
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return false
+        }
 
         let snapshot = currentMutationSnapshot()
         let optimisticDependencies = snapshot.dependencies.filter {
             !($0.issueID == dependency.issueID && $0.dependsOnID == dependency.dependsOnID)
         }
-        beginMutation()
-        defer { endMutation() }
+        let mutationLifetimeGeneration = beginMutation()
+        defer { endMutation(generation: mutationLifetimeGeneration) }
         applyOptimisticState(issues: snapshot.issues, dependencies: optimisticDependencies)
 
+        let commands = commands
         do {
-            try await commands.removeDependency(projectURL: projectURL, issueID: dependency.issueID, dependsOnID: dependency.dependsOnID)
-            guard self.projectURL == projectURL else { return false }
+            try await enqueueMutationWrite {
+                try await commands.removeDependency(
+                    projectURL: projectURL,
+                    issueID: dependency.issueID,
+                    dependsOnID: dependency.dependsOnID
+                )
+            }
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                return rejectStaleMutation(targeting: projectURL)
+            }
             reconcileState.request(.mutation)
             return true
         } catch {
-            guard self.projectURL == projectURL else { return false }
-            rollbackOptimisticState(to: snapshot)
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                return rejectStaleMutation(targeting: projectURL)
+            }
+            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: snapshot.issues)
+            reconcileState.request(.mutation)
             lastError = error.localizedDescription
             return false
         }

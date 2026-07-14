@@ -8,6 +8,7 @@ protocol BeadsCommanding: Sendable {
     func updateMetadata(
         projectURL: URL,
         issueID: String,
+        assignee: String?,
         labels: [String]?,
         originalLabels: [String]?,
         dueAt: IssueMetadataDateUpdate,
@@ -162,6 +163,7 @@ struct BeadsCommandService {
     func updateMetadata(
         projectURL: URL,
         issueID: String,
+        assignee: String? = nil,
         labels: [String]? = nil,
         originalLabels: [String]? = nil,
         dueAt: IssueMetadataDateUpdate = .unchanged,
@@ -169,6 +171,7 @@ struct BeadsCommandService {
     ) async throws {
         guard let arguments = BeadsCommandArguments.updateMetadata(
             issueID: issueID,
+            assignee: assignee,
             labels: labels,
             originalLabels: originalLabels,
             dueAt: dueAt,
@@ -914,7 +917,6 @@ enum BeadsCommandArguments {
             "--notes",
             draft.notes
         ]
-        appendNonEmpty(&arguments, flag: "--assignee", value: draft.assignee)
         arguments += ["--due", dateUpdateArgument(draft.dueAt)]
         arguments += ["--defer", dateUpdateArgument(draft.deferUntil)]
         appendLabelUpdate(&arguments, draftLabelsText: draft.labelsText, originalLabels: originalLabels)
@@ -923,6 +925,7 @@ enum BeadsCommandArguments {
 
     static func updateMetadata(
         issueID: String,
+        assignee: String? = nil,
         labels: [String]? = nil,
         originalLabels: [String]? = nil,
         dueAt: IssueMetadataDateUpdate = .unchanged,
@@ -930,6 +933,11 @@ enum BeadsCommandArguments {
     ) -> [String]? {
         var arguments = ["update", issueID]
         var didAppendUpdate = false
+
+        if let assignee {
+            arguments += ["--assignee", assignee.trimmingCharacters(in: .whitespacesAndNewlines)]
+            didAppendUpdate = true
+        }
 
         switch dueAt {
         case .unchanged:

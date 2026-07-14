@@ -14,7 +14,10 @@ struct IssueInspector: View {
                 IssueInspectorProperties(draft: $draft, includesStatus: true)
                 InspectorRowDivider()
 
-                InspectorValueRow(title: "Assignee", systemImage: "person.crop.circle", value: issue.assignee ?? "None")
+                InspectorAssigneeRow(
+                    assignee: $draft.assignee,
+                    availableAssignees: store.availableAssignees
+                )
                 InspectorRowDivider()
                 InspectorValueRow(title: "Owner", systemImage: "person.text.rectangle", value: issue.owner ?? "None")
                 InspectorRowDivider()
@@ -198,6 +201,11 @@ struct IssueCreationInspector: View {
                     draft: $draft,
                     includesStatus: false,
                     typeOptions: store.mutableTypeOptions(including: draft.issueType)
+                )
+                InspectorRowDivider()
+                InspectorAssigneeRow(
+                    assignee: $draft.assignee,
+                    availableAssignees: store.availableAssignees
                 )
                 InspectorRowDivider()
                 InspectorLabelsRow(

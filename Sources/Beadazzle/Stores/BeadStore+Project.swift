@@ -10,6 +10,7 @@ extension BeadStore {
     func openProject(_ url: URL) {
         let url = url.standardizedFileURL
         project.cancelLifecycleWork()
+        mutations.resetMetadataMutations()
         workspace.cancelQueryWork()
         detail.cancelSelectionWork()
         stopDataSourceMonitor()
@@ -188,6 +189,10 @@ extension BeadStore {
 
     internal func refresh(reason: RefreshReason, showsLoadingIndicator: Bool) {
         guard let projectURL else { return }
+        guard reason == .initial || activeMutationCount == 0 else {
+            queueRefreshAfterMutation(reason: reason)
+            return
+        }
         let refreshGeneration = project.beginRefresh()
         // A manual refresh or project (re)load reads authoritative state directly, so any
         // queued coalesced reconcile would just be a redundant reload — drop it.
@@ -217,6 +222,8 @@ extension BeadStore {
         // otherwise every routine reload would re-run `bd`.
         let reloadsDefinitions = reason == .initial || reason == .manual || cachedDefinitions == nil
         let definitionsForLoad = reloadsDefinitions ? nil : cachedDefinitions
+        let metadataBaseline = mutations.reloadBaseline()
+        let optimisticMutationRevision = mutations.optimisticMutationRevision
         if let currentDataSource {
             _snapshotFreshness = snapshotFreshness.refreshing(projectURL: projectURL, source: currentDataSource)
         }
@@ -245,18 +252,32 @@ extension BeadStore {
                 } onCancel: {
                     snapshotTask.cancel()
                 }
-                guard !Task.isCancelled, self?.projectURL == projectURL else { return }
-                if reason == .dataSourceChanged, self?.currentDataSource == loadedProject.source {
+                guard !Task.isCancelled,
+                      let self,
+                      self.projectURL == projectURL,
+                      self.project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
+                else { return }
+                guard reason == .initial
+                        || self.mutations.optimisticMutationRevision == optimisticMutationRevision
+                else {
                     if showsLoadingIndicator {
-                        self?._isLoading = false
+                        self._isLoading = false
                     }
-                    self?.markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
+                    self.queueRefreshAfterMutation(reason: reason)
                     return
                 }
-                self?.applyLoadedProject(
+                if reason == .dataSourceChanged, self.currentDataSource == loadedProject.source {
+                    if showsLoadingIndicator {
+                        self._isLoading = false
+                    }
+                    self.markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
+                    return
+                }
+                self.applyLoadedProject(
                     loadedProject,
                     projectURL: projectURL,
-                    queuesInitialExternalRefresh: reason == .initial
+                    queuesInitialExternalRefresh: reason == .initial,
+                    metadataBaseline: metadataBaseline
                 )
             } catch is CancellationError {
                 guard let self,
@@ -287,11 +308,24 @@ extension BeadStore {
                     }, onCancel: {
                         recoveryTask.cancel()
                     })
-                    guard !Task.isCancelled, self.projectURL == projectURL else { return }
+                    guard !Task.isCancelled,
+                          self.projectURL == projectURL,
+                          self.project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
+                    else { return }
+                    guard reason == .initial
+                            || self.mutations.optimisticMutationRevision == optimisticMutationRevision
+                    else {
+                        if showsLoadingIndicator {
+                            self._isLoading = false
+                        }
+                        self.queueRefreshAfterMutation(reason: reason)
+                        return
+                    }
                     self.applyLoadedProject(
                         recoveredProject,
                         projectURL: projectURL,
-                        queuesInitialExternalRefresh: reason == .initial
+                        queuesInitialExternalRefresh: reason == .initial,
+                        metadataBaseline: metadataBaseline
                     )
                 } catch is CancellationError {
                     guard self.project.ownsRefresh(
@@ -322,16 +356,32 @@ extension BeadStore {
         }
     }
 
+    private func queueRefreshAfterMutation(reason: RefreshReason) {
+        if reason == .manual {
+            cachedDefinitions = nil
+        }
+        requestReconcile(
+            trigger: reason == .dataSourceChanged ? .externalMarker : .mutation
+        )
+    }
+
     internal func applyLoadedProject(
         _ loadedProject: LoadedProject,
         projectURL: URL,
-        queuesInitialExternalRefresh: Bool = false
+        queuesInitialExternalRefresh: Bool = false,
+        metadataBaseline: BeadMetadataReloadBaseline? = nil
     ) {
         let deferredMonitorRoles = reconcileState.complete(
             replaysDeferredEvents: loadedProject.snapshotRefreshWarning == nil
         )
         _projectReadiness = .ready
-        index = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
+        let loadedIndex = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
+        index = metadataBaseline.map {
+            indexPreservingMetadataChanges(in: loadedIndex, since: $0)
+        } ?? loadedIndex
+        if loadedProject.snapshotRefreshWarning == nil {
+            mutations.confirmAuthoritativeMetadata()
+        }
         _contentRevision &+= 1
         scheduleSavedViewCountRebuild()
         if let definitions = loadedProject.definitions {
@@ -373,6 +423,51 @@ extension BeadStore {
             requestReconcile(trigger: .externalMarker)
         }
         scheduleReconcileIfIdle()
+    }
+
+    private func indexPreservingMetadataChanges(
+        in loadedIndex: BeadProjectIndex,
+        since baseline: BeadMetadataReloadBaseline
+    ) -> BeadProjectIndex {
+        var changed = false
+        let mergedIssues = loadedIndex.issues.map { loadedIssue -> BeadIssue in
+            let issueID = loadedIssue.id
+            let currentWriteVersions = mutations.metadataFieldWriteVersions(for: issueID)
+            let baselineWriteVersions = baseline.fieldWriteVersions[issueID] ?? .init()
+            let writeFields = currentWriteVersions.differingFields(from: baselineWriteVersions)
+            let currentSettlementRevisions = mutations.metadataSettlement(for: issueID)?.revisions ?? .init()
+            let baselineSettlementRevisions = baseline.settlementRevisions[issueID] ?? .init()
+            let settlementFields = currentSettlementRevisions.differingFields(
+                from: baselineSettlementRevisions
+            )
+            let pendingState = mutations.metadataMutations[issueID]
+            let pendingFields = pendingState?.pendingFields ?? []
+            guard !writeFields.isEmpty || !settlementFields.isEmpty || !pendingFields.isEmpty else {
+                return loadedIssue
+            }
+
+            var mergedIssue = loadedIssue
+            if let currentIssue = index.issue(with: issueID) {
+                mergedIssue = replacingMetadata(writeFields, in: mergedIssue, with: currentIssue)
+            }
+            if let settlement = mutations.metadataSettlement(for: issueID) {
+                mergedIssue = replacingMetadata(settlementFields, in: mergedIssue, with: settlement.issue)
+            }
+            if let pendingState {
+                mergedIssue = replacingMetadata(pendingFields, in: mergedIssue, with: pendingState.resolvedIssue)
+            }
+            changed = changed || mergedIssue != loadedIssue
+            return mergedIssue
+        }
+        guard changed else { return loadedIndex }
+        return BeadProjectIndex(
+            issues: mergedIssues,
+            dependencies: loadedIndex.dependencies,
+            semantics: loadedIndex.semantics,
+            staleCutoffDays: loadedIndex.staleCutoffDays,
+            hidesParentsWithOnlyBlockedChildrenInReady: loadedIndex.hidesParentsWithOnlyBlockedChildrenInReady,
+            reusingSearchTextFrom: loadedIndex
+        )
     }
 
     internal func pruneGateDetailsForCurrentSnapshot() {

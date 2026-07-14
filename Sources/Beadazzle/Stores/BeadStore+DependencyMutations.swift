@@ -3,7 +3,15 @@ import Foundation
 extension BeadStore {
     @discardableResult
     func setParent(issueID: String, parentID: String?) async -> Bool {
-        guard let projectURL, let originalIssue = index.issue(with: issueID) else { return false }
+        guard let projectURL else { return false }
+        let mutationGeneration = mutations.metadataMutationGeneration
+        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
+        await optimisticMutationQueue.acquire()
+        defer { optimisticMutationQueue.release() }
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return false
+        }
+        guard let originalIssue = index.issue(with: issueID) else { return false }
         let normalizedParentID = parentID?.nilIfBlank
         guard normalizedParentID != issueID else {
             lastError = "A bead cannot be its own parent."
@@ -49,8 +57,8 @@ extension BeadStore {
             )
         }
 
-        beginMutation()
-        defer { endMutation() }
+        let mutationLifetimeGeneration = beginMutation()
+        defer { endMutation(generation: mutationLifetimeGeneration) }
         applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
 
         let commands = commands
@@ -64,12 +72,16 @@ extension BeadStore {
                     parentID: normalizedParentID
                 )
             }
-            guard self.projectURL == projectURL else { return false }
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                return rejectStaleMutation(targeting: projectURL)
+            }
             reconcileState.request(.mutation)
             return true
         } catch {
-            guard self.projectURL == projectURL else { return false }
-            rollbackOptimisticState(to: snapshot)
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                return rejectStaleMutation(targeting: projectURL)
+            }
+            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: optimisticIssues)
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }

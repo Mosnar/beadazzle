@@ -47,6 +47,9 @@ struct DetailView: View {
                 .onChange(of: activeDraft(for: issue).priority) { _, newPriority in
                     commitPriorityChangeIfNeeded(issueID: issue.id, priority: newPriority)
                 }
+                .onChange(of: activeDraft(for: issue).assignee) { _, newAssignee in
+                    commitAssigneeChangeIfNeeded(issueID: issue.id, assignee: newAssignee)
+                }
                 .onChange(of: activeDraft(for: issue).labels) { _, newLabels in
                     commitLabelsChangeIfNeeded(issueID: issue.id, labels: newLabels)
                 }
@@ -327,6 +330,18 @@ struct DetailView: View {
         }
     }
 
+    private func commitAssigneeChangeIfNeeded(issueID: String, assignee: String) {
+        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issue(with: issueID)?.assignee?.nilIfBlank != assignee.nilIfBlank else { return }
+
+        Task { @MainActor in
+            let didSet = await store.updateMetadata(issueID: issueID, assignee: assignee)
+            if !didSet {
+                rollbackAssigneeIfStillAttempted(issueID: issueID, attemptedAssignee: assignee)
+            }
+        }
+    }
+
     private func commitLabelsChangeIfNeeded(issueID: String, labels: [String]) {
         guard draftIssueID == issueID, draft != nil else { return }
         guard store.issue(with: issueID)?.labels != labels else { return }
@@ -442,6 +457,14 @@ struct DetailView: View {
             draft.priority == attemptedPriority
         } apply: { draft, issue in
             draft.priority = issue.priority
+        }
+    }
+
+    private func rollbackAssigneeIfStillAttempted(issueID: String, attemptedAssignee: String) {
+        rollbackMetadataIfStillAttempted(issueID: issueID) { draft in
+            draft.assignee == attemptedAssignee
+        } apply: { draft, issue in
+            draft.assignee = issue.assignee ?? ""
         }
     }
 

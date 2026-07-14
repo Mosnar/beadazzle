@@ -12,12 +12,13 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertFalse(arguments.contains("custom-status"))
     }
 
-    func testUpdateArgumentsIncludeStatusForExistingIssue() throws {
+    func testUpdateArgumentsIncludeStatusAndLeaveAssigneeToMetadataPath() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.update(draft: draft(id: "bd-1", status: "review")))
 
         XCTAssertEqual(arguments.first, "update")
         XCTAssertTrue(arguments.contains("--status"))
         XCTAssertTrue(arguments.contains("review"))
+        XCTAssertNil(value(after: "--assignee", in: arguments))
     }
 
     func testCreateArgumentsNormalizeLabelsAndOmitBlankOptionalFields() {
@@ -35,6 +36,20 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--assignee"))
         XCTAssertTrue(arguments.contains("--labels"))
         XCTAssertTrue(arguments.contains("area:ui,source:user-report"))
+    }
+
+    func testCreateArgumentsIncludeAssigneeAndLabels() {
+        let arguments = BeadsCommandArguments.create(
+            draft: draft(
+                id: nil,
+                status: "open",
+                assignee: "Sasha",
+                labelsText: "area:ui, source:user-report"
+            )
+        )
+
+        XCTAssertEqual(value(after: "--assignee", in: arguments), "Sasha")
+        XCTAssertEqual(value(after: "--labels", in: arguments), "area:ui,source:user-report")
     }
 
     func testCreateArgumentsIncludeDueAndDeferredDatesWhenPresent() {
@@ -152,9 +167,18 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(value(after: "--set-labels", in: arguments), "area:ui,source:user-report")
     }
 
+    func testFullUpdateOmitsBlankAssigneeSoUnrelatedSaveDoesNotClearIt() throws {
+        let arguments = try XCTUnwrap(BeadsCommandArguments.update(
+            draft: draft(id: "bd-1", status: "open", assignee: " ")
+        ))
+
+        XCTAssertNil(value(after: "--assignee", in: arguments))
+    }
+
     func testMetadataUpdateArgumentsOnlyIncludeMetadataFields() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(
             issueID: "bd-1",
+            assignee: "Sasha",
             labels: ["area:ui", "source:user-report"],
             originalLabels: ["old"],
             dueAt: .set(date(year: 2026, month: 7, day: 15)),
@@ -170,9 +194,16 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--status"))
         XCTAssertFalse(arguments.contains("--type"))
         XCTAssertFalse(arguments.contains("--priority"))
+        XCTAssertEqual(value(after: "--assignee", in: arguments), "Sasha")
         XCTAssertEqual(value(after: "--set-labels", in: arguments), "area:ui,source:user-report")
         XCTAssertEqual(value(after: "--due", in: arguments), "2026-07-15")
         XCTAssertEqual(value(after: "--defer", in: arguments), "")
+    }
+
+    func testMetadataUpdateArgumentsCanClearAssignee() throws {
+        let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(issueID: "bd-1", assignee: " "))
+
+        XCTAssertEqual(value(after: "--assignee", in: arguments), "")
     }
 
     func testBulkUpdateArgumentsIncludeDeferredDateWhenPresent() {

@@ -7,15 +7,16 @@ final class BeadMutationWriteQueue {
     private var chain: Task<Void, Never>?
     private var generation = 0
 
-    func enqueue(_ operation: @escaping @Sendable () async throws -> Void) async throws {
+    func enqueue<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
         let previousWrite = chain
         generation += 1
         let operationGeneration = generation
-        let resultTask = Task { () -> Result<Void, any Error> in
+        let resultTask = Task { () -> Result<Value, any Error> in
             await previousWrite?.value
             do {
-                try await operation()
-                return .success(())
+                return .success(try await operation())
             } catch {
                 return .failure(error)
             }
@@ -31,10 +32,34 @@ final class BeadMutationWriteQueue {
         }
 
         switch await resultTask.value {
-        case .success:
-            return
+        case .success(let value):
+            return value
         case .failure(let error):
             throw error
         }
+    }
+}
+
+@MainActor
+final class BeadOptimisticMutationQueue {
+    private var isAcquired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isAcquired {
+            isAcquired = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isAcquired = false
+            return
+        }
+        waiters.removeFirst().resume()
     }
 }
