@@ -16,6 +16,16 @@ struct IssueCreationToolbarPresentation: Equatable {
     }
 }
 
+struct DetailActionsMenuPresentationState: Equatable {
+    var isHovered = false
+    var isPressed = false
+    var isFocused = false
+
+    var isHighlighted: Bool {
+        isHovered || isPressed || isFocused
+    }
+}
+
 struct IssueCreationToolbar: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let draft: IssueDraft
@@ -94,11 +104,18 @@ struct IssueBreadcrumbBar: View {
     @State private var showingGateCreation = false
     @State private var pickerConfiguration: BeadPickerConfiguration?
     @State private var isMoreMenuHovered = false
+    @GestureState private var isMoreMenuPressed = false
+    @FocusState private var isMoreMenuFocused: Bool
 
     var body: some View {
         let canCreateGate = store.canCreateGate(blocking: issue)
         let completionTitle = store.completionActionTitle(for: [issue.id])
         let completionSystemImage = store.completionActionSystemImage(for: [issue.id])
+        let moreMenuPresentation = DetailActionsMenuPresentationState(
+            isHovered: isMoreMenuHovered,
+            isPressed: isMoreMenuPressed,
+            isFocused: isMoreMenuFocused
+        )
         HStack(spacing: 8) {
             BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
                 store.clearSelection()
@@ -200,17 +217,32 @@ struct IssueBreadcrumbBar: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(isMoreMenuHovered ? .primary : .secondary)
-                        .frame(width: 24, height: 24)
-                        .background(
-                            isMoreMenuHovered ? Color.primary.opacity(0.08) : .clear,
-                            in: Circle()
+                        .foregroundStyle(moreMenuPresentation.isHighlighted ? Color.white : Color.secondary)
+                        .frame(width: 28, height: 24)
+                        .background {
+                            if moreMenuPresentation.isHighlighted {
+                                RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
+                                    .fill(Color.white.opacity(isMoreMenuPressed ? 0.20 : 0.12))
+                            }
+                        }
+                        .overlay {
+                            if isMoreMenuFocused {
+                                RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
+                                    .stroke(.tint.opacity(0.75), lineWidth: 1)
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 0)
+                                .updating($isMoreMenuPressed) { _, isPressed, _ in
+                                    isPressed = true
+                                }
                         )
-                        .contentShape(Circle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .controlSize(.small)
+                .focused($isMoreMenuFocused)
                 .onHover { isMoreMenuHovered = $0 }
                 .help("More actions")
                 .accessibilityLabel("More")
