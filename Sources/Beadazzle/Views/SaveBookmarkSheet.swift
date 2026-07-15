@@ -624,7 +624,8 @@ private struct FilterSuggestionTextField: View {
                 Image(systemName: "chevron.down")
                     .frame(width: 24, height: 24)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
             .accessibilityLabel("Show \(field.title) suggestions")
         }
     }

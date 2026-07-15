@@ -272,6 +272,8 @@ struct EditableLabelChip: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .help("Remove \(label)")

@@ -349,8 +349,8 @@ private struct InfoHelpButton: View {
             Image(systemName: isShowingHelp ? "info.circle.fill" : "info.circle")
                 .font(.caption)
                 .foregroundStyle(isShowingHelp ? .secondary : .tertiary)
-                .frame(width: 14, height: 14)
-                .contentShape(Circle())
+                .frame(width: 20, height: 20)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .help(help)

@@ -80,7 +80,7 @@ struct BeadPickerQuickCreateTypeMenu: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: BeadPickerChrome.controlCornerRadius, style: .continuous))
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .accessibilityLabel("Type")

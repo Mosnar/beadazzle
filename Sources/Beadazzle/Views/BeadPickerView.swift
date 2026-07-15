@@ -170,6 +170,8 @@ struct BeadPickerPopover: View {
                     model.clearFilters()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .frame(width: 24, height: 24)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

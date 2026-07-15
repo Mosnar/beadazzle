@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Standardized detail-page icon buttons so normal beads and gates share the same hover effects and full clickable areas.
 - Settings now use a native resizable sidebar, clearer labeled forms, persistent type and status visibility controls, and summary-first project diagnostics with expandable technical details.
 - Fixed app Settings titlebar and sidebar spacing so window controls and navigation align correctly.
 - Adding custom types and statuses now uses focused sheets with clear validation instead of crowded inline forms.

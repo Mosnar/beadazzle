@@ -293,7 +293,8 @@ private struct ProjectDefinitionRow: View {
                     Label("Actions for \(name)", systemImage: "ellipsis.circle")
                         .labelStyle(.iconOnly)
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
                 .fixedSize()
                 .help("Actions for \(name)")
             }

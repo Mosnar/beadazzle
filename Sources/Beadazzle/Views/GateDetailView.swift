@@ -227,6 +227,7 @@ struct GateDetailPage: View {
 private struct GateBreadcrumbBar: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var workspace: BeadWorkspaceStore { store.workspace }
+    @FocusState private var isMoreMenuFocused: Bool
     let gate: BeadGate
     let isBusy: Bool
     let onApprove: () -> Void
@@ -293,19 +294,26 @@ private struct GateBreadcrumbBar: View {
                         Label("Copy Gate ID", systemImage: "doc.on.doc")
                     }
                 } label: {
-                    Label("More", systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
+                    DetailToolbarActionLabel()
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(
+                    DetailToolbarButtonStyle(
+                        systemImage: "ellipsis.circle",
+                        isFocused: isMoreMenuFocused
+                    )
+                )
+                .menuIndicator(.hidden)
                 .controlSize(.small)
-                .fixedSize()
+                .focused($isMoreMenuFocused)
+                .help("More actions")
                 .accessibilityLabel("More")
             }
             .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(2)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .frame(height: ContentLayout.workspaceToolbarHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

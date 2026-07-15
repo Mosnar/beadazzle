@@ -16,23 +16,6 @@ struct IssueCreationToolbarPresentation: Equatable {
     }
 }
 
-struct DetailToolbarActionPresentationState: Equatable {
-    var isHovered = false
-    var isPressed = false
-    var isFocused = false
-
-    var isHighlighted: Bool {
-        isHovered || isPressed || isFocused
-    }
-
-    var backgroundOpacity: Double {
-        if isPressed {
-            return 0.20
-        }
-        return isHighlighted ? 0.12 : 0
-    }
-}
-
 struct IssueCreationToolbar: View {
     @Environment(BeadStore.self) private var store: BeadStore
     let draft: IssueDraft
@@ -174,8 +157,7 @@ struct IssueBreadcrumbBar: View {
                 Button {
                     IssueClipboard.copyIssueID(issue.id)
                 } label: {
-                    Color.clear
-                        .frame(width: 28, height: 24)
+                    DetailToolbarActionLabel()
                 }
                 .buttonStyle(
                     DetailToolbarButtonStyle(
@@ -222,10 +204,16 @@ struct IssueBreadcrumbBar: View {
                         )
                     }
                 } label: {
-                    Color.clear
-                        .frame(width: 28, height: 24)
+                    DetailToolbarActionLabel()
                 }
-                .menuStyle(DetailActionsMenuStyle(isFocused: isMoreMenuFocused))
+                .menuStyle(.button)
+                .buttonStyle(
+                    DetailToolbarButtonStyle(
+                        systemImage: "ellipsis.circle",
+                        isFocused: isMoreMenuFocused
+                    )
+                )
+                .menuIndicator(.hidden)
                 .controlSize(.small)
                 .focused($isMoreMenuFocused)
                 .help("More actions")
@@ -256,123 +244,6 @@ struct IssueBreadcrumbBar: View {
         .padding(.horizontal, 14)
         .frame(height: ContentLayout.workspaceToolbarHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct DetailActionsMenuStyle: MenuStyle {
-    let isFocused: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        DetailActionsMenuControl(
-            configuration: configuration,
-            isFocused: isFocused
-        )
-    }
-}
-
-private struct DetailActionsMenuControl: View {
-    let configuration: MenuStyleConfiguration
-    let isFocused: Bool
-    @State private var isHovered = false
-    @GestureState private var isPressed = false
-
-    var body: some View {
-        let presentation = DetailToolbarActionPresentationState(
-            isHovered: isHovered,
-            isPressed: isPressed,
-            isFocused: isFocused
-        )
-
-        ZStack {
-            Menu(configuration)
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-
-            DetailToolbarActionChrome(
-                systemImage: "ellipsis.circle",
-                presentation: presentation,
-                isFocused: isFocused
-            )
-                .allowsHitTesting(false)
-        }
-        .frame(width: 28, height: 24)
-        .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
-        .onHover { isHovered = $0 }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .updating($isPressed) { _, isPressed, _ in
-                    isPressed = true
-                }
-        )
-    }
-}
-
-struct DetailToolbarButtonStyle: ButtonStyle {
-    let systemImage: String
-    let isFocused: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        DetailToolbarButtonControl(
-            label: configuration.label,
-            systemImage: systemImage,
-            isPressed: configuration.isPressed,
-            isFocused: isFocused
-        )
-    }
-}
-
-private struct DetailToolbarButtonControl<Label: View>: View {
-    let label: Label
-    let systemImage: String
-    let isPressed: Bool
-    let isFocused: Bool
-    @State private var isHovered = false
-
-    var body: some View {
-        let presentation = DetailToolbarActionPresentationState(
-            isHovered: isHovered,
-            isPressed: isPressed,
-            isFocused: isFocused
-        )
-
-        ZStack {
-            label
-
-            DetailToolbarActionChrome(
-                systemImage: systemImage,
-                presentation: presentation,
-                isFocused: isFocused
-            )
-            .allowsHitTesting(false)
-        }
-        .frame(width: 28, height: 24)
-        .contentShape(RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius))
-        .onHover { isHovered = $0 }
-    }
-}
-
-private struct DetailToolbarActionChrome: View {
-    let systemImage: String
-    let presentation: DetailToolbarActionPresentationState
-    let isFocused: Bool
-
-    var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(presentation.isHighlighted ? Color.white : Color.secondary)
-            .frame(width: 28, height: 24)
-            .background {
-                if presentation.isHighlighted {
-                    RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
-                        .fill(Color.white.opacity(presentation.backgroundOpacity))
-                }
-            }
-            .overlay {
-                if isFocused {
-                    RoundedRectangle(cornerRadius: BreadcrumbChrome.cornerRadius)
-                        .stroke(.tint.opacity(0.75), lineWidth: 1)
-                }
-            }
     }
 }
 
@@ -506,7 +377,7 @@ struct BreadcrumbButton: View {
 private enum BreadcrumbChrome {
     static let horizontalPadding: CGFloat = 8
     static let verticalPadding: CGFloat = 5
-    static let cornerRadius: CGFloat = 7
+    static let cornerRadius = DetailToolbarActionMetrics.cornerRadius
 }
 
 struct BreadcrumbSeparator: View {

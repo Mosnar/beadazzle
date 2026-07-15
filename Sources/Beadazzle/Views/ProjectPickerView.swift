@@ -665,7 +665,7 @@ private struct RecentProjectRow: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(isActive ? .white.opacity(0.78) : .secondary)
-                    .frame(width: 18, height: 24)
+                    .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
