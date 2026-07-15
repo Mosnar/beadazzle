@@ -123,28 +123,12 @@ private struct ProjectWorkflowSettingsPane: View {
 
 private struct ProjectTypesSettingsPane: View {
     @Environment(BeadStore.self) private var store: BeadStore
-    @State private var newTypeName = ""
+    @State private var isAddingType = false
     @State private var pendingDeleteName: String?
 
     var body: some View {
         Form {
-            Section("Add Type") {
-                LabeledContent("Name") {
-                    HStack(spacing: 8) {
-                        TextField("New type", text: $newTypeName)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 200)
-                            .onSubmit(addType)
-
-                        Button("Add", systemImage: "plus") {
-                            addType()
-                        }
-                        .disabled(!canAddType)
-                    }
-                }
-            }
-
-            Section("Types") {
+            Section {
                 ForEach(store.allTypeDefinitions) { definition in
                     ProjectDefinitionRow(
                         name: definition.name,
@@ -159,9 +143,18 @@ private struct ProjectTypesSettingsPane: View {
                         pendingDeleteName = definition.name
                     }
                 }
+            } header: {
+                ProjectDefinitionSectionHeader(
+                    title: "Types",
+                    addTitle: "Add Type…",
+                    isPresentingAddSheet: $isAddingType
+                )
             }
         }
         .settingsGroupedForm()
+        .sheet(isPresented: $isAddingType) {
+            ProjectTypeAddSheet()
+        }
         .confirmationDialog(
             "Delete custom type?",
             isPresented: deleteBinding,
@@ -175,62 +168,22 @@ private struct ProjectTypesSettingsPane: View {
         }
     }
 
-    private var canAddType: Bool {
-        guard let normalizedName = try? WorkflowValueValidator.normalizedIdentifier(newTypeName) else { return false }
-        return BeadIssueWorkflowPolicy.isNormalMutableIssueType(normalizedName)
-            && store.allTypeDefinitions.allSatisfy { $0.name != normalizedName }
-    }
-
     private var deleteBinding: Binding<Bool> {
         Binding(
             get: { pendingDeleteName != nil },
             set: { if !$0 { pendingDeleteName = nil } }
         )
     }
-
-    private func addType() {
-        guard canAddType else { return }
-        Task {
-            if await store.addCustomType(named: newTypeName) {
-                newTypeName = ""
-            }
-        }
-    }
 }
 
 private struct ProjectStatusesSettingsPane: View {
     @Environment(BeadStore.self) private var store: BeadStore
-    private var detail: BeadDetailStore { store.detail }
-    @State private var newStatusName = ""
-    @State private var newStatusCategory = BeadStatusCategory.active
+    @State private var isAddingStatus = false
     @State private var pendingDeleteName: String?
 
     var body: some View {
         Form {
-            Section("Add Status") {
-                LabeledContent("Name") {
-                    HStack(spacing: 8) {
-                        TextField("New status", text: $newStatusName)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 200)
-                            .onSubmit(addStatus)
-
-                        Button("Add", systemImage: "plus") {
-                            addStatus()
-                        }
-                        .disabled(!canAddStatus)
-                    }
-                }
-
-                Picker("Category", selection: $newStatusCategory) {
-                    ForEach(BeadStatusCategory.allCases) { category in
-                        Label(category.title, systemImage: category.systemImage)
-                            .tag(category)
-                    }
-                }
-            }
-
-            Section("Statuses") {
+            Section {
                 ForEach(store.allStatusDefinitions) { definition in
                     ProjectDefinitionRow(
                         name: definition.name,
@@ -245,9 +198,18 @@ private struct ProjectStatusesSettingsPane: View {
                         pendingDeleteName = definition.name
                     }
                 }
+            } header: {
+                ProjectDefinitionSectionHeader(
+                    title: "Statuses",
+                    addTitle: "Add Status…",
+                    isPresentingAddSheet: $isAddingStatus
+                )
             }
         }
         .settingsGroupedForm()
+        .sheet(isPresented: $isAddingStatus) {
+            ProjectStatusAddSheet()
+        }
         .confirmationDialog(
             "Delete custom status?",
             isPresented: deleteBinding,
@@ -261,25 +223,11 @@ private struct ProjectStatusesSettingsPane: View {
         }
     }
 
-    private var canAddStatus: Bool {
-        guard let normalizedName = try? WorkflowValueValidator.normalizedIdentifier(newStatusName) else { return false }
-        return store.allStatusDefinitions.allSatisfy { $0.name != normalizedName }
-    }
-
     private var deleteBinding: Binding<Bool> {
         Binding(
             get: { pendingDeleteName != nil },
             set: { if !$0 { pendingDeleteName = nil } }
         )
-    }
-
-    private func addStatus() {
-        guard canAddStatus else { return }
-        Task {
-            if await store.addCustomStatus(named: newStatusName, category: newStatusCategory) {
-                newStatusName = ""
-            }
-        }
     }
 }
 

@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Adding custom types and statuses now uses focused sheets with clear validation instead of crowded inline forms.
 - Fixed issue-list controls being clipped off both edges when the list pane was narrowed.
 - Aligned the issue-list and breadcrumb toolbar dividers across the split workspace.
 - New beads can now be assigned and labeled before creation, with the same compact assignee editor available from existing bead details.
