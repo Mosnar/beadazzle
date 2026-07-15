@@ -23,6 +23,7 @@ struct BeadazzleApp: App {
 
             WorkspaceCommands()
             BeadSaveCommands()
+            AppSettingsCommands()
             ProjectSettingsCommands(store: store)
 
             CommandMenu("Navigate") {
@@ -52,19 +53,25 @@ struct BeadazzleApp: App {
             }
         }
 
-        Settings {
+        Window("Settings", id: "settings") {
             SettingsView()
                 .beadStoreEnvironment(store)
                 .environmentObject(updaterController)
         }
-        .windowToolbarStyle(.unifiedCompact)
+        .defaultSize(
+            width: SettingsWindowLayout.appDefaultWidth,
+            height: SettingsWindowLayout.appDefaultHeight
+        )
         .windowResizability(.contentMinSize)
 
         WindowGroup("Project Settings", for: URL.self) { projectURL in
             ProjectSettingsView(projectURL: projectURL.wrappedValue)
                 .beadStoreEnvironment(store)
         }
-        .defaultSize(width: 760, height: 500)
+        .defaultSize(
+            width: SettingsWindowLayout.projectDefaultWidth,
+            height: SettingsWindowLayout.projectDefaultHeight
+        )
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.contentMinSize)
     }

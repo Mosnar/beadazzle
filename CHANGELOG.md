@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Settings now use a native resizable sidebar, clearer labeled forms, persistent type and status visibility controls, and summary-first project diagnostics with expandable technical details.
+- Fixed app Settings titlebar and sidebar spacing so window controls and navigation align correctly.
 - Adding custom types and statuses now uses focused sheets with clear validation instead of crowded inline forms.
 - Fixed issue-list controls being clipped off both edges when the list pane was narrowed.
 - Aligned the issue-list and breadcrumb toolbar dividers across the split workspace.

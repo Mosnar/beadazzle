@@ -33,7 +33,7 @@ struct ProjectTypeAddSheet: View {
         ProjectDefinitionAddSheetLayout(
             title: "Add Type",
             description: "Create a custom issue type for this project.",
-            systemImage: "tag.fill",
+            height: 240,
             guidance: "Use letters, numbers, hyphens, or underscores.",
             validationMessage: validationMessage,
             isSaving: isSaving,
@@ -43,9 +43,12 @@ struct ProjectTypeAddSheet: View {
             cancel: dismiss.callAsFunction,
             submit: addType
         ) {
-            ProjectDefinitionSheetField(title: "Name") {
-                TextField("Type name", text: $name, prompt: Text("incident"))
+            LabeledContent("Name") {
+                TextField("incident", text: $name)
+                    .labelsHidden()
                     .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: 280)
                     .focused($isNameFocused)
                     .accessibilityLabel("Type name")
             }
@@ -115,7 +118,7 @@ struct ProjectStatusAddSheet: View {
         ProjectDefinitionAddSheetLayout(
             title: "Add Status",
             description: "Create a custom workflow status for this project.",
-            systemImage: "circle.lefthalf.filled",
+            height: 280,
             guidance: "Use letters, numbers, hyphens, or underscores.",
             validationMessage: validationMessage,
             isSaving: isSaving,
@@ -125,24 +128,26 @@ struct ProjectStatusAddSheet: View {
             cancel: dismiss.callAsFunction,
             submit: addStatus
         ) {
-            VStack(spacing: 12) {
-                ProjectDefinitionSheetField(title: "Name") {
-                    TextField("Status name", text: $name, prompt: Text("review"))
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isNameFocused)
-                        .accessibilityLabel("Status name")
-                }
-
-                ProjectDefinitionSheetField(title: "Category") {
-                    Picker("Category", selection: $category) {
-                        ForEach(BeadStatusCategory.allCases) { category in
-                            Label(category.title, systemImage: category.systemImage)
-                                .tag(category)
-                        }
-                    }
+            LabeledContent("Name") {
+                TextField("review", text: $name)
                     .labelsHidden()
-                    .accessibilityLabel("Status category")
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: 280)
+                    .focused($isNameFocused)
+                    .accessibilityLabel("Status name")
+            }
+
+            LabeledContent("Category") {
+                Picker("Category", selection: $category) {
+                    ForEach(BeadStatusCategory.allCases) { category in
+                        Label(category.title, systemImage: category.systemImage)
+                            .tag(category)
+                    }
                 }
+                .labelsHidden()
+                .frame(width: 280)
+                .accessibilityLabel("Status category")
             }
         }
         .defaultFocus($isNameFocused, true)
@@ -197,7 +202,7 @@ struct ProjectStatusAddSheet: View {
 private struct ProjectDefinitionAddSheetLayout<Fields: View>: View {
     let title: String
     let description: String
-    let systemImage: String
+    let height: CGFloat
     let guidance: String
     let validationMessage: String?
     let isSaving: Bool
@@ -210,44 +215,34 @@ private struct ProjectDefinitionAddSheetLayout<Fields: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 24) {
-                VStack(spacing: 10) {
-                    HStack(spacing: 12) {
-                        Image(systemName: systemImage)
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 36, height: 36)
-                            .background(.quaternary, in: .rect(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
 
-                        Text(title)
-                            .font(.title2.weight(.semibold))
-                    }
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 44)
+            .padding(.top, 20)
+            .padding(.bottom, 10)
 
-                    Text(description)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
+            Form {
+                Section {
                     fields()
                         .disabled(isSaving)
-
-                    Group {
-                        if let validationMessage {
-                            Label(validationMessage, systemImage: "exclamationmark.circle.fill")
-                                .foregroundStyle(.red)
-                        } else {
-                            Text(guidance)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
+                } footer: {
+                    ProjectDefinitionSheetMessage(
+                        guidance: guidance,
+                        validationMessage: validationMessage
+                    )
                 }
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 28)
-            .padding(.bottom, 28)
+            .formStyle(.grouped)
+            .contentMargins(.horizontal, 24, for: .scrollContent)
+            .contentMargins(.top, 0, for: .scrollContent)
+            .contentMargins(.bottom, 8, for: .scrollContent)
 
             Divider()
 
@@ -269,30 +264,29 @@ private struct ProjectDefinitionAddSheetLayout<Fields: View>: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSubmit)
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 18)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
         }
-        .frame(width: 520)
+        .frame(width: 480, height: height)
         .interactiveDismissDisabled(isSaving)
     }
 }
 
-private struct ProjectDefinitionSheetField<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: () -> Content
+private struct ProjectDefinitionSheetMessage: View {
+    let guidance: String
+    let validationMessage: String?
 
     var body: some View {
-        HStack(spacing: 20) {
-            Text(title)
-                .fontWeight(.medium)
-
-            Spacer(minLength: 20)
-
-            content()
-                .frame(width: 280)
+        Group {
+            if let validationMessage {
+                Label(validationMessage, systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+            } else {
+                Text(guidance)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(.horizontal, 18)
-        .frame(minHeight: 54)
-        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 12))
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

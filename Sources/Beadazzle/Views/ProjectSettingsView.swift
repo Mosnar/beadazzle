@@ -104,17 +104,25 @@ private struct ProjectWorkflowSettingsPane: View {
         @Bindable var store = store
 
         Form {
-            Section("Staleness") {
-                LabeledContent("Cut-off") {
+            Section {
+                LabeledContent("Consider stale after") {
                     Stepper(value: $store.staleCutoffDays, in: 1...365) {
                         Text("\(store.staleCutoffDays.formatted()) days")
                             .monospacedDigit()
                     }
                 }
+            } header: {
+                Text("Staleness")
+            } footer: {
+                Text("Controls which open beads appear in the Stale sidebar view.")
             }
 
-            Section("Ready") {
+            Section {
                 Toggle("Hide parents whose unfinished children are all blocked", isOn: $store.hidesParentsWithOnlyBlockedChildrenInReady)
+            } header: {
+                Text("Ready")
+            } footer: {
+                Text("Keeps blocked parent work out of Ready when none of its unfinished children can move forward.")
             }
         }
         .settingsGroupedForm()
@@ -135,10 +143,10 @@ private struct ProjectTypesSettingsPane: View {
                         detail: definition.description,
                         source: definition.source,
                         systemImage: "tag",
-                        isHidden: store.isTypeHidden(definition.name),
+                        isVisible: !store.isTypeHidden(definition.name),
                         canDelete: definition.isCustom
-                    ) {
-                        store.setType(definition.name, isHidden: !store.isTypeHidden(definition.name))
+                    ) { isVisible in
+                        store.setType(definition.name, isHidden: !isVisible)
                     } delete: {
                         pendingDeleteName = definition.name
                     }
@@ -190,10 +198,10 @@ private struct ProjectStatusesSettingsPane: View {
                         detail: definition.category.title,
                         source: definition.source,
                         systemImage: definition.category.systemImage,
-                        isHidden: store.isStatusHidden(definition.name),
+                        isVisible: !store.isStatusHidden(definition.name),
                         canDelete: definition.isCustom
-                    ) {
-                        store.setStatus(definition.name, isHidden: !store.isStatusHidden(definition.name))
+                    ) { isVisible in
+                        store.setStatus(definition.name, isHidden: !isVisible)
                     } delete: {
                         pendingDeleteName = definition.name
                     }
@@ -236,20 +244,17 @@ private struct ProjectDefinitionRow: View {
     let detail: String?
     let source: BeadDefinitionSource
     let systemImage: String
-    let isHidden: Bool
+    let isVisible: Bool
     let canDelete: Bool
-    let toggleVisibility: () -> Void
+    let setVisibility: (Bool) -> Void
     let delete: () -> Void
-
-    @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
-                        .foregroundStyle(isHidden ? .secondary : .primary)
+                        .foregroundStyle(isVisible ? .primary : .secondary)
                         .lineLimit(1)
 
                     HStack(spacing: 8) {
@@ -271,44 +276,28 @@ private struct ProjectDefinitionRow: View {
 
             Spacer(minLength: 12)
 
-            if isHidden {
-                Text("Hidden")
-                    .foregroundStyle(.secondary)
-            }
-
-            Button {
-                toggleVisibility()
-            } label: {
-                Label(isHidden ? "Show in Beadazzle" : "Hide in Beadazzle", systemImage: isHidden ? "eye.slash" : "eye")
-                    .labelStyle(.iconOnly)
-            }
-            .buttonStyle(.borderless)
-            .opacity(actionsAreVisible ? 1 : 0)
-            .allowsHitTesting(actionsAreVisible)
-            .accessibilityHidden(!actionsAreVisible)
-            .help(isHidden ? "Show in Beadazzle" : "Hide in Beadazzle")
+            Toggle(
+                "Visible in Beadazzle",
+                isOn: Binding(get: { isVisible }, set: setVisibility)
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help(isVisible ? "Hide \(name) in Beadazzle" : "Show \(name) in Beadazzle")
+            .accessibilityLabel("\(name) visible in Beadazzle")
 
             if canDelete {
-                Button(role: .destructive) {
-                    delete()
+                Menu {
+                    Button("Delete \(name)…", role: .destructive, action: delete)
                 } label: {
-                    Label("Delete custom value", systemImage: "trash")
+                    Label("Actions for \(name)", systemImage: "ellipsis.circle")
                         .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.borderless)
-                .opacity(actionsAreVisible ? 1 : 0)
-                .allowsHitTesting(actionsAreVisible)
-                .accessibilityHidden(!actionsAreVisible)
-                .help("Delete custom value")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Actions for \(name)")
             }
         }
         .contentShape(Rectangle())
-        .focusable()
-        .focused($isFocused)
-        .onHover { isHovered = $0 }
-    }
-
-    private var actionsAreVisible: Bool {
-        isHovered || isFocused
     }
 }
