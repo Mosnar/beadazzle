@@ -218,9 +218,10 @@ struct BlockedActionBanner: View {
         } label: {
             Label("Dismiss", systemImage: "xmark")
                 .labelStyle(.iconOnly)
+                .frame(width: 20, height: 20)
+                .contentShape(.rect)
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
+        .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .disabled(isBusy)
         .help("Dismiss")

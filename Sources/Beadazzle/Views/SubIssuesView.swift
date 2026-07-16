@@ -28,9 +28,10 @@ struct SubIssuesView: View {
                 } label: {
                     Label("New Sub-issue", systemImage: "plus")
                         .labelStyle(.iconOnly)
+                        .frame(width: 24, height: 24)
+                        .contentShape(.rect)
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
+                .buttonStyle(.plain)
                 .disabled(!store.canCreateChildBead(parentID: issue.id))
                 .help("Create sub-issue")
                 .accessibilityLabel("Create sub-issue")
