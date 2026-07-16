@@ -758,6 +758,11 @@ final class BeadStore {
     @ObservationIgnored internal let commands: any BeadsCommanding
     @ObservationIgnored internal let projectLoader: BeadProjectLoader
     @ObservationIgnored internal let savedViewRepository: BeadSavedViewRepository
+    @ObservationIgnored internal let workspaceStateRepository: BeadWorkspaceStateRepository
+    /// Set in `openProject` from the persisted payload and consumed once by `applyLoadedProject`
+    /// after the index loads, so restoration runs a single time per open (not on live reloads).
+    @ObservationIgnored internal var pendingRestoredWorkspaceSnapshot: BeadWorkspaceSnapshot?
+    @ObservationIgnored internal var workspaceStatePersistTask: Task<Void, Never>?
     internal var refreshTask: Task<Void, Never>? { get { project.refreshTask } set { project.refreshTask = newValue } }
     internal var initializationTask: Task<Void, Never>? { get { project.initializationTask } set { project.initializationTask = newValue } }
     internal var reconcileDebounceTask: Task<Void, Never>? { get { project.reconcileDebounceTask } set { project.reconcileDebounceTask = newValue } }
@@ -807,6 +812,7 @@ final class BeadStore {
         self.commands = commands
         self.projectLoader = BeadProjectLoader(commands: commands)
         self.savedViewRepository = BeadSavedViewRepository(userDefaults: userDefaults)
+        self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
         _recentProjects = Self.loadRecentProjects(from: userDefaults)
 

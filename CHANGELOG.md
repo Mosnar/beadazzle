@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Reopening a project now restores where you left off — its last view or bookmark, search and filters, sort, list mode, outline expansion, selected bead, and open detail — kept separately for each project. A "Reset Saved Workspace State" button in Project Settings › Storage returns a project to defaults.
 - Standardized detail-page icon buttons so normal beads and gates share the same hover effects and full clickable areas.
 - Settings now use a native resizable sidebar, clearer labeled forms, persistent type and status visibility controls, and summary-first project diagnostics with expandable technical details.
 - Fixed app Settings titlebar and sidebar spacing so window controls and navigation align correctly.

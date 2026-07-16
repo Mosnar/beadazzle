@@ -21,6 +21,8 @@ struct ProjectStorageSettingsPane: View {
 
             ProjectStorageActionsSection(isInitialLoad: isInitialProjectHealthLoad)
 
+            ProjectStorageWorkspaceSection()
+
             if !isInitialProjectHealthLoad {
                 ProjectStorageOverviewSection()
                 ProjectStorageRefreshSection()
@@ -157,6 +159,34 @@ private struct ProjectStorageActionsSection: View {
 
     private var isBusy: Bool {
         project.isLoadingProjectHealth || project.projectHealthAction != nil
+    }
+}
+
+private struct ProjectStorageWorkspaceSection: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    @State private var isConfirmingReset = false
+
+    var body: some View {
+        Section {
+            Button("Reset Saved Workspace State", role: .destructive) {
+                isConfirmingReset = true
+            }
+            .disabled(store.projectURL == nil)
+        } header: {
+            Text("Saved Workspace")
+        } footer: {
+            Text("Beadazzle remembers this project's last view, filters, sort, selection, and expansion on this Mac. Resetting returns it to defaults.")
+        }
+        .confirmationDialog(
+            "Reset saved workspace state?",
+            isPresented: $isConfirmingReset
+        ) {
+            Button("Reset", role: .destructive) {
+                store.resetSavedWorkspaceState()
+            }
+        } message: {
+            Text("The remembered view, filters, sort, selection, and expansion for this project will be cleared.")
+        }
     }
 }
 

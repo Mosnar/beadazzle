@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -89,6 +90,9 @@ struct ContentView: View {
         }
         .onAppear {
             store.openDefaultProjectIfAvailable()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            store.flushPendingWorkspaceState()
         }
         .focusedSceneValue(\.workspaceCommands, WorkspaceCommandActions(
             newBead: store.canCreateBead ? { store.beginCreatingBead() } : nil,

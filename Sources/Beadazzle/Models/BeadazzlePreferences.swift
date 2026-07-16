@@ -48,6 +48,10 @@ enum BeadazzlePreferenceKeys {
     static func savedViews(projectURL: URL) -> String {
         "SavedViews.\(projectURL.standardizedFileURL.path)"
     }
+
+    static func workspaceState(projectURL: URL) -> String {
+        "WorkspaceState.\(projectURL.standardizedFileURL.path)"
+    }
 }
 
 struct BeadListDisplayOptions: Equatable, Sendable {
@@ -193,6 +197,15 @@ enum BeadazzleOptionInventory {
             defaultValue: "None",
             uiLocation: "Sidebar > Bookmarks",
             behavior: "Stores private per-project filter and sort bookmarks on this Mac."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "workspaceState",
+            title: "Saved workspace state",
+            scope: .projectViewOption,
+            persistence: "WorkspaceState.<project path>",
+            defaultValue: "None",
+            uiLocation: "Project Settings > Storage",
+            behavior: "Remembers the last view, filters, sort, selection, and expansion for this project on this Mac."
         )
     ]
 }

@@ -9,6 +9,9 @@ extension BeadStore {
 
     func openProject(_ url: URL) {
         let url = url.standardizedFileURL
+        // Persist the outgoing project's state now, while its URL and live workspace are still
+        // current, so a pending debounce can't be dropped by the switch.
+        flushPendingWorkspaceState()
         project.cancelLifecycleWork()
         mutations.resetMetadataMutations()
         workspace.cancelQueryWork()
@@ -23,6 +26,9 @@ extension BeadStore {
         clearLoadedProjectData()
         loadProjectPreferences(for: url)
         resetWorkspaceQueryForProjectSwitch()
+        // Stash the persisted snapshot; it can only be restored once the index has loaded
+        // (selection/saved-view identities are validated against it in applyLoadedProject).
+        pendingRestoredWorkspaceSnapshot = workspaceStateRepository.load(projectURL: url)?.snapshot()
         resetWorkspaceHistory()
         if isMissingDataSourceProject(url) {
             setMissingDataSource(url)
@@ -404,6 +410,13 @@ extension BeadStore {
         synchronizeDataSourceMonitor(projectURL: projectURL, source: loadedProject.source)
         pruneGateDetailsForCurrentSnapshot()
         loadWaitersForSelectedGateIfNeeded()
+        // Restore persisted workspace state exactly once per open, now that the index is available
+        // to validate selection and saved-view references. Live reloads leave `pending` nil and so
+        // preserve the current live workspace instead.
+        if let restoredSnapshot = pendingRestoredWorkspaceSnapshot {
+            pendingRestoredWorkspaceSnapshot = nil
+            restoreWorkspace(restoredSnapshot)
+        }
         resetWorkspaceHistory()
         if !deferredMonitorRoles.isEmpty {
             handleDataSourceMonitorEvent(

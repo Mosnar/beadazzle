@@ -436,7 +436,8 @@ final class BeadStorePreferencesTests: XCTestCase {
             "showsAssigneeInBeadList",
             "showsDueDateInBeadList",
             "showsCommentsInBeadList",
-            "savedViews"
+            "savedViews",
+            "workspaceState"
         ]
 
         XCTAssertEqual(Set(entries.map(\.id)), expectedIDs)
@@ -447,7 +448,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
         XCTAssertEqual(
             Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
-            Set(["Issue List > View Options", "Sidebar > Bookmarks"])
+            Set(["Issue List > View Options", "Sidebar > Bookmarks", "Project Settings > Storage"])
         )
     }
 

@@ -185,7 +185,7 @@ enum BeadIssueWorkflowPolicy {
     }
 }
 
-enum IssueListMode: String, CaseIterable, Hashable, Identifiable, Sendable {
+enum IssueListMode: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case outline = "Outline"
     case flat = "Flat"
 
@@ -240,7 +240,7 @@ struct BeadComment: Identifiable, Hashable, Sendable {
     var updatedAt: Date?
 }
 
-struct IssueDraft: Equatable, Identifiable, Sendable {
+struct IssueDraft: Codable, Equatable, Identifiable, Sendable {
     var id: String?
     var title: String
     var description: String

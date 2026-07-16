@@ -104,16 +104,69 @@ extension BeadStore {
         syncWorkspaceHistoryAvailability()
     }
 
+    /// Clears the persisted workspace state for the active project and returns the live workspace to
+    /// defaults. A recovery copy of the previous payload is archived by the repository.
+    func resetSavedWorkspaceState() {
+        guard let projectURL else { return }
+        workspaceStatePersistTask?.cancel()
+        workspaceStateRepository.reset(projectURL: projectURL)
+        guard hasReadableProject else { return }
+
+        isRestoringWorkspace = true
+        resetWorkspaceQueryForProjectSwitch()
+        suppressesFilterUpdates = true
+        sort = .priority
+        sortDirection = .ascending
+        issueListMode = .outline
+        _selectedIDs = []
+        _fullPageDetailIssueID = nil
+        creationDraft = nil
+        outlineState = BeadOutlineSelectionState()
+        suppressesFilterUpdates = false
+        isRestoringWorkspace = false
+
+        applyFilters()
+        scheduleSelectionSideDataRefresh()
+        resetWorkspaceHistory()
+    }
+
     internal func recordWorkspaceSnapshotIfNeeded() {
         guard !isRestoringWorkspace, !suppressesHistoryRecording, hasReadableProject else { return }
         workspaceHistory.record(makeWorkspaceSnapshot())
         syncWorkspaceHistoryAvailability()
+        persistWorkspaceState()
     }
 
     internal func syncCurrentWorkspaceSnapshotIfNeeded() {
         guard !isRestoringWorkspace, !suppressesHistoryRecording, hasReadableProject else { return }
         workspaceHistory.updateCurrent(makeWorkspaceSnapshot())
         syncWorkspaceHistoryAvailability()
+        persistWorkspaceState()
+    }
+
+    /// Persists the current workspace snapshot for the active project, debounced so rapid edits
+    /// (typing in search, dragging a filter) coalesce into a single `UserDefaults` write.
+    internal func persistWorkspaceState() {
+        guard let projectURL, hasReadableProject, !isRestoringWorkspace, !isLoadingProjectPreferences else { return }
+        let payload = BeadWorkspaceStatePayload(snapshot: makeWorkspaceSnapshot())
+        workspaceStatePersistTask?.cancel()
+        workspaceStatePersistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.workspaceStateRepository.save(payload, projectURL: projectURL)
+        }
+    }
+
+    /// Writes any pending workspace state immediately and cancels the debounce. Called on project
+    /// switch and app termination so the trailing debounce window can't drop the final change.
+    internal func flushPendingWorkspaceState() {
+        workspaceStatePersistTask?.cancel()
+        workspaceStatePersistTask = nil
+        guard let projectURL, hasReadableProject, !isRestoringWorkspace, !isLoadingProjectPreferences else { return }
+        workspaceStateRepository.save(
+            BeadWorkspaceStatePayload(snapshot: makeWorkspaceSnapshot()),
+            projectURL: projectURL
+        )
     }
 
     internal func restoreWorkspace(_ snapshot: BeadWorkspaceSnapshot) {
