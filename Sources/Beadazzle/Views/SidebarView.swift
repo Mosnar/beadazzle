@@ -13,7 +13,10 @@ struct SidebarView: View {
             Section("Project") {
                 ProjectPickerButton()
                 if project.snapshotFreshness.state == .possiblyStale {
-                    SnapshotFreshnessSidebarRow(freshness: project.snapshotFreshness)
+                    SnapshotFreshnessSidebarRow(
+                        freshness: project.snapshotFreshness,
+                        onRefresh: store.refresh
+                    )
                 }
             }
 
@@ -137,18 +140,28 @@ private struct SavedViewPersistenceNotice: View {
 
 private struct SnapshotFreshnessSidebarRow: View {
     let freshness: ProjectSnapshotFreshness
+    let onRefresh: () -> Void
 
     var body: some View {
-        Label {
-            Text(freshness.message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        } icon: {
-            Image(systemName: "clock.badge.exclamationmark")
-                .foregroundStyle(.orange)
+        Button(action: onRefresh) {
+            Label {
+                Text(freshness.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.clockwise")
+                    .foregroundStyle(.secondary)
+                    .imageScale(.small)
+            } icon: {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+            }
+            .contentShape(.rect)
         }
-        .help(freshness.detail ?? freshness.message)
+        .buttonStyle(.plain)
+        .help("\(freshness.detail ?? freshness.message) Click to refresh.")
+        .accessibilityLabel("\(freshness.message). Refresh to load the latest Beads data.")
     }
 }
 

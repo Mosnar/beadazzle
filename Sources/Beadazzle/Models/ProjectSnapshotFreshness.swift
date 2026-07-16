@@ -66,10 +66,21 @@ struct ProjectSnapshotFreshnessFiles: Equatable, Sendable {
         exportState != loadedFiles.exportState || lastTouched != loadedFiles.lastTouched
     }
 
+    /// `bd export` rewrites the readable snapshot and then updates its marker files
+    /// (`export-state.json` / `last-touched`) a few milliseconds later, so a strict
+    /// comparison flags the snapshot we just exported as stale — which re-arms the
+    /// warning indefinitely because the reconcile meant to clear it is what bumped
+    /// the marker. Only treat a marker as newer when it leads the snapshot by more
+    /// than this margin. Genuine external staleness clears it comfortably: embedded
+    /// (Dolt-backed) projects only re-export on a multi-minute timer, so a real
+    /// out-of-band `bd` write leaves the marker seconds-to-minutes ahead.
+    static let markerFreshnessTolerance: TimeInterval = 5
+
     var hasMarkerNewerThanActiveSource: Bool {
         guard let sourceModifiedAt = activeSource.modifiedAt else { return false }
         return [exportState, lastTouched].contains { marker in
-            marker.exists && marker.modifiedAt.map { $0 > sourceModifiedAt } == true
+            guard marker.exists, let markerModifiedAt = marker.modifiedAt else { return false }
+            return markerModifiedAt.timeIntervalSince(sourceModifiedAt) > Self.markerFreshnessTolerance
         }
     }
 }

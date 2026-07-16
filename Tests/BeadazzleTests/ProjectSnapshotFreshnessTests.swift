@@ -4,7 +4,7 @@ import XCTest
 final class ProjectSnapshotFreshnessTests: XCTestCase {
     func testInitialLoadMarksSnapshotPossiblyStaleWhenMarkerIsNewer() throws {
         let project = try makeProject()
-        let newerDate = project.source.modifiedAt.addingTimeInterval(2)
+        let newerDate = project.source.modifiedAt.addingTimeInterval(120)
         try FileManager.default.setAttributes(
             [.modificationDate: newerDate],
             ofItemAtPath: project.lastTouchedURL.path
@@ -14,6 +14,22 @@ final class ProjectSnapshotFreshnessTests: XCTestCase {
 
         XCTAssertEqual(freshness.state, .possiblyStale)
         XCTAssertEqual(freshness.message, "Snapshot may be stale")
+    }
+
+    func testMarkerNewerBySubSecondStaysCurrent() throws {
+        // `bd export` writes the snapshot and then bumps its markers a few
+        // milliseconds later; that must not re-arm the stale warning after the
+        // reconcile that was meant to clear it.
+        let project = try makeProject()
+        let newerDate = project.source.modifiedAt.addingTimeInterval(0.2)
+        try FileManager.default.setAttributes(
+            [.modificationDate: newerDate],
+            ofItemAtPath: project.exportStateURL.path
+        )
+
+        let freshness = ProjectSnapshotFreshness.loaded(projectURL: project.url, source: project.source)
+
+        XCTAssertEqual(freshness.state, .current)
     }
 
     func testMarkerOnlyChangeMarksSnapshotPossiblyStaleWithoutReload() throws {
