@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Restyled the application Settings › General pane to match Project Settings: the bd CLI path now gets a full-width field with the Choose and Reset buttons on their own row, and Resolution Details uses the same expandable details style as project diagnostics.
+- Settings › General now verifies the resolved bd executable by running it: it shows the detected Beads version, and warns when bd is missing or the configured path doesn't look like the Beads CLI.
 - When a bead change fails, Beadazzle now shows a single consistent error dialog with the `bd` command that ran and its output, plus Try Again and Cancel. Successful edits stay quiet, and a progress indicator appears only when a save is actually slow.
 - Fixed the "Snapshot may be stale" notice sometimes getting stuck on screen after the app had already caught up, and made it clickable to refresh the project on demand.
 - Reopening a project now restores where you left off — its last view or bookmark, search and filters, sort, list mode, outline expansion, selected bead, and open detail — kept separately for each project. A "Reset Saved Workspace State" button in Project Settings › Storage returns a project to defaults.

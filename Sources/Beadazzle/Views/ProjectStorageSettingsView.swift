@@ -71,7 +71,7 @@ private struct ProjectStoragePreflightSection: View {
             }
 
             if !presentation.otherChecks.isEmpty {
-                ProjectStorageDisclosure(
+                SettingsDisclosure(
                     title: presentation.checksDisclosureTitle,
                     isExpanded: $isShowingOtherChecks
                 ) {
@@ -294,21 +294,21 @@ private struct ProjectStorageDetailsSection: View {
 
     var body: some View {
         Section("Details") {
-            ProjectStorageDisclosure(
+            SettingsDisclosure(
                 title: "Database Details",
                 isExpanded: expansionBinding(for: .database)
             ) {
                 databaseDetails
             }
 
-            ProjectStorageDisclosure(
+            SettingsDisclosure(
                 title: "Snapshot & Export Details",
                 isExpanded: expansionBinding(for: .snapshot)
             ) {
                 snapshotDetails
             }
 
-            ProjectStorageDisclosure(
+            SettingsDisclosure(
                 title: "Sync & Backup Details",
                 isExpanded: expansionBinding(for: .syncAndBackup)
             ) {
@@ -320,16 +320,16 @@ private struct ProjectStorageDetailsSection: View {
     @ViewBuilder
     private var databaseDetails: some View {
         if let context = project.projectHealthSnapshot?.context.value {
-            ProjectStorageDetailRow("bd Version") { ProjectHealthValueText(context.bdVersion) }
-            ProjectStorageDetailRow("Backend") { ProjectHealthValueText(context.backend) }
-            ProjectStorageDetailRow("Dolt Mode") { ProjectHealthValueText(context.doltMode) }
-            ProjectStorageDetailRow("Database") { ProjectHealthValueText(context.database) }
-            ProjectStorageDetailRow("Database Path") {
+            SettingsDetailRow("bd Version") { ProjectHealthValueText(context.bdVersion) }
+            SettingsDetailRow("Backend") { ProjectHealthValueText(context.backend) }
+            SettingsDetailRow("Dolt Mode") { ProjectHealthValueText(context.doltMode) }
+            SettingsDetailRow("Database") { ProjectHealthValueText(context.database) }
+            SettingsDetailRow("Database Path") {
                 ProjectHealthPathText(context.databasePath(projectURL: project.projectURL ?? URL(fileURLWithPath: "")))
             }
-            ProjectStorageDetailRow("Role") { ProjectHealthValueText(context.role) }
-            ProjectStorageDetailRow("Schema") { ProjectHealthValueText(context.schemaVersion.map(String.init)) }
-            ProjectStorageDetailRow("Project ID") { ProjectHealthPathText(context.projectID) }
+            SettingsDetailRow("Role") { ProjectHealthValueText(context.role) }
+            SettingsDetailRow("Schema") { ProjectHealthValueText(context.schemaVersion.map(String.init)) }
+            SettingsDetailRow("Project ID") { ProjectHealthPathText(context.projectID) }
         } else {
             ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.context.errorMessage)
         }
@@ -339,7 +339,7 @@ private struct ProjectStorageDetailsSection: View {
     private var snapshotDetails: some View {
         let snapshotFile = project.projectHealthSnapshot?.snapshotFile
 
-        ProjectStorageDetailRow("JSONL Snapshot") {
+        SettingsDetailRow("JSONL Snapshot") {
             HStack(spacing: 8) {
                 ProjectHealthValueText(snapshotFile?.exists == true ? "Present" : "Missing")
                 if snapshotFile?.exists != true {
@@ -347,16 +347,16 @@ private struct ProjectStorageDetailsSection: View {
                 }
             }
         }
-        ProjectStorageDetailRow("Path") { ProjectHealthPathText(snapshotFile?.url.path) }
-        ProjectStorageDetailRow("Size") {
+        SettingsDetailRow("Path") { ProjectHealthPathText(snapshotFile?.url.path) }
+        SettingsDetailRow("Size") {
             ProjectHealthValueText(snapshotFile?.size.map(ProjectHealthFormatting.formattedBytes))
         }
-        ProjectStorageDetailRow("Modified") {
+        SettingsDetailRow("Modified") {
             ProjectHealthValueText(snapshotFile?.modifiedAt.map(ProjectHealthFormatting.formattedDate))
         }
 
         if let config = project.projectHealthSnapshot?.storageConfig.value {
-            ProjectStorageDetailRow("Export") {
+            SettingsDetailRow("Export") {
                 HStack(spacing: 8) {
                     ProjectHealthConfigValueText(
                         config.exportAutoStatus.display { _ in config.exportSummary },
@@ -367,19 +367,19 @@ private struct ProjectStorageDetailsSection: View {
                     }
                 }
             }
-            ProjectStorageDetailRow("Export Path") {
+            SettingsDetailRow("Export Path") {
                 ProjectHealthConfigValueText(
                     config.exportPathStatus.display { $0 },
                     errorMessage: config.exportPathStatus.errorMessage
                 )
             }
-            ProjectStorageDetailRow("Export Interval") {
+            SettingsDetailRow("Export Interval") {
                 ProjectHealthConfigValueText(
                     config.exportIntervalStatus.display { $0 },
                     errorMessage: config.exportIntervalStatus.errorMessage
                 )
             }
-            ProjectStorageDetailRow("Git Add Export") {
+            SettingsDetailRow("Git Add Export") {
                 ProjectHealthConfigValueText(
                     config.exportGitAddStatus.display { ProjectHealthFormatting.formattedBool($0) },
                     errorMessage: config.exportGitAddStatus.errorMessage
@@ -393,13 +393,13 @@ private struct ProjectStorageDetailsSection: View {
     @ViewBuilder
     private var syncAndBackupDetails: some View {
         if let config = project.projectHealthSnapshot?.storageConfig.value {
-            ProjectStorageDetailRow("JSONL Import") {
+            SettingsDetailRow("JSONL Import") {
                 ProjectHealthConfigValueText(
                     config.importAutoStatus.display { _ in config.importSummary },
                     errorMessage: config.importAutoStatus.errorMessage
                 )
             }
-            ProjectStorageDetailRow("Federation Remote") {
+            SettingsDetailRow("Federation Remote") {
                 ProjectHealthConfigValueText(
                     config.federationRemoteStatus.display { _ in config.federationSummary },
                     errorMessage: config.federationRemoteStatus.errorMessage
@@ -411,7 +411,7 @@ private struct ProjectStorageDetailsSection: View {
 
         if let hooks = project.projectHealthSnapshot?.hooks.value {
             if hooks.hasMissingHooks {
-                ProjectStorageDetailRow("Missing Hooks") {
+                SettingsDetailRow("Missing Hooks") {
                     ProjectHealthPathText(
                         hooks.missingHooks.map(\.name).joined(separator: ", "),
                         lineLimit: 3
@@ -423,16 +423,16 @@ private struct ProjectStorageDetailsSection: View {
         }
 
         if let backup = project.projectHealthSnapshot?.backup.value {
-            ProjectStorageDetailRow("Last Backup") {
+            SettingsDetailRow("Last Backup") {
                 ProjectHealthValueText(
                     backup.lastBackupDate.map(ProjectHealthFormatting.formattedDate) ?? backup.backup?.timestamp
                 )
             }
-            ProjectStorageDetailRow("Last Dolt Commit") { ProjectHealthPathText(backup.backup?.lastDoltCommit) }
-            ProjectStorageDetailRow("Destination") {
+            SettingsDetailRow("Last Dolt Commit") { ProjectHealthPathText(backup.backup?.lastDoltCommit) }
+            SettingsDetailRow("Destination") {
                 ProjectHealthValueText(backup.isConfigured ? "Dolt remote" : "Not configured")
             }
-            ProjectStorageDetailRow("Database Size") {
+            SettingsDetailRow("Database Size") {
                 ProjectHealthValueText(backup.databaseSize?.displayValue, placeholder: "Not reported")
             }
         } else {
@@ -451,73 +451,6 @@ private struct ProjectStorageDetailsSection: View {
                 }
             }
         )
-    }
-}
-
-private struct ProjectStorageDisclosure<Content: View>: View {
-    let title: String
-    @Binding var isExpanded: Bool
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                isExpanded.toggle()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 12)
-                        .accessibilityHidden(true)
-
-                    Text(title)
-                        .fontWeight(.medium)
-
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityHint(isExpanded ? "Hides details" : "Shows details")
-
-            if isExpanded {
-                Divider()
-                    .padding(.vertical, 6)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    content()
-                }
-                .padding(.leading, 20)
-                .padding(.bottom, 4)
-            }
-        }
-    }
-}
-
-private struct ProjectStorageDetailRow<Value: View>: View {
-    let title: String
-    @ViewBuilder let value: () -> Value
-
-    init(_ title: String, @ViewBuilder value: @escaping () -> Value) {
-        self.title = title
-        self.value = value
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Text(title)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .leading)
-
-            value()
-                .font(.callout)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.vertical, 5)
-        .accessibilityElement(children: .combine)
     }
 }
 

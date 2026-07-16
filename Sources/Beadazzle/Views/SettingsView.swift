@@ -78,37 +78,46 @@ private struct AppSettingsDetail: View {
 
 private struct GeneralSettingsPane: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    @State private var isShowingResolutionDetails = false
+    @State private var versionCheck = BeadsCLIVersionCheck.checking
 
     var body: some View {
         @Bindable var store = store
 
         Form {
             Section {
-                LabeledContent("Path") {
-                    HStack(spacing: 8) {
-                        TextField("Automatic", text: $store.bdCLIPath)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 220, idealWidth: 300)
+                TextField("Path", text: $store.bdCLIPath, prompt: Text("Automatic"))
 
-                        Button("Choose...") {
-                            chooseBDCLIPath()
-                        }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(store.bdCLIPathValidationMessage, systemImage: validationSystemImage)
+                            .font(.callout)
+                            .foregroundStyle(validationForegroundStyle)
+                            .fixedSize(horizontal: false, vertical: true)
 
-                        Button("Reset") {
-                            store.bdCLIPath = ""
-                        }
-                        .disabled(store.bdCLIPath.isEmpty)
+                        versionStatus
+                            .font(.callout)
                     }
+
+                    Spacer(minLength: 12)
+
+                    Button("Choose…") {
+                        chooseBDCLIPath()
+                    }
+
+                    Button("Reset") {
+                        store.bdCLIPath = ""
+                    }
+                    .disabled(store.bdCLIPath.isEmpty)
                 }
+                .padding(.vertical, 2)
 
-                Label(store.bdCLIPathValidationMessage, systemImage: validationSystemImage)
-                    .font(.caption)
-                    .foregroundStyle(validationForegroundStyle)
-
-                DisclosureGroup("Resolution Details") {
-                    LabeledContent("Resolved Path") {
+                SettingsDisclosure(
+                    title: "Resolution Details",
+                    isExpanded: $isShowingResolutionDetails
+                ) {
+                    SettingsDetailRow("Resolved Path") {
                         Text(store.resolvedBDCLIPathDisplay)
-                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
@@ -122,6 +131,43 @@ private struct GeneralSettingsPane: View {
             }
         }
         .settingsGroupedForm()
+        .task(id: store.bdCLIPath) {
+            versionCheck = .checking
+            // Debounce keystrokes in the path field so we don't spawn a probe per character.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            let result = await BeadsCLIVersionProbe.check()
+            guard !Task.isCancelled else { return }
+            versionCheck = result
+        }
+    }
+
+    @ViewBuilder
+    private var versionStatus: some View {
+        switch versionCheck {
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Checking bd…")
+            }
+            .foregroundStyle(.secondary)
+        case .valid(let version):
+            Label {
+                Text("bd \(version)")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            .help("bd \(version)")
+        case .invalid(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var hasInvalidConfiguredPath: Bool {
