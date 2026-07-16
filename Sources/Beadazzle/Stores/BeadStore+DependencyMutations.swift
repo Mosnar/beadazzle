@@ -59,6 +59,8 @@ extension BeadStore {
 
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
+        let perceptibleBusyToken = beginPerceptibleBusy(issueIDs: [issueID])
+        defer { endPerceptibleBusy(perceptibleBusyToken) }
         applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
 
         let commands = commands
@@ -76,6 +78,11 @@ extension BeadStore {
                 return rejectStaleMutation(targeting: projectURL)
             }
             reconcileState.request(.mutation)
+            announceCompletion(
+                normalizedParentID == nil
+                    ? "Removed parent of \(issueID)"
+                    : "Moved \(issueID) under \(normalizedParentID!)"
+            )
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -85,7 +92,15 @@ extension BeadStore {
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
-            lastError = error.localizedDescription
+            let retryBaseline = retryBaseline(for: [issueID])
+            reportMutationFailure(
+                error,
+                title: "Couldn't change parent of \(issueID)",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                    await self.setParent(issueID: issueID, parentID: parentID)
+                }
+            )
             return false
         }
     }

@@ -11,7 +11,6 @@ struct BeadPickerPopover: View {
 
     @State private var model = BeadPickerModel()
     @State private var isApplying = false
-    @State private var errorText: String?
     @State private var shouldFocusSearchField = true
     @State private var quickCreateFocusTask: Task<Void, Never>?
     @FocusState private var quickCreateFocusedField: BeadPickerQuickCreateField?
@@ -231,15 +230,6 @@ struct BeadPickerPopover: View {
 
     private func quickCreateFooter(defaultDraft: IssueDraft) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let errorText {
-                Text(errorText)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 8)
-            }
-
             if let quickCreate = configuration.quickCreate {
                 Button(action: toggleQuickCreate) {
                     HStack(spacing: 8) {
@@ -387,15 +377,14 @@ struct BeadPickerPopover: View {
         guard !isApplying,
               model.isSelectable(issueID: issueID) else { return }
         isApplying = true
-        errorText = nil
         Task { @MainActor in
             let didApply = await store.applyBeadPickerSelection(issueID, action: configuration.action)
             isApplying = false
+            // Failures surface through the standardized error dialog (with Try Again);
+            // the popover stays open so the user can adjust or dismiss.
             if didApply {
                 onApplied(issueID)
                 onDismiss()
-            } else {
-                errorText = store.lastError ?? "Could not update the relationship."
             }
         }
     }
@@ -404,15 +393,12 @@ struct BeadPickerPopover: View {
         guard !isApplying,
               case .setParent(let issueID) = configuration.action else { return }
         isApplying = true
-        errorText = nil
         Task { @MainActor in
             let didApply = await store.setParent(issueID: issueID, parentID: nil)
             isApplying = false
             if didApply {
                 onApplied(nil)
                 onDismiss()
-            } else {
-                errorText = store.lastError ?? "Could not clear the parent bead."
             }
         }
     }
@@ -420,7 +406,6 @@ struct BeadPickerPopover: View {
     private func createQuickBead(defaultDraft: IssueDraft) {
         guard !isApplying, model.canCreateQuickBead else { return }
         isApplying = true
-        errorText = nil
         Task { @MainActor in
             var draft = defaultDraft
             draft.title = model.quickCreateTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -430,7 +415,6 @@ struct BeadPickerPopover: View {
 
             guard let createdIssueID = await store.createBead(draft, revealCreated: false) else {
                 isApplying = false
-                errorText = store.lastError ?? "Could not create the bead."
                 return
             }
 
@@ -439,8 +423,6 @@ struct BeadPickerPopover: View {
             if didApply {
                 onApplied(createdIssueID)
                 onDismiss()
-            } else {
-                errorText = store.lastError ?? "Created \(createdIssueID), but could not update the relationship."
             }
         }
     }

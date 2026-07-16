@@ -601,7 +601,19 @@ extension BeadStore {
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
-            lastError = error.localizedDescription
+            let retryBaseline = retryBaseline(for: [draftID] + childIDs + ancestorIDs)
+            reportMutationFailure(
+                error,
+                title: "Couldn't save \(draftID)",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                    await self.save(
+                        draft,
+                        closingChildIssueIDs: childIssueIDs,
+                        reopeningAncestorIssueIDs: ancestorIssueIDs
+                    )
+                }
+            )
             return false
         }
     }
@@ -637,7 +649,13 @@ extension BeadStore {
                 return nil
             }
             requestReconcile()
-            lastError = error.localizedDescription
+            reportMutationFailure(
+                error,
+                title: "Couldn't create bead",
+                retry: { [weak self] in
+                    _ = await self?.createBead(draft, revealCreated: revealCreated)
+                }
+            )
             return nil
         }
 
@@ -657,6 +675,7 @@ extension BeadStore {
                 _ = rejectStaleMutation(targeting: projectURL)
                 return nil
             }
+            announceCompletion("Created bead \(createdIssueID)")
             return createdIssueID
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -664,7 +683,12 @@ extension BeadStore {
                 return nil
             }
             requestReconcile()
-            lastError = error.localizedDescription
+            // The bead was created; only the reveal/refresh failed. Retrying create would
+            // duplicate it, so this failure is not retryable.
+            reportMutationFailure(
+                error,
+                title: "Created \(createdIssueID), but couldn't refresh"
+            )
             if revealCreated, index.issue(with: createdIssueID) != nil {
                 revealIssue(id: createdIssueID)
             }
@@ -772,6 +796,7 @@ extension BeadStore {
                 return rejectStaleMutation(targeting: projectURL)
             }
             reconcileState.request(.mutation)
+            announceCompletion(ids.count == 1 ? "Closed bead \(ids[0])" : "Closed \(ids.count) beads")
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -781,7 +806,15 @@ extension BeadStore {
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
-            lastError = error.localizedDescription
+            let retryBaseline = retryBaseline(for: ids)
+            reportMutationFailure(
+                error,
+                title: ids.count == 1 ? "Couldn't close \(ids[0])" : "Couldn't close \(ids.count) beads",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                    await self.close(issueIDs: issueIDs, reason: reason)
+                }
+            )
             return false
         }
     }
@@ -846,6 +879,7 @@ extension BeadStore {
             }
             mutations.discardMetadataMutations(for: ids)
             reconcileState.request(.mutation)
+            announceCompletion(ids.count == 1 ? "Deleted bead \(ids[0])" : "Deleted \(ids.count) beads")
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -853,7 +887,15 @@ extension BeadStore {
             }
             rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: optimisticIssues)
             reconcileState.request(.mutation)
-            lastError = error.localizedDescription
+            let retryBaseline = retryBaseline(for: ids)
+            reportMutationFailure(
+                error,
+                title: ids.count == 1 ? "Couldn't delete \(ids[0])" : "Couldn't delete \(ids.count) beads",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                    await self.delete(issueIDs: issueIDs, expectedProjectURL: expectedProjectURL)
+                }
+            )
             return false
         }
     }
@@ -1026,7 +1068,7 @@ extension BeadStore {
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
-            lastError = error.localizedDescription
+            reportMutationFailure(error, title: "Couldn't update beads")
             return false
         }
     }
@@ -1075,6 +1117,8 @@ extension BeadStore {
         }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
+        let perceptibleBusyToken = beginPerceptibleBusy(issueIDs: [issueID])
+        defer { endPerceptibleBusy(perceptibleBusyToken) }
         if optimisticIssues != snapshot.issues {
             applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
         }
@@ -1116,7 +1160,21 @@ extension BeadStore {
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
-            lastError = error.localizedDescription
+            let retryBaseline = retryBaseline(for: [issueID])
+            reportMutationFailure(
+                error,
+                title: "Couldn't update \(issueID)",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                    await self.updateMetadata(
+                        issueID: issueID,
+                        assignee: assignee,
+                        labels: labels,
+                        dueAt: dueAt,
+                        deferUntil: deferUntil
+                    )
+                }
+            )
             return false
         }
     }

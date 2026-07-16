@@ -2923,6 +2923,120 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.map(\.draft.parentID), ["bd-parent"])
     }
 
+    // MARK: Unified mutation feedback
+
+    func testReportMutationFailureExtractsCommandAndOutput() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.reportMutationFailure(
+            BeadError.commandFailed(command: "bd update bd-1", output: "boom"),
+            title: "Couldn't update bd-1"
+        )
+        XCTAssertEqual(store.currentFailure?.command, "bd update bd-1")
+        XCTAssertEqual(store.currentFailure?.output, "boom")
+        XCTAssertEqual(store.currentFailure?.message, "The Beads command failed.")
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't update bd-1")
+        XCTAssertTrue(store.currentFailure?.dialogMessage.contains("boom") == true)
+    }
+
+    func testReportMutationFailureFallsBackToLocalizedDescription() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.reportMutationFailure(StoreMutationTestError.commandFailed, title: "Nope")
+        XCTAssertNil(store.currentFailure?.command)
+        XCTAssertEqual(store.currentFailure?.message, "Mutation command failed")
+    }
+
+    func testFailureQueueCoalescesDuplicatesAndDismissPops() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.enqueueFailure(BeadMutationFailure(title: "T", message: "m", command: "c", output: "o"))
+        store.enqueueFailure(BeadMutationFailure(title: "T", message: "m", command: "c", output: "o"))
+        XCTAssertEqual(store.pendingFailures.count, 1)
+        store.dismissCurrentFailure()
+        XCTAssertTrue(store.pendingFailures.isEmpty)
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testLastErrorShimEnqueuesAndNilAssignmentIsANoOp() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.lastError = "oops"
+        XCTAssertEqual(store.currentFailure?.message, "oops")
+        XCTAssertEqual(store.lastError, "oops")
+        XCTAssertFalse(store.currentFailure?.isRetryable ?? true)
+
+        // Loads/reconciles clear `lastError` incidentally; that must not wipe a failure the
+        // user hasn't acted on (it made the dialog flash away). Only the dialog pops it.
+        store.lastError = nil
+        XCTAssertEqual(store.currentFailure?.message, "oops")
+        store.dismissCurrentFailure()
+        XCTAssertTrue(store.pendingFailures.isEmpty)
+    }
+
+    func testFailedMetadataUpdateEnqueuesRetryableFailureThatReruns() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let succeeded = await store.updateMetadata(issueID: "bd-1", assignee: "alice")
+
+        XCTAssertFalse(succeeded)
+        let failure = try XCTUnwrap(store.currentFailure)
+        XCTAssertTrue(failure.title.contains("bd-1"))
+        XCTAssertTrue(failure.isRetryable)
+
+        // Try Again re-enters the guarded mutation; the second attempt has no injected error.
+        store.retryCurrentFailure()
+        try await waitUntil {
+            store.pendingFailures.isEmpty && store.issue(with: "bd-1")?.assignee == "alice"
+        }
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testTryAgainIsDroppedWhenANewerEditSupersededTheFailedWrite() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setMetadataUpdateErrors([StoreMutationTestError.commandFailed, nil, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let failed = await store.updateMetadata(issueID: "bd-1", assignee: "alice")
+        XCTAssertFalse(failed)
+        XCTAssertTrue(store.currentFailure?.isRetryable == true)
+
+        // A newer edit lands before the user acts on the dialog (writes are serialized,
+        // so this is a realistic rapid-edit timeline).
+        let superseded = await store.updateMetadata(issueID: "bd-1", assignee: "bob")
+        XCTAssertTrue(superseded)
+
+        // Try Again must drop the stale retry rather than overwrite the newer edit.
+        store.retryCurrentFailure()
+        XCTAssertTrue(store.pendingFailures.isEmpty)
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(store.issue(with: "bd-1")?.assignee, "bob")
+        // The mock records only non-throwing calls, so exactly one call (bob's) is expected.
+        // Had the stale retry run, it would have consumed the next injected success and put
+        // alice back — recording a second call and flipping the assignee.
+        let calls = await commands.metadataUpdateCalls
+        XCTAssertEqual(calls.map(\.assignee), ["bob"])
+    }
+
+    func testConsumeMostRecentFailureLeavesOlderQueuedFailures() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.enqueueFailure(BeadMutationFailure(title: "A", message: "first"))
+        store.enqueueFailure(BeadMutationFailure(title: "B", message: "second"))
+
+        XCTAssertEqual(store.consumeMostRecentFailure()?.message, "second")
+        XCTAssertEqual(store.currentFailure?.message, "first")
+        XCTAssertEqual(store.pendingFailures.count, 1)
+    }
+
     private func makeProject(_ issuesJSONL: String) throws -> URL {
         let projectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeadStoreAsyncMutationTests-\(UUID().uuidString)", isDirectory: true)

@@ -188,6 +188,7 @@ extension BeadStore {
                 return rejectStaleMutation(targeting: projectURL)
             }
             reconcileState.request(.mutation)
+            announceCompletion("Added \(type) dependency for \(issueID)")
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -195,7 +196,16 @@ extension BeadStore {
             }
             rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: snapshot.issues)
             reconcileState.request(.mutation)
-            lastError = error.localizedDescription
+            // No retry baseline here: dependency edges live outside `BeadIssue`, so an issue
+            // snapshot can't detect a superseding dependency change. Re-running a dependency
+            // add is idempotent in bd, so a blind retry is acceptable.
+            reportMutationFailure(
+                error,
+                title: "Couldn't add dependency for \(issueID)",
+                retry: { [weak self] in
+                    await self?.addDependency(issueID: issueID, dependsOnID: dependsOnID, type: type)
+                }
+            )
             return false
         }
     }
@@ -372,6 +382,7 @@ extension BeadStore {
                 return rejectStaleMutation(targeting: projectURL)
             }
             reconcileState.request(.mutation)
+            announceCompletion("Removed \(dependency.type) dependency for \(dependency.issueID)")
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -379,7 +390,13 @@ extension BeadStore {
             }
             rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: snapshot.issues)
             reconcileState.request(.mutation)
-            lastError = error.localizedDescription
+            reportMutationFailure(
+                error,
+                title: "Couldn't remove dependency for \(dependency.issueID)",
+                retry: { [weak self] in
+                    await self?.removeDependency(dependency)
+                }
+            )
             return false
         }
     }

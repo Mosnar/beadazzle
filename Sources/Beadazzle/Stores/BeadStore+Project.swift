@@ -172,6 +172,7 @@ extension BeadStore {
         commentCache = [:]
         _commentRefreshIssueID = nil
         _commentLoadError = nil
+        pendingFailures.removeAll()
         detail.cancelSelectionWork()
         _gatesByID = [:]
         _currentDataSource = nil

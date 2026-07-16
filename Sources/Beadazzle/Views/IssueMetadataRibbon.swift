@@ -89,6 +89,15 @@ struct IssueMetadataRibbon: View {
                     includesDeferredShortcuts: true,
                     presentation: .ribbonChip
                 )
+
+                // Local progress: appears only when this bead's write outlives the
+                // perceptible-latency threshold. Quiet, non-blocking — navigation stays live.
+                if let issueID = draft.id, store.isPerceptiblyBusy(issueID: issueID) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.leading, 2)
+                        .accessibilityLabel("Saving \(issueID)")
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)

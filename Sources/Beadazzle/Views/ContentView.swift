@@ -81,13 +81,7 @@ struct ContentView: View {
                 initialSymbolName: workspace.selectedBookmark.systemImage
             )
         }
-        .alert("Beadazzle", isPresented: errorBinding) {
-            Button("OK") {
-                store.lastError = nil
-            }
-        } message: {
-            Text(store.lastError ?? "")
-        }
+        .mutationErrorDialog(store: store)
         .onAppear {
             store.openDefaultProjectIfAvailable()
         }
@@ -235,13 +229,6 @@ struct ContentView: View {
 
     private var canRefresh: Bool {
         project.projectURL != nil && !project.isInitializingBeads && !project.isLoading
-    }
-
-    private var errorBinding: Binding<Bool> {
-        Binding(
-            get: { store.lastError != nil },
-            set: { if !$0 { store.lastError = nil } }
-        )
     }
 
     private var deleteConfirmationBinding: Binding<Bool> {

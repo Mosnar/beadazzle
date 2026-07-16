@@ -742,7 +742,47 @@ final class BeadStore {
     internal var _isLoadingComments: Bool { get { detail.isLoadingComments } set { detail.isLoadingComments = newValue } }
     var isAddingComment: Bool { detail.isAddingComment }
     internal var _isAddingComment: Bool { get { detail.isAddingComment } set { detail.isAddingComment = newValue } }
-    var lastError: String?
+    /// Coalesced queue of mutation/command failures. The head is presented in the
+    /// standardized error dialog (`MutationErrorDialog`); Cancel/Try Again pop it.
+    /// This is the single feedback channel; `lastError` remains as a string shim so
+    /// legacy call sites keep compiling while surfaces migrate to `reportMutationFailure`.
+    var pendingFailures: [BeadMutationFailure] = []
+
+    /// The failure currently shown in the standardized error dialog.
+    var currentFailure: BeadMutationFailure? { pendingFailures.first }
+
+    /// String view over `pendingFailures` for legacy call sites. Assigning a non-nil
+    /// string enqueues a plain, non-retryable failure; assigning `nil` clears the queue
+    /// (matches the prior "clear stale error" semantics used at load/reconcile start).
+    var lastError: String? {
+        // Reads return the most recent failure's message (last-write-wins), matching the
+        // legacy single-slot semantics; the dialog itself presents `currentFailure` (the
+        // queue head) so failures are shown in the order they occurred.
+        get { pendingFailures.last?.message }
+        set {
+            // Only a non-nil assignment enqueues. Clearing via `nil` is intentionally a no-op:
+            // the failure queue is user-managed (dismissed through the dialog or resolved by a
+            // successful Try Again) and must survive the incidental `lastError = nil` calls made
+            // at the start of loads/reconciles — otherwise the mutation-triggered reconcile that
+            // follows a failed write would wipe the failure before the dialog could be acted on.
+            // The queue is cleared explicitly only on project switch (`clearLoadedProjectData`).
+            if let newValue {
+                enqueueFailure(BeadMutationFailure(title: Self.genericFailureTitle, message: newValue))
+            }
+        }
+    }
+
+    /// Title used for legacy string errors that don't carry a more specific headline.
+    static let genericFailureTitle = "Beadazzle"
+
+    /// Issue IDs whose in-flight write has outlived the perceptible-latency threshold and
+    /// should show a small local progress indicator. Empty for fast (quiet) writes — the
+    /// indicator never appears for edits that settle quickly, and never blocks navigation.
+    var perceptiblyBusyIssueIDs: Set<String> = []
+
+    @ObservationIgnored internal var perceptibleBusyAnchors: [Int: Set<String>] = [:]
+    @ObservationIgnored internal var perceptibleBusyTasks: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored internal var perceptibleBusyTokenSeed = 0
     var requestedSavedViewEditorID: UUID? { workspace.requestedSavedViewEditorID }
     internal var _requestedSavedViewEditorID: UUID? { get { workspace.requestedSavedViewEditorID } set { workspace.requestedSavedViewEditorID = newValue } }
     var hiddenTypeNames: Set<String> { project.hiddenTypeNames }

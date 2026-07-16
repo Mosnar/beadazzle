@@ -97,7 +97,11 @@ struct ProjectTypeAddSheet: View {
             if await store.addCustomType(named: submittedName) {
                 dismiss()
             } else {
-                saveError = store.lastError ?? "The type could not be added."
+                // Show the failure inline in this sheet's footer (better for form
+                // validation than a modal). Consuming the *most recent* failure — the one
+                // this submit just caused — removes it from the shared queue without
+                // disturbing older failures the dialog may be presenting.
+                saveError = store.consumeMostRecentFailure()?.message ?? "The type could not be added."
                 isSaving = false
             }
         }
@@ -192,7 +196,9 @@ struct ProjectStatusAddSheet: View {
             if await store.addCustomStatus(named: submittedName, category: submittedCategory) {
                 dismiss()
             } else {
-                saveError = store.lastError ?? "The status could not be added."
+                // Show inline and consume this submit's own (most recent) failure — see
+                // ProjectTypeAddSheet.addType.
+                saveError = store.consumeMostRecentFailure()?.message ?? "The status could not be added."
                 isSaving = false
             }
         }
