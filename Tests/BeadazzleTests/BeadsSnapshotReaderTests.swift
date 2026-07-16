@@ -511,10 +511,20 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         let issuesURL = projectURL.appendingPathComponent(".beads/issues.jsonl")
         let lastTouchedURL = projectURL.appendingPathComponent(".beads/last-touched")
         try "external-write\n".write(to: lastTouchedURL, atomically: true, encoding: .utf8)
-        let sourceAttributes = try FileManager.default.attributesOfItem(atPath: issuesURL.path)
-        let sourceModifiedAt = sourceAttributes[.modificationDate] as? Date ?? .distantPast
+        let sourceModifiedAt = Date().addingTimeInterval(
+            -(ProjectSnapshotFreshnessFiles.markerFreshnessTolerance + 2)
+        )
         try FileManager.default.setAttributes(
-            [.modificationDate: sourceModifiedAt.addingTimeInterval(0.05)],
+            [.modificationDate: sourceModifiedAt],
+            ofItemAtPath: issuesURL.path
+        )
+        try FileManager.default.setAttributes(
+            // This marker predates launch and is meaningfully newer than the readable
+            // snapshot. Sub-second leads are intentionally tolerated because `bd export`
+            // writes its markers shortly after the snapshot itself.
+            [.modificationDate: sourceModifiedAt.addingTimeInterval(
+                ProjectSnapshotFreshnessFiles.markerFreshnessTolerance + 1
+            )],
             ofItemAtPath: lastTouchedURL.path
         )
 

@@ -77,7 +77,9 @@ struct BeadsSQLiteSnapshotReader {
           \(column("pinned", fallback: "0")),
           \(column("ephemeral", fallback: "0")),
           \(column("is_template", fallback: "0")),
-          \(commentCountExpression)
+          \(commentCountExpression),
+          \(column("close_reason", fallback: "NULL")),
+          \(column("created_by", fallback: "NULL"))
         FROM issues i
         \(whereClause)
         ORDER BY \(column("priority", fallback: "2")) ASC, \(updatedOrder)
@@ -117,8 +119,10 @@ struct BeadsSQLiteSnapshotReader {
                     assignee: SQLiteDatabase.optionalText(statement, 12),
                     owner: SQLiteDatabase.optionalText(statement, 13),
                     createdAt: parseDate(SQLiteDatabase.optionalText(statement, 14)),
+                    createdBy: SQLiteDatabase.optionalText(statement, 26),
                     updatedAt: parseDate(SQLiteDatabase.optionalText(statement, 15)),
                     closedAt: parseDate(SQLiteDatabase.optionalText(statement, 16)),
+                    closeReason: SQLiteDatabase.optionalText(statement, 25),
                     dueAt: parseDate(SQLiteDatabase.optionalText(statement, 17)),
                     deferUntil: parseDate(SQLiteDatabase.optionalText(statement, 18)),
                     externalRef: SQLiteDatabase.optionalText(statement, 19),
@@ -145,8 +149,9 @@ struct BeadsSQLiteSnapshotReader {
             ? "type"
             : (columns.contains("dependency_type") ? "dependency_type" : "''")
         let createdAtExpression = columns.contains("created_at") ? "created_at" : "NULL"
+        let createdByExpression = columns.contains("created_by") ? "created_by" : "NULL"
         let sql = """
-        SELECT issue_id, depends_on_id, \(typeExpression), \(createdAtExpression)
+        SELECT issue_id, depends_on_id, \(typeExpression), \(createdAtExpression), \(createdByExpression)
         FROM dependencies
         ORDER BY \(typeExpression), \(createdAtExpression) DESC
         """
@@ -172,7 +177,8 @@ struct BeadsSQLiteSnapshotReader {
                     issueID: SQLiteDatabase.text(statement, 0),
                     dependsOnID: SQLiteDatabase.text(statement, 1),
                     type: SQLiteDatabase.text(statement, 2),
-                    createdAt: parseDate(SQLiteDatabase.optionalText(statement, 3))
+                    createdAt: parseDate(SQLiteDatabase.optionalText(statement, 3)),
+                    createdBy: SQLiteDatabase.optionalText(statement, 4)
                 )
             )
         }

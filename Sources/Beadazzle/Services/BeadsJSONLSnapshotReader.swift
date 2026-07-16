@@ -37,8 +37,10 @@ struct BeadsJSONLSnapshotReader {
                 assignee: record.optionalString("assignee"),
                 owner: record.optionalString("owner"),
                 createdAt: parseDate(record.optionalString("created_at")),
+                createdBy: record.optionalString("created_by"),
                 updatedAt: parseDate(record.optionalString("updated_at")),
                 closedAt: parseDate(record.optionalString("closed_at")),
+                closeReason: record.optionalString("close_reason"),
                 dueAt: parseDate(record.optionalString("due_at")),
                 deferUntil: parseDate(record.optionalString("defer_until")),
                 externalRef: record.optionalString("external_ref"),
@@ -67,7 +69,8 @@ struct BeadsJSONLSnapshotReader {
                         issueID: sourceID,
                         dependsOnID: dependsOnID,
                         type: dependency.string("type"),
-                        createdAt: parseDate(dependency.optionalString("created_at"))
+                        createdAt: parseDate(dependency.optionalString("created_at")),
+                        createdBy: dependency.optionalString("created_by")
                     )
                 )
             }
@@ -82,38 +85,15 @@ struct BeadsJSONLSnapshotReader {
     }
 
     private func loadRecords(url: URL) throws -> [[String: Any]] {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-
         var records: [[String: Any]] = []
-        var lineBuffer = Data()
-        var lineNumber = 0
-        lineBuffer.reserveCapacity(64 * 1024)
-
-        while true {
-            guard let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
-                break
-            }
-
-            var start = chunk.startIndex
-            while let newlineIndex = chunk[start...].firstIndex(of: 10) {
-                lineBuffer.append(contentsOf: chunk[start..<newlineIndex])
-                lineNumber += 1
-                try appendRecord(from: lineBuffer, lineNumber: lineNumber, path: url.path, into: &records)
-                lineBuffer.removeAll(keepingCapacity: true)
-                start = chunk.index(after: newlineIndex)
-            }
-
-            if start < chunk.endIndex {
-                lineBuffer.append(contentsOf: chunk[start..<chunk.endIndex])
-            }
+        _ = try JSONLLineReader.scan(url: url) { line in
+            try appendRecord(
+                from: line.data,
+                lineNumber: line.number,
+                path: url.path,
+                into: &records
+            )
         }
-
-        if !lineBuffer.isEmpty {
-            lineNumber += 1
-            try appendRecord(from: lineBuffer, lineNumber: lineNumber, path: url.path, into: &records)
-        }
-
         return records
     }
 

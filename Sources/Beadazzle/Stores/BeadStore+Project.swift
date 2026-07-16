@@ -9,6 +9,7 @@ extension BeadStore {
 
     func openProject(_ url: URL) {
         let url = url.standardizedFileURL
+        let outgoingProjectURL = projectURL
         // Persist the outgoing project's state now, while its URL and live workspace are still
         // current, so a pending debounce can't be dropped by the switch.
         flushPendingWorkspaceState()
@@ -16,6 +17,12 @@ extension BeadStore {
         mutations.resetMetadataMutations()
         workspace.cancelQueryWork()
         detail.cancelSelectionWork()
+        if let outgoingProjectURL, outgoingProjectURL != url {
+            let activityHistoryRepository = activityHistoryRepository
+            Task {
+                await activityHistoryRepository.discard(projectURL: outgoingProjectURL)
+            }
+        }
         stopDataSourceMonitor()
         _projectURL = url
         resetProjectHealthStatus()
@@ -172,6 +179,13 @@ extension BeadStore {
         commentCache = [:]
         _commentRefreshIssueID = nil
         _commentLoadError = nil
+        _activityItems = []
+        _activityIssueID = nil
+        _activityRefreshIssueID = nil
+        _activityLoadError = nil
+        _isLoadingActivity = false
+        activityEvents = []
+        activityLoadedIssueID = nil
         pendingFailures.removeAll()
         detail.cancelSelectionWork()
         _gatesByID = [:]
@@ -406,6 +420,8 @@ extension BeadStore {
         applyFilters()
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
+        prepareActivityForSelection()
+        loadActivityForSelection(force: true)
         _isLoading = false
         lastError = nil
         synchronizeDataSourceMonitor(projectURL: projectURL, source: loadedProject.source)
@@ -636,5 +652,6 @@ extension BeadStore {
         if selectedIssue?.id == issueID {
             _commentsIssueID = issueID
             _comments = commentCache[issueID] ?? []
+            rebuildActivityItemsForSelection()
         }
     }}

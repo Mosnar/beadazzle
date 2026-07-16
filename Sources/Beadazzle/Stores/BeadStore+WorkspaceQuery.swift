@@ -246,6 +246,8 @@ extension BeadStore {
             guard !Task.isCancelled, let self, self.selectedIDs == expectedSelectedIDs else { return }
             self.loadDependenciesForSelection()
             self.syncCommentsForSelectionFromCache()
+            self.prepareActivityForSelection()
+            self.loadActivityForSelection()
             self.loadWaitersForSelectedGateIfNeeded()
         }
     }

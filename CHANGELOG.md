@@ -13,6 +13,10 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- The detail view's Activity section now combines comments with the history Beads records: creation, available status and metadata changes, close reasons, and reconstructed close or reopen state when the current bead no longer matches the event log. Activity history loads on demand, so even very large logs do not delay project or issue-list loading.
+- Activity also shows current structure history: when a child bead was added (or a parent set), when a blocker or gate started blocking a bead, when the bead was marked as blocking something else, when a bead was discovered while working on another, and when a blocker closed and the bead became unblocked — including the recorded actor and a chronology corrected for legacy relationship timestamps.
+- Beads referenced in Activity entries are clickable: click to open the bead, hover for the same detail preview shown for bead links elsewhere in the app.
+- Improved timestamp contrast in Activity entries in dark mode.
 - Restyled the application Settings › General pane to match Project Settings: the bd CLI path now gets a full-width field with the Choose and Reset buttons on their own row, and Resolution Details uses the same expandable details style as project diagnostics.
 - Settings › General now verifies the resolved bd executable by running it: it shows the detected Beads version, and warns when bd is missing or the configured path doesn't look like the Beads CLI.
 - When a bead change fails, Beadazzle now shows a single consistent error dialog with the `bd` command that ran and its output, plus Try Again and Cancel. Successful edits stay quiet, and a progress indicator appears only when a save is actually slow.

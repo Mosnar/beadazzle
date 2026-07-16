@@ -32,15 +32,14 @@ enum BeadFormatters {
 private final class BeadDateFormatterStore: @unchecked Sendable {
     private let lock = NSLock()
     private let parseDateFormatters: [DateFormatter]
-    private let iso8601DateFormatter = ISO8601DateFormatter()
+    private let iso8601DateFormat = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+    private let iso8601FractionalDateFormat = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
     private let commandDateFormatter: DateFormatter
 
     init() {
-        // Ordered by frequency in bd output: bd emits `yyyy-MM-dd'T'HH:mm:ssZ`
-        // timestamps, so the common case must match on the first attempt.
+        // Non-ISO legacy values only. ISO timestamps take the lock-free modern path
+        // in `parseDate`, which is substantially faster and preserves microseconds.
         parseDateFormatters = [
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
             "yyyy-MM-dd HH:mm:ss",
             "yyyy-MM-dd"
         ].map { format in
@@ -59,6 +58,15 @@ private final class BeadDateFormatterStore: @unchecked Sendable {
 
     func parseDate(_ value: String) -> Date? {
         guard !value.isEmpty else { return nil }
+        if value.contains("T") {
+            if value.contains("."), let date = try? iso8601FractionalDateFormat.parse(value) {
+                return date
+            }
+            if let date = try? iso8601DateFormat.parse(value) {
+                return date
+            }
+        }
+
         lock.lock()
         defer { lock.unlock() }
         for formatter in parseDateFormatters {
@@ -66,7 +74,7 @@ private final class BeadDateFormatterStore: @unchecked Sendable {
                 return date
             }
         }
-        return iso8601DateFormatter.date(from: value)
+        return nil
     }
 
     func commandDate(_ value: Date) -> String {

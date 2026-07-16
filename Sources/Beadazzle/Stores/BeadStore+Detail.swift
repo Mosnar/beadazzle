@@ -18,6 +18,7 @@ extension BeadStore {
         if dependencies != nextDependencies {
             _dependencies = nextDependencies
         }
+        rebuildActivityItemsForSelection()
     }
 
     func dependencies(for issueID: String) -> [BeadDependency] {
@@ -54,6 +55,7 @@ extension BeadStore {
             _commentRefreshIssueID = nil
             _isLoadingComments = false
         }
+        rebuildActivityItemsForSelection()
     }
 
     func comments(for issueID: String) -> [BeadComment] {
@@ -83,6 +85,7 @@ extension BeadStore {
         _commentRefreshIssueID = nil
         _commentLoadError = nil
         _isLoadingComments = false
+        clearActivitySelection()
     }
 
     func isLoadingComments(for issueID: String) -> Bool {
@@ -115,6 +118,7 @@ extension BeadStore {
                 self._commentRefreshIssueID = nil
                 self._isLoadingComments = false
                 self.commentLoadTask = nil
+                self.rebuildActivityItemsForSelection()
             } catch is CancellationError {
                 return
             } catch {
@@ -140,4 +144,132 @@ extension BeadStore {
         index.issue(with: id)
     }
 
+    func activityItems(for issueID: String) -> [IssueActivityItem] {
+        activityIssueID == issueID ? activityItems : []
+    }
+
+    func isLoadingActivity(for issueID: String) -> Bool {
+        isLoadingActivity && activityRefreshIssueID == issueID
+    }
+
+    func activityLoadError(for issueID: String) -> String? {
+        activityIssueID == issueID ? activityLoadError : nil
+    }
+
+    /// Installs an immediate creation/relationship/comment presentation for a new
+    /// selection, then the background history read enriches it with logged events.
+    internal func prepareActivityForSelection() {
+        guard let issue = selectedIssue else {
+            clearActivitySelection()
+            return
+        }
+
+        if activityIssueID != issue.id {
+            _ = detail.beginActivityLoad()
+            _activityIssueID = issue.id
+            activityLoadedIssueID = nil
+            activityEvents = []
+            _activityRefreshIssueID = nil
+            _activityLoadError = nil
+            _isLoadingActivity = false
+        }
+        rebuildActivityItemsForSelection()
+    }
+
+    func loadActivityForSelection(force: Bool = false) {
+        prepareActivityForSelection()
+        guard let issue = selectedIssue, let projectURL else { return }
+        let isAlreadyLoading = isLoadingActivity && activityRefreshIssueID == issue.id
+        if !force, activityLoadedIssueID == issue.id || isAlreadyLoading {
+            return
+        }
+
+        let issueID = issue.id
+        let generation = detail.beginActivityLoad()
+        _activityRefreshIssueID = issueID
+        _activityLoadError = nil
+        _isLoadingActivity = true
+        let repository = activityHistoryRepository
+        let validIssueIDs = index.allIssueIDs
+        let issueSetRevision = project.issueReferenceLookup.revision
+
+        activityLoadTask = Task { @MainActor [weak self] in
+            defer { self?.detail.finishActivityLoad(generation: generation) }
+            do {
+                let loadedEvents = try await repository.events(
+                    projectURL: projectURL,
+                    issueID: issueID,
+                    validIssueIDs: validIssueIDs,
+                    issueSetRevision: issueSetRevision
+                )
+                guard !Task.isCancelled,
+                      let self,
+                      self.projectURL == projectURL,
+                      self.selectedIssue?.id == issueID,
+                      self.detail.ownsActivityLoad(issueID: issueID, generation: generation) else {
+                    return
+                }
+                self.activityEvents = loadedEvents
+                self.activityLoadedIssueID = issueID
+                self._activityRefreshIssueID = nil
+                self._activityLoadError = nil
+                self._isLoadingActivity = false
+                self.rebuildActivityItemsForSelection()
+            } catch is CancellationError {
+                guard let self,
+                      self.detail.ownsActivityLoad(issueID: issueID, generation: generation) else {
+                    return
+                }
+                self._activityRefreshIssueID = nil
+                self._isLoadingActivity = false
+            } catch {
+                guard !Task.isCancelled,
+                      let self,
+                      self.projectURL == projectURL,
+                      self.selectedIssue?.id == issueID,
+                      self.detail.ownsActivityLoad(issueID: issueID, generation: generation) else {
+                    return
+                }
+                self._activityRefreshIssueID = nil
+                self._activityLoadError = error.localizedDescription
+                self._isLoadingActivity = false
+            }
+        }
+    }
+
+    func refreshActivityForSelection() {
+        loadCommentsForSelection(force: true)
+        loadActivityForSelection(force: true)
+        // Dependencies and current issue status come from the authoritative snapshot.
+        // Refresh it quietly so this control genuinely refreshes every activity source.
+        refresh(reason: .manual, showsLoadingIndicator: false)
+    }
+
+    internal func rebuildActivityItemsForSelection() {
+        guard let issue = selectedIssue, activityIssueID == issue.id else { return }
+        let nextItems = IssueActivityTimeline.items(
+            issue: issue,
+            events: activityEvents,
+            comments: comments(for: issue.id),
+            dependencies: dependencies(for: issue.id),
+            semantics: index.semantics,
+            resolveIssue: { [index] in index.issue(with: $0) }
+        )
+        if activityItems != nextItems {
+            _activityItems = nextItems
+        }
+    }
+
+    private func clearActivitySelection() {
+        if activityIssueID != nil || activityLoadedIssueID != nil || !activityItems.isEmpty {
+            _ = detail.beginActivityLoad()
+        }
+        _activityIssueID = nil
+        activityLoadedIssueID = nil
+        activityEvents = []
+        _activityItems = []
+        _activityRefreshIssueID = nil
+        _activityLoadError = nil
+        _isLoadingActivity = false
+    }
 }

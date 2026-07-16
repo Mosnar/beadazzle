@@ -398,7 +398,7 @@ struct IssueBodySections: View {
 
             if let issue {
                 SubIssuesView(issue: issue)
-                CommentsView(issue: issue)
+                ActivityView(issue: issue)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)

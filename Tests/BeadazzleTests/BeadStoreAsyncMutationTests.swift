@@ -2313,6 +2313,38 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(store.comments(for: "bd-a").isEmpty)
     }
 
+    func testRapidSelectionOnlyPublishesLatestIssueActivity() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-a","title":"A","status":"open","priority":1,"issue_type":"task","created_at":"2026-07-03T20:00:00Z"}
+            {"_type":"issue","id":"bd-b","title":"B","status":"open","priority":1,"issue_type":"task","created_at":"2026-07-03T20:00:00Z"}
+            """
+        )
+        let interactions = """
+        {"id":"int-a","kind":"field_change","created_at":"2026-07-03T20:01:00Z","issue_id":"bd-a","extra":{"field":"priority","old_value":"2","new_value":"1"}}
+        {"id":"int-b","kind":"field_change","created_at":"2026-07-03T20:02:00Z","issue_id":"bd-b","extra":{"field":"assignee","new_value":"ransom"}}
+        """
+        try interactions.write(
+            to: projectURL.appendingPathComponent(".beads/interactions.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-b") != nil }
+
+        store.select(["bd-a"])
+        store.select(["bd-b"])
+
+        try await waitUntil {
+            store.activityIssueID == "bd-b"
+                && !store.isLoadingActivity(for: "bd-b")
+                && store.activityItems(for: "bd-b").contains { $0.id == "event-int-b" }
+        }
+        XCTAssertTrue(store.activityItems(for: "bd-a").isEmpty)
+        XCTAssertFalse(store.activityItems(for: "bd-b").contains { $0.id == "event-int-a" })
+    }
+
     func testGatePresentationComesFromSnapshotWithoutGateRoster() async throws {
         let projectURL = try makeProject(gateProjectJSONL(gateUpdatedAt: "2026-07-03T21:58:35Z"))
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())

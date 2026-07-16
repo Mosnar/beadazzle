@@ -16,8 +16,10 @@ struct BeadIssue: Identifiable, Hashable, Sendable {
     var assignee: String?
     var owner: String?
     var createdAt: Date?
+    var createdBy: String? = nil
     var updatedAt: Date?
     var closedAt: Date?
+    var closeReason: String? = nil
     var dueAt: Date?
     var deferUntil: Date?
     var externalRef: String?
@@ -223,6 +225,7 @@ struct BeadDependency: Identifiable, Hashable, Sendable {
     var dependsOnID: String
     var type: String
     var createdAt: Date?
+    var createdBy: String? = nil
 
     /// A "blocks" edge (`issueID` is blocked until `dependsOnID` closes). Matched
     /// case- and whitespace-insensitively, the single definition of the relationship.

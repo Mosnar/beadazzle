@@ -183,21 +183,48 @@ final class BeadDetailStore {
     fileprivate(set) var commentLoadError: String?
     fileprivate(set) var isLoadingComments = false
     fileprivate(set) var isAddingComment = false
+    fileprivate(set) var activityItems: [IssueActivityItem] = []
+    fileprivate(set) var activityIssueID: String?
+    fileprivate(set) var activityRefreshIssueID: String?
+    fileprivate(set) var activityLoadError: String?
+    fileprivate(set) var isLoadingActivity = false
     fileprivate(set) var gatesByID: [String: BeadGate] = [:]
     fileprivate(set) var gateClock = Date()
 
     @ObservationIgnored fileprivate(set) var selectionSideDataTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var commentLoadTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var activityLoadTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var gateDetailTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var commentCache: [String: [BeadComment]] = [:]
+    @ObservationIgnored fileprivate(set) var activityEvents: [BeadIssueEvent] = []
+    @ObservationIgnored fileprivate(set) var activityLoadedIssueID: String?
+    @ObservationIgnored fileprivate(set) var activityLoadGeneration = 0
 
     func cancelSelectionWork() {
         selectionSideDataTask?.cancel()
         selectionSideDataTask = nil
         commentLoadTask?.cancel()
         commentLoadTask = nil
+        activityLoadGeneration &+= 1
+        activityLoadTask?.cancel()
+        activityLoadTask = nil
         gateDetailTask?.cancel()
         gateDetailTask = nil
+    }
+
+    func beginActivityLoad() -> Int {
+        activityLoadGeneration &+= 1
+        activityLoadTask?.cancel()
+        return activityLoadGeneration
+    }
+
+    func ownsActivityLoad(issueID: String, generation: Int) -> Bool {
+        activityIssueID == issueID && activityLoadGeneration == generation
+    }
+
+    func finishActivityLoad(generation: Int) {
+        guard activityLoadGeneration == generation else { return }
+        activityLoadTask = nil
     }
 }
 
@@ -560,6 +587,14 @@ final class BeadStore {
     internal var _commentRefreshIssueID: String? { get { detail.commentRefreshIssueID } set { detail.commentRefreshIssueID = newValue } }
     var commentLoadError: String? { detail.commentLoadError }
     internal var _commentLoadError: String? { get { detail.commentLoadError } set { detail.commentLoadError = newValue } }
+    var activityItems: [IssueActivityItem] { detail.activityItems }
+    internal var _activityItems: [IssueActivityItem] { get { detail.activityItems } set { detail.activityItems = newValue } }
+    var activityIssueID: String? { detail.activityIssueID }
+    internal var _activityIssueID: String? { get { detail.activityIssueID } set { detail.activityIssueID = newValue } }
+    var activityRefreshIssueID: String? { detail.activityRefreshIssueID }
+    internal var _activityRefreshIssueID: String? { get { detail.activityRefreshIssueID } set { detail.activityRefreshIssueID = newValue } }
+    var activityLoadError: String? { detail.activityLoadError }
+    internal var _activityLoadError: String? { get { detail.activityLoadError } set { detail.activityLoadError = newValue } }
     var selectedIDs: Set<String> { workspace.selectedIDs }
     internal var _selectedIDs: Set<String> { get { workspace.selectedIDs } set { workspace.selectedIDs = newValue } }
     var fullPageDetailIssueID: String? { workspace.fullPageDetailIssueID }
@@ -742,6 +777,8 @@ final class BeadStore {
     internal var _isLoadingComments: Bool { get { detail.isLoadingComments } set { detail.isLoadingComments = newValue } }
     var isAddingComment: Bool { detail.isAddingComment }
     internal var _isAddingComment: Bool { get { detail.isAddingComment } set { detail.isAddingComment = newValue } }
+    var isLoadingActivity: Bool { detail.isLoadingActivity }
+    internal var _isLoadingActivity: Bool { get { detail.isLoadingActivity } set { detail.isLoadingActivity = newValue } }
     /// Coalesced queue of mutation/command failures. The head is presented in the
     /// standardized error dialog (`MutationErrorDialog`); Cancel/Try Again pop it.
     /// This is the single feedback channel; `lastError` remains as a string shim so
@@ -797,6 +834,7 @@ final class BeadStore {
 
     @ObservationIgnored internal let commands: any BeadsCommanding
     @ObservationIgnored internal let projectLoader: BeadProjectLoader
+    @ObservationIgnored internal let activityHistoryRepository: BeadActivityHistoryRepository
     @ObservationIgnored internal let savedViewRepository: BeadSavedViewRepository
     @ObservationIgnored internal let workspaceStateRepository: BeadWorkspaceStateRepository
     /// Set in `openProject` from the persisted payload and consumed once by `applyLoadedProject`
@@ -816,6 +854,7 @@ final class BeadStore {
     internal var sidebarSelectionTask: Task<Void, Never>? { get { workspace.sidebarSelectionTask } set { workspace.sidebarSelectionTask = newValue } }
     internal var selectionSideDataTask: Task<Void, Never>? { get { detail.selectionSideDataTask } set { detail.selectionSideDataTask = newValue } }
     internal var commentLoadTask: Task<Void, Never>? { get { detail.commentLoadTask } set { detail.commentLoadTask = newValue } }
+    internal var activityLoadTask: Task<Void, Never>? { get { detail.activityLoadTask } set { detail.activityLoadTask = newValue } }
     internal var gateDetailTask: Task<Void, Never>? { get { detail.gateDetailTask } set { detail.gateDetailTask = newValue } }
     internal var projectHealthTask: Task<Void, Never>? { get { project.projectHealthTask } set { project.projectHealthTask = newValue } }
     internal var dataSourceMonitor: BeadsDataSourceMonitor? { get { project.dataSourceMonitor } set { project.dataSourceMonitor = newValue } }
@@ -826,6 +865,8 @@ final class BeadStore {
     /// forces the next reload to re-read from `bd`, so a failed reload naturally retries.
     internal var cachedDefinitions: BeadSemanticDefinitions? { get { project.cachedDefinitions } set { project.cachedDefinitions = newValue } }
     internal var commentCache: [String: [BeadComment]] { get { detail.commentCache } set { detail.commentCache = newValue } }
+    internal var activityEvents: [BeadIssueEvent] { get { detail.activityEvents } set { detail.activityEvents = newValue } }
+    internal var activityLoadedIssueID: String? { get { detail.activityLoadedIssueID } set { detail.activityLoadedIssueID = newValue } }
     internal var outlineState: BeadOutlineSelectionState { get { workspace.outlineState } set { workspace.outlineState = newValue } }
     internal var workspaceHistory: BeadWorkspaceHistory { get { workspace.workspaceHistory } set { workspace.workspaceHistory = newValue } }
     internal var isRestoringWorkspace: Bool { get { workspace.isRestoringWorkspace } set { workspace.isRestoringWorkspace = newValue } }
@@ -846,11 +887,13 @@ final class BeadStore {
 
     init(
         userDefaults: UserDefaults = .standard,
-        commands: any BeadsCommanding = BeadsCommandService()
+        commands: any BeadsCommanding = BeadsCommandService(),
+        activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository()
     ) {
         self.userDefaults = userDefaults
         self.commands = commands
         self.projectLoader = BeadProjectLoader(commands: commands)
+        self.activityHistoryRepository = activityHistoryRepository
         self.savedViewRepository = BeadSavedViewRepository(userDefaults: userDefaults)
         self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
