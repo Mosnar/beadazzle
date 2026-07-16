@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-16
+
 - The detail view's Activity section now combines comments with the history Beads records: creation, available status and metadata changes, close reasons, and reconstructed close or reopen state when the current bead no longer matches the event log. Activity history loads on demand, so even very large logs do not delay project or issue-list loading.
 - Activity also shows current structure history: when a child bead was added (or a parent set), when a blocker or gate started blocking a bead, when the bead was marked as blocking something else, when a bead was discovered while working on another, and when a blocker closed and the bead became unblocked — including the recorded actor and a chronology corrected for legacy relationship timestamps.
 - Beads referenced in Activity entries are clickable: click to open the bead, hover for the same detail preview shown for bead links elsewhere in the app.
@@ -239,7 +241,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.0.0
 [0.1.0-beta.1]: https://github.com/Mosnar/beadazzle/releases/tag/v0.1.0-beta.1
