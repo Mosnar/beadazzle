@@ -245,7 +245,7 @@ extension BeadStore {
         do {
             let name = try WorkflowValueValidator.normalizedIdentifier(rawName)
             guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(name) else {
-                lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+                lastError = BeadIssueWorkflowPolicy.normalMutationTypeError(for: name)
                 return false
             }
             let allTypes = try await commands.loadTypeDefinitions(projectURL: projectURL)

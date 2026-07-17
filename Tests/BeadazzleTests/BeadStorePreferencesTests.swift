@@ -101,7 +101,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let projectURL = try makeProject(
             """
             {"_type":"issue","id":"bd-1","title":"Example","status":"open","priority":1,"issue_type":"task","labels":["phase:awaiting_deploy"]}
-            {"_type":"issue","id":"bd-state-event","title":"State change: phase → awaiting_deploy","status":"closed","priority":1,"issue_type":"event"}
+            {"_type":"issue","id":"bd-state-event","title":"State change: phase → awaiting_deploy","status":"closed","priority":1,"issue_type":"event","parent_id":"bd-1"}
             """
         )
         let otherProjectURL = try makeProject(issueLine(id: "bd-2", status: "open", type: "task"))
@@ -109,6 +109,11 @@ final class BeadStorePreferencesTests: XCTestCase {
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
 
+        XCTAssertFalse(store.availableTypes.contains("event"))
+        XCTAssertFalse(store.allTypeDefinitions.contains { $0.name == "event" })
+        XCTAssertFalse(store.typeOptions(including: "event").contains("event"))
+        XCTAssertEqual(store.issues.map(\.id), ["bd-1"])
+        XCTAssertEqual(store.index.issueIDs(for: .all), ["bd-1"])
         XCTAssertEqual(store.stateValueDisplayName(for: "awaiting_deploy", in: "phase"), "awaiting_deploy")
         XCTAssertFalse(store.isStateValueArchived("awaiting_deploy", in: "phase"))
         XCTAssertEqual(store.stateValueUsageCount(for: "awaiting_deploy", in: "phase"), 1)
@@ -444,7 +449,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertNotEqual(store.blankDraft().issueType, "gate")
     }
 
-    func testCustomTypeCannotUseReservedGateType() async throws {
+    func testCustomTypeCannotUseReservedGateOrEventType() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
         let commands = PreferenceTestCommands()
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
@@ -455,6 +460,11 @@ final class BeadStorePreferencesTests: XCTestCase {
 
         XCTAssertFalse(didAddType)
         XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.reservedIssueTypeError)
+
+        let didAddEventType = await store.addCustomType(named: " EVENT ")
+
+        XCTAssertFalse(didAddEventType)
+        XCTAssertEqual(store.lastError, BeadIssueWorkflowPolicy.systemRecordIssueTypeError)
         let savedTypeSnapshots = await commands.savedTypeSnapshots
         XCTAssertTrue(savedTypeSnapshots.isEmpty)
     }

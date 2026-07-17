@@ -1,11 +1,24 @@
 import Foundation
 
+/// A parsed `bd set-state` audit record, ready for Activity presentation. Keeping
+/// the resolved dimension/value in the project index avoids reparsing event titles
+/// each time the selected bead's timeline is rebuilt.
+struct BeadRecordedStateChange: Hashable, Sendable {
+    let eventID: String
+    let dimension: String
+    let value: String
+    let date: Date?
+    let actor: String?
+    let reason: String?
+}
+
 /// The `<dimension>:<value>` state-label convention used by `bd set-state`.
 ///
 /// A state label is a fast lookup cache for an issue's current value along one
-/// dimension (for example `phase:implementation`); the interactions log holds the
-/// authoritative history. Each dimension holds at most one value per issue, so
-/// applying a value replaces any existing label for that dimension.
+/// dimension (for example `phase:implementation`); the event bead created by
+/// `bd set-state` preserves the authoritative history. Each dimension holds at
+/// most one value per issue, so applying a value replaces any existing label for
+/// that dimension.
 enum BeadStateLabel {
     private static let eventTitlePrefix = "State change: "
     private static let eventTitleSeparator = " → "
@@ -121,7 +134,8 @@ enum BeadStateLabel {
     /// the project-wide label catalog is available so valid dimensions or
     /// values containing the event-title arrow can be disambiguated correctly.
     static func isRecordedChangeEvent(issueType: String, title: String) -> Bool {
-        issueType == "event" && title.hasPrefix(eventTitlePrefix)
+        BeadIssueWorkflowPolicy.isSystemRecordIssueType(issueType)
+            && title.hasPrefix(eventTitlePrefix)
     }
 
     /// Most event titles contain exactly one separator and can be parsed while
@@ -207,6 +221,36 @@ enum BeadStateLabel {
         }
 
         return candidates[0]
+    }
+
+    static func recordedChange(
+        event: BeadIssue,
+        knownLabels: Set<String> = [],
+        knownDimensions: Set<String> = []
+    ) -> BeadRecordedStateChange? {
+        guard let change = recordedChange(
+            issueType: event.issueType,
+            title: event.title,
+            knownLabels: knownLabels,
+            knownDimensions: knownDimensions
+        ) else { return nil }
+
+        return BeadRecordedStateChange(
+            eventID: event.id,
+            dimension: change.dimension,
+            value: change.value,
+            date: event.createdAt,
+            actor: event.createdBy,
+            reason: recordedReason(in: event.description)
+        )
+    }
+
+    private static func recordedReason(in description: String) -> String? {
+        let marker = "\n\nReason:"
+        guard let markerRange = description.range(of: marker) else { return nil }
+        let reason = description[markerRange.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? nil : reason
     }
 
     private static func recordedChangeCandidate(

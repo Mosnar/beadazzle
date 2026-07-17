@@ -112,6 +112,7 @@ extension BeadStore {
     }
 
     func select(_ ids: Set<String>) {
+        let ids = ids.intersection(index.allIssueIDs)
         let nextFullPageDetailIssueID = fullPageDetailIssueID.flatMap { ids == [$0] ? $0 : nil }
         guard selectedIDs != ids || fullPageDetailIssueID != nextFullPageDetailIssueID else { return }
         if !ids.isEmpty, creationDraft != nil {
@@ -129,7 +130,7 @@ extension BeadStore {
     }
 
     func openIssueFromDetail(issueID: String) {
-        guard index.issue(with: issueID) != nil else { return }
+        guard index.isUserFacingIssueID(issueID) else { return }
         if fullPageDetailIssueID != nil {
             openFullPageDetail(issueID: issueID)
         } else {
@@ -138,7 +139,7 @@ extension BeadStore {
     }
 
     func openFullPageDetail(issueID: String) {
-        guard index.issue(with: issueID) != nil else { return }
+        guard index.isUserFacingIssueID(issueID) else { return }
         let targetSelection: Set<String> = [issueID]
         guard selectedIDs != targetSelection || fullPageDetailIssueID != issueID else { return }
 
@@ -210,7 +211,7 @@ extension BeadStore {
     }
 
     func revealIssue(id: String) {
-        guard index.issue(with: id) != nil else { return }
+        guard index.isUserFacingIssueID(id) else { return }
         _selectedIDs = [id]
         _fullPageDetailIssueID = nil
         expandAncestors(of: id, rebuildRows: false)
@@ -434,7 +435,9 @@ extension BeadStore {
         suppressesFilterUpdates = true
         _selectedBookmark = view.query.basePreset.bookmark
         statusFilters = view.query.statusFilters
-        typeFilters = view.query.typeFilters
+        typeFilters = Set(view.query.typeFilters.filter {
+            !BeadIssueWorkflowPolicy.isSystemRecordIssueType($0)
+        })
         priorityFilters = view.query.priorityFilters
         labelFilters = view.query.labelFilters
         searchText = view.query.searchText

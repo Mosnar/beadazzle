@@ -46,7 +46,7 @@ extension BeadStore {
         )
         _contentRevision &+= 1
         scheduleSavedViewCountRebuild()
-        _selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
+        _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
         syncFullPageDetailWithSelection()
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
@@ -520,7 +520,9 @@ extension BeadStore {
             originalIssue,
             to: draft.issueType
         ) else {
-            lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+            lastError = originalIssue.isSystemRecord
+                ? BeadIssueWorkflowPolicy.systemRecordIssueTypeError
+                : BeadIssueWorkflowPolicy.normalMutationTypeError(for: draft.issueType)
             return false
         }
 
@@ -695,7 +697,7 @@ extension BeadStore {
         guard let projectURL else { return nil }
         guard draft.id == nil else { return nil }
         guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(draft.issueType) else {
-            lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+            lastError = BeadIssueWorkflowPolicy.normalMutationTypeError(for: draft.issueType)
             return nil
         }
 
@@ -839,6 +841,10 @@ extension BeadStore {
         }
         let ids = Array(Set(issueIDs)).sorted()
         guard !ids.isEmpty else { return false }
+        guard ids.allSatisfy({ index.issue(with: $0)?.isSystemRecord != true }) else {
+            lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
+            return false
+        }
         guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else { return false }
 
         let snapshot = currentMutationSnapshot()
@@ -926,8 +932,14 @@ extension BeadStore {
         guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
             return false
         }
-        let ids = Array(Set(issueIDs)).sorted()
-        guard !ids.isEmpty else { return false }
+        let requestedIDs = Array(Set(issueIDs)).sorted()
+        guard !requestedIDs.isEmpty else { return false }
+        guard requestedIDs.allSatisfy({ index.issue(with: $0)?.isSystemRecord != true }) else {
+            lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
+            return false
+        }
+        let ownedSystemRecordIDs = index.systemRecordIssueIDs(ownedBy: requestedIDs)
+        let ids = Array(Set(requestedIDs).union(ownedSystemRecordIDs)).sorted()
 
         let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
@@ -951,7 +963,11 @@ extension BeadStore {
             }
             mutations.discardMetadataMutations(for: ids)
             reconcileState.request(.mutation)
-            announceCompletion(ids.count == 1 ? "Deleted bead \(ids[0])" : "Deleted \(ids.count) beads")
+            announceCompletion(
+                requestedIDs.count == 1
+                    ? "Deleted bead \(requestedIDs[0])"
+                    : "Deleted \(requestedIDs.count) beads"
+            )
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -962,7 +978,9 @@ extension BeadStore {
             let retryBaseline = retryBaseline(for: ids)
             reportMutationFailure(
                 error,
-                title: ids.count == 1 ? "Couldn't delete \(ids[0])" : "Couldn't delete \(ids.count) beads",
+                title: requestedIDs.count == 1
+                    ? "Couldn't delete \(requestedIDs[0])"
+                    : "Couldn't delete \(requestedIDs.count) beads",
                 retry: { [weak self] in
                     guard let self, self.retryBaselineHolds(retryBaseline) else { return }
                     await self.delete(issueIDs: issueIDs, expectedProjectURL: expectedProjectURL)
@@ -1040,6 +1058,14 @@ extension BeadStore {
             return BulkMutationResult(
                 progress: BulkMutationProgress(totalCount: 0),
                 outcome: .completed,
+                failures: []
+            )
+        }
+        guard !requestedIssues.contains(where: \.isSystemRecord) else {
+            lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
                 failures: []
             )
         }
@@ -1298,13 +1324,17 @@ extension BeadStore {
         }
         let ids = Array(Set(issueIDs)).sorted()
         guard !ids.isEmpty else { return false }
+        guard ids.allSatisfy({ index.issue(with: $0)?.isSystemRecord != true }) else {
+            lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
+            return false
+        }
         if let type {
             guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(type),
                   ids.allSatisfy({ id in
                       guard let issue = index.issue(with: id) else { return false }
                       return !issue.isGate
                   }) else {
-                lastError = BeadIssueWorkflowPolicy.reservedIssueTypeError
+                lastError = BeadIssueWorkflowPolicy.normalMutationTypeError(for: type)
                 return false
             }
         }

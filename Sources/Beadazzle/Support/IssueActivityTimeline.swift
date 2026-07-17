@@ -63,6 +63,7 @@ enum IssueActivityTimeline {
         events: [BeadIssueEvent],
         comments: [BeadComment],
         dependencies: [BeadDependency] = [],
+        recordedStateChanges: [BeadRecordedStateChange] = [],
         semantics: BeadProjectSemantics,
         resolveIssue: (String) -> BeadIssue? = { _ in nil }
     ) -> [IssueActivityItem] {
@@ -80,6 +81,10 @@ enum IssueActivityTimeline {
             .event(presentation(for: $0, semantics: semantics, notBefore: issue.createdAt))
         })
 
+        items.append(contentsOf: recordedStateChanges.map {
+            .event(presentation(for: $0, notBefore: issue.createdAt))
+        })
+
         items.append(contentsOf: dependencies.compactMap { dependency in
             presentation(for: dependency, on: issue, resolveIssue: resolveIssue).map(IssueActivityItem.event)
         })
@@ -91,6 +96,7 @@ enum IssueActivityTimeline {
             guard dependency.isBlocking,
                   dependency.issueID == issue.id,
                   let blocker = resolveIssue(dependency.dependsOnID),
+                  !blocker.isSystemRecord,
                   let blockerClosedAt = blocker.closedAt,
                   semantics.isDone(blocker) else {
                 return nil
@@ -182,6 +188,7 @@ enum IssueActivityTimeline {
 
         let otherID = dependency.issueID == issue.id ? dependency.dependsOnID : dependency.issueID
         let isForward = dependency.issueID == issue.id
+        guard resolveIssue(otherID)?.isSystemRecord != true else { return nil }
 
         let systemImage: String
         let message: String
@@ -256,6 +263,20 @@ enum IssueActivityTimeline {
             systemImage: systemImage,
             message: message,
             reason: event.reason
+        )
+    }
+
+    private static func presentation(
+        for change: BeadRecordedStateChange,
+        notBefore lowerBound: Date?
+    ) -> IssueActivityEventPresentation {
+        IssueActivityEventPresentation(
+            id: "state-\(change.eventID)",
+            date: latestDate(change.date, lowerBound),
+            actor: change.actor,
+            systemImage: "slider.horizontal.3",
+            message: "set \(BeadStateLabel.displayName(for: change.dimension)) to \(clamped(change.value))",
+            reason: change.reason
         )
     }
 

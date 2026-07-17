@@ -69,7 +69,7 @@ extension BeadStore {
         !selectedIDs.isEmpty
             && selectedIDs.allSatisfy { id in
                 guard let issue = index.issue(with: id) else { return false }
-                return !issue.isGate
+                return !issue.isGate && !issue.isSystemRecord
             }
     }
 
@@ -170,12 +170,15 @@ extension BeadStore {
     }
 
     func typeOptions(including currentType: String?) -> [String] {
-        options(availableTypes, including: currentType, fallback: index.semantics.typeNames)
+        let currentType = currentType.flatMap {
+            BeadIssueWorkflowPolicy.isSystemRecordIssueType($0) ? nil : $0
+        }
+        return options(availableTypes, including: currentType, fallback: index.semantics.typeNames)
     }
 
     func mutableTypeOptions(including currentType: String?) -> [String] {
         let currentType = currentType.flatMap {
-            BeadIssueWorkflowPolicy.isReservedIssueType($0) ? nil : $0
+            BeadIssueWorkflowPolicy.isNormalMutableIssueType($0) ? $0 : nil
         }
         return options(
             availableMutableTypes,

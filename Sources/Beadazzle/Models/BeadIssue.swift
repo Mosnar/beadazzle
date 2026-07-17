@@ -51,6 +51,12 @@ struct BeadIssue: Identifiable, Hashable, Sendable {
         BeadIssueWorkflowPolicy.isReservedIssueType(issueType)
     }
 
+    /// Internal records emitted by Beads to preserve history. They remain in the
+    /// project snapshot for provenance, but are not user-editable work items.
+    var isSystemRecord: Bool {
+        BeadIssueWorkflowPolicy.isSystemRecordIssueType(issueType)
+    }
+
     /// True when every field contributing to `summaryText` is unchanged. Used to carry
     /// pre-folded search bytes across index rebuilds; each comparison is cheap for an
     /// untouched issue because copy-on-write leaves both sides sharing storage.
@@ -75,22 +81,32 @@ enum BeadCompletionAction: Equatable, Sendable {
 
 enum BeadIssueWorkflowPolicy {
     static let reservedIssueTypeError = "The gate type is reserved for gate actions."
+    static let systemRecordIssueTypeError = "The event type is reserved for Beads history records."
     static let unsupportedEpicGateError = "Gate creation for epics is not supported by this Beads CLI yet."
 
     static func isReservedIssueType(_ type: String) -> Bool {
         normalizedIssueType(type) == BeadProjectIndex.gateIssueType
     }
 
+    static func isSystemRecordIssueType(_ type: String) -> Bool {
+        normalizedIssueType(type) == "event"
+    }
+
     static func isNormalMutableIssueType(_ type: String) -> Bool {
-        !isReservedIssueType(type)
+        !isReservedIssueType(type) && !isSystemRecordIssueType(type)
     }
 
     static func normalMutableIssueTypes(_ types: [String]) -> [String] {
         types.filter(isNormalMutableIssueType)
     }
 
+    static func normalMutationTypeError(for type: String) -> String {
+        isSystemRecordIssueType(type) ? systemRecordIssueTypeError : reservedIssueTypeError
+    }
+
     static func canChangeIssueTypeThroughNormalMutation(_ issue: BeadIssue, to type: String) -> Bool {
-        issue.issueType == type || (!issue.isGate && isNormalMutableIssueType(type))
+        !issue.isSystemRecord
+            && (issue.issueType == type || (!issue.isGate && isNormalMutableIssueType(type)))
     }
 
     static func canCreateGate(blocking issue: BeadIssue, isDone: Bool) -> Bool {
@@ -98,12 +114,17 @@ enum BeadIssueWorkflowPolicy {
     }
 
     static func canAddBlockingDependency(blockedIssue: BeadIssue, blockerIssue: BeadIssue) -> Bool {
-        isEpicIssueType(blockedIssue.issueType) == isEpicIssueType(blockerIssue.issueType)
+        !blockedIssue.isSystemRecord
+            && !blockerIssue.isSystemRecord
+            && isEpicIssueType(blockedIssue.issueType) == isEpicIssueType(blockerIssue.issueType)
     }
 
     static func blockingDependencyUnavailableMessage(blockedIssue: BeadIssue, blockerIssue: BeadIssue) -> String? {
         guard !canAddBlockingDependency(blockedIssue: blockedIssue, blockerIssue: blockerIssue) else {
             return nil
+        }
+        if blockedIssue.isSystemRecord || blockerIssue.isSystemRecord {
+            return systemRecordIssueTypeError
         }
         if isEpicIssueType(blockedIssue.issueType) {
             return "\(blockedIssue.id) is an epic, so it can only be blocked by another epic."
@@ -119,6 +140,9 @@ enum BeadIssueWorkflowPolicy {
     }
 
     static func gateCreationUnavailableMessage(blocking issue: BeadIssue, isDone: Bool) -> String? {
+        if issue.isSystemRecord {
+            return systemRecordIssueTypeError
+        }
         if isDone {
             return "Reopen \(issue.id) before creating a gate."
         }

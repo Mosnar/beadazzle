@@ -22,6 +22,31 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
         )
     }
 
+    func testDeletingBeadSilentlyIncludesOwnedEventRecordsWithoutTreatingThemAsChildren() async throws {
+        let loaded = try await makeLoadedStore(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(
+                id: "bd-parent.1",
+                title: "State change: Phase → Testing",
+                status: "closed",
+                type: "event",
+                parentID: "bd-parent"
+            ))
+            """
+        )
+
+        XCTAssertEqual(loaded.store.index.allIssueIDs, ["bd-parent"])
+        XCTAssertTrue(loaded.store.childIssues(forDeleting: ["bd-parent"]).isEmpty)
+
+        let didDelete = await loaded.store.delete(issueIDs: ["bd-parent"])
+
+        XCTAssertTrue(didDelete)
+        XCTAssertTrue(loaded.store.issues.isEmpty)
+        let calls = await loaded.commands.deleteCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-parent", "bd-parent.1"]])
+    }
+
     func testDeleteCanIncludeAllChildIssues() async throws {
         let loaded = try await makeLoadedStore(
             """

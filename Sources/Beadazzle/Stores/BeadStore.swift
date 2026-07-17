@@ -688,7 +688,7 @@ final class BeadStore {
     internal var _recentProjects: [RecentProject] { get { project.recentProjects } set { project.recentProjects = newValue } }
     /// Derived from `index` so the two can never disagree; `index` is the single
     /// authoritative snapshot state.
-    var issues: [BeadIssue] { index.issues }
+    var issues: BeadUserFacingIssueCollection { index.userFacingIssues }
     var filteredIssueIDs: [String] { workspace.filteredIssueIDs }
     internal var _filteredIssueIDs: [String] { get { workspace.filteredIssueIDs } set { workspace.filteredIssueIDs = newValue } }
     var issueListRows: [IssueListRow] { workspace.issueListRows }

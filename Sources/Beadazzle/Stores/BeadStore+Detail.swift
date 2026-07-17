@@ -253,6 +253,7 @@ extension BeadStore {
             events: activityEvents,
             comments: comments(for: issue.id),
             dependencies: dependencies(for: issue.id),
+            recordedStateChanges: index.recordedStateChanges(for: issue.id),
             semantics: index.semantics,
             resolveIssue: { [index] in index.issue(with: $0) }
         )

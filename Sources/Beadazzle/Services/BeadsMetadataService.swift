@@ -66,7 +66,10 @@ struct BeadsMetadataService {
 
     private func mergeStatusDefinitions(_ definitions: [BeadStatusDefinition], observedIssues: [BeadIssue]) -> [BeadStatusDefinition] {
         var byName = Dictionary(uniqueKeysWithValues: definitions.map { ($0.name, $0) })
-        for status in Set(observedIssues.map(\.status).filter { !$0.isEmpty }) where byName[status] == nil {
+        let observedStatuses = Set(observedIssues.lazy.compactMap { issue in
+            !issue.isSystemRecord && !issue.status.isEmpty ? issue.status : nil
+        })
+        for status in observedStatuses where byName[status] == nil {
             byName[status] = BeadStatusDefinition(name: status, category: .uncategorized, icon: nil, description: nil, source: .observed)
         }
         return byName.values.sorted { lhs, rhs in
@@ -78,8 +81,14 @@ struct BeadsMetadataService {
     }
 
     private func mergeTypeDefinitions(_ definitions: [BeadTypeDefinition], observedIssues: [BeadIssue]) -> [BeadTypeDefinition] {
-        var byName = Dictionary(uniqueKeysWithValues: definitions.map { ($0.name, $0) })
-        for type in Set(observedIssues.map(\.issueType).filter { !$0.isEmpty }) where byName[type] == nil {
+        var byName = Dictionary(uniqueKeysWithValues: definitions
+            .filter { !BeadIssueWorkflowPolicy.isSystemRecordIssueType($0.name) }
+            .map { ($0.name, $0) })
+        let observedTypes = Set(observedIssues.lazy.compactMap { issue in
+            let type = issue.issueType
+            return !type.isEmpty && !BeadIssueWorkflowPolicy.isSystemRecordIssueType(type) ? type : nil
+        })
+        for type in observedTypes where byName[type] == nil {
             byName[type] = BeadTypeDefinition(name: type, description: nil, source: .observed)
         }
         return byName.values.sorted { $0.name < $1.name }

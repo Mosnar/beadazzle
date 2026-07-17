@@ -562,7 +562,16 @@ extension BeadStore {
             )
         }
 
-        let targetIssues = Array(Set(issueIDs)).sorted().compactMap { issue(with: $0) }.filter {
+        let requestedIssues = Array(Set(issueIDs)).sorted().compactMap { issue(with: $0) }
+        guard !requestedIssues.contains(where: \.isSystemRecord) else {
+            lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
+                failures: []
+            )
+        }
+        let targetIssues = requestedIssues.filter {
             BeadStateLabel.value(of: dimension, in: $0.labels) != value
         }
         guard !targetIssues.isEmpty else {

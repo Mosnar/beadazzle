@@ -78,6 +78,23 @@ final class BeadsMetadataServiceTests: XCTestCase {
         XCTAssertEqual(semantics.types.first { $0.name == "incident" }?.source, .observed)
     }
 
+    func testLoadSemanticsExcludesSystemEventTypeFromDefinitionsAndObservedIssues() {
+        let semantics = BeadsMetadataService().loadSemantics(
+            projectURL: URL(fileURLWithPath: "/tmp/unused"),
+            issues: [
+                issue("bd-work", status: "open", type: "task"),
+                issue("bd-event", status: "event_closed", type: "event")
+            ],
+            typeDefinitions: [
+                BeadTypeDefinition(name: "task", description: nil, source: .core),
+                BeadTypeDefinition(name: "event", description: "Internal history", source: .observed)
+            ]
+        )
+
+        XCTAssertEqual(semantics.typeNames, ["task"])
+        XCTAssertFalse(semantics.statusNames.contains("event_closed"))
+    }
+
     private func issue(_ id: String, status: String, type: String) -> BeadIssue {
         BeadIssue(
             id: id,

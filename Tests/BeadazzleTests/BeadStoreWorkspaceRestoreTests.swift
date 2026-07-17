@@ -84,6 +84,53 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         XCTAssertFalse(store.issueListRows.isEmpty)
     }
 
+    func testSystemEventRecordsCannotBeSelectedOrOpened() async throws {
+        let projectURL = try makeProject(issuesJSONL: """
+        {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"task"}
+        {"_type":"issue","id":"bd-parent.1","title":"State change: Phase → Testing","status":"closed","priority":4,"issue_type":"event","parent_id":"bd-parent"}
+        """)
+        let defaults = makeUserDefaults()
+        let snapshot = BeadWorkspaceSnapshot(
+            bookmark: .all,
+            activeSavedViewID: nil,
+            sourceSavedViewID: nil,
+            savedViewOrdering: nil,
+            selectedIDs: ["bd-parent.1"],
+            fullPageDetailIssueID: "bd-parent.1",
+            searchText: "",
+            statusFilters: [],
+            typeFilters: ["event"],
+            priorityFilters: [],
+            labelFilters: [],
+            advancedPredicate: nil,
+            sort: .priority,
+            sortDirection: .ascending,
+            issueListMode: .outline,
+            outlineState: BeadOutlineSelectionState(),
+            creationDraft: nil
+        )
+        BeadWorkspaceStateRepository(userDefaults: defaults)
+            .save(BeadWorkspaceStatePayload(snapshot: snapshot), projectURL: projectURL)
+
+        let store = BeadStore(userDefaults: defaults)
+        store.openProject(projectURL)
+        try await waitForStoreToLoad(store)
+
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        XCTAssertNil(store.fullPageDetailIssueID)
+        XCTAssertTrue(store.typeFilters.isEmpty)
+
+        store.select(["bd-parent.1"])
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+
+        store.openFullPageDetail(issueID: "bd-parent.1")
+        XCTAssertNil(store.fullPageDetailIssueID)
+
+        store.revealIssue(id: "bd-parent.1")
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        XCTAssertEqual(store.index.issueIDs(for: .all), ["bd-parent"])
+    }
+
     func testResetSavedWorkspaceStateClearsPersistenceAndLiveState() async throws {
         let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()

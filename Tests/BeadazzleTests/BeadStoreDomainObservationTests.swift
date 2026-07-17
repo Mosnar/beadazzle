@@ -6,6 +6,7 @@ import XCTest
 final class BeadStoreDomainObservationTests: XCTestCase {
     func testSelectionActionUpdatesWorkspaceDomain() {
         let store = BeadStore(userDefaults: makeUserDefaults())
+        store.applyOptimisticState(issues: [makeIssue(id: "bd-1")], dependencies: [])
 
         store.select(["bd-1"])
 
@@ -15,6 +16,7 @@ final class BeadStoreDomainObservationTests: XCTestCase {
 
     func testWorkspaceMutationDoesNotInvalidateProjectObservation() {
         let store = BeadStore(userDefaults: makeUserDefaults())
+        store.applyOptimisticState(issues: [makeIssue(id: "bd-1")], dependencies: [])
         let unexpectedInvalidation = expectation(description: "Project observation remains isolated")
         unexpectedInvalidation.isInverted = true
 

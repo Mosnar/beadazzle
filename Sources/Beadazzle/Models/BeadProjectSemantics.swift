@@ -99,6 +99,13 @@ struct BeadProjectSemantics: Equatable, Sendable {
         types.map(\.name)
     }
 
+    var excludingSystemRecordTypes: BeadProjectSemantics {
+        BeadProjectSemantics(
+            statuses: statuses,
+            types: types.filter { !BeadIssueWorkflowPolicy.isSystemRecordIssueType($0.name) }
+        )
+    }
+
     func category(forStatus status: String) -> BeadStatusCategory {
         statuses.first { $0.name == status }?.category ?? .uncategorized
     }
@@ -116,10 +123,17 @@ struct BeadProjectSemantics: Equatable, Sendable {
     }
 
     static func fallback(issues: [BeadIssue]) -> BeadProjectSemantics {
-        let statuses = Array(Set(issues.map(\.status).filter { !$0.isEmpty })).sorted().map { status in
+        let observedStatuses = Set(issues.lazy.compactMap { issue in
+            !issue.isSystemRecord && !issue.status.isEmpty ? issue.status : nil
+        })
+        let statuses = observedStatuses.sorted().map { status in
             BeadStatusDefinition(name: status, category: .uncategorized, icon: nil, description: nil)
         }
-        let types = Array(Set(issues.map(\.issueType).filter { !$0.isEmpty })).sorted().map { type in
+        let observedTypes = Set(issues.lazy.compactMap { issue in
+            let type = issue.issueType
+            return !type.isEmpty && !BeadIssueWorkflowPolicy.isSystemRecordIssueType(type) ? type : nil
+        })
+        let types = observedTypes.sorted().map { type in
             BeadTypeDefinition(name: type, description: nil)
         }
         return BeadProjectSemantics(statuses: statuses, types: types)

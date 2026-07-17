@@ -304,6 +304,49 @@ final class IssueActivityTimelineTests: XCTestCase {
         XCTAssertEqual(childEvent.reference?.issueID, "bd-child")
     }
 
+    func testStateEventBecomesActivityInsteadOfAChildRelationship() throws {
+        let issue = makeIssue()
+        var stateEvent = makeIssue(
+            id: "bd-a.1",
+            title: "State change: Phase → Testing",
+            issueType: "event",
+            status: "closed",
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            createdBy: "Beadazzle",
+            closedAt: Date(timeIntervalSince1970: 2_000)
+        )
+        stateEvent.description = "Set Phase to Testing\n\nReason: Update test"
+        let stateChange = try XCTUnwrap(BeadStateLabel.recordedChange(event: stateEvent))
+        let relationship = BeadDependency(
+            issueID: stateEvent.id,
+            dependsOnID: issue.id,
+            type: "parent-child",
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            createdBy: "Beadazzle"
+        )
+
+        let items = IssueActivityTimeline.items(
+            issue: issue,
+            events: [],
+            comments: [],
+            dependencies: [relationship],
+            recordedStateChanges: [stateChange],
+            semantics: semantics,
+            resolveIssue: { $0 == stateEvent.id ? stateEvent : nil }
+        )
+
+        XCTAssertEqual(items.count, 2, "The event dependency must not also appear as a child")
+        guard case .event(let presentation) = items[1] else {
+            return XCTFail("Expected state-change Activity")
+        }
+        XCTAssertEqual(presentation.id, "state-bd-a.1")
+        XCTAssertEqual(presentation.actor, "Beadazzle")
+        XCTAssertEqual(presentation.systemImage, "slider.horizontal.3")
+        XCTAssertEqual(presentation.message, "set Phase to Testing")
+        XCTAssertEqual(presentation.reason, "Update test")
+        XCTAssertNil(presentation.reference)
+    }
+
     func testDependencyDateCannotPrecedeEitherEndpointCreation() {
         let issue = makeIssue(createdAt: Date(timeIntervalSince1970: 2_000))
         let child = makeIssue(

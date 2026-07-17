@@ -39,6 +39,33 @@ private extension ComparisonResult {
     }
 }
 
+/// A lightweight, ordered view over the user-facing records in a raw snapshot.
+/// It shares the snapshot's copy-on-write storage and keeps only integer offsets,
+/// avoiding a second array of large `BeadIssue` values at tracker scale.
+struct BeadUserFacingIssueCollection: RandomAccessCollection, Sendable {
+    typealias Index = Int
+
+    private let records: [BeadIssue]
+    private let offsets: [Int]
+
+    init(records: [BeadIssue], offsets: [Int]) {
+        self.records = records
+        self.offsets = offsets
+    }
+
+    var startIndex: Int { offsets.startIndex }
+    var endIndex: Int { offsets.endIndex }
+
+    func index(after index: Int) -> Int { index + 1 }
+    func index(before index: Int) -> Int { index - 1 }
+    func index(_ index: Int, offsetBy distance: Int) -> Int { index + distance }
+    func distance(from start: Int, to end: Int) -> Int { end - start }
+
+    subscript(position: Int) -> BeadIssue {
+        records[offsets[position]]
+    }
+}
+
 struct BeadProjectIndex: Sendable {
     static let empty = BeadProjectIndex(issues: [], dependencies: [], semantics: .empty)
     static let defaultStaleCutoffDays = 14
@@ -50,9 +77,13 @@ struct BeadProjectIndex: Sendable {
     let semantics: BeadProjectSemantics
     let staleCutoffDays: Int
     let hidesParentsWithOnlyBlockedChildrenInReady: Bool
+    /// Every snapshot record, including Beads' internal event records.
     let issueByID: [String: BeadIssue]
-    /// All issue ids, precomputed once so hot paths (e.g. per-recompute outline pruning)
-    /// don't rebuild this set on the main thread.
+    /// User-facing work items in snapshot order. Views use this collection for
+    /// empty states and totals without filtering the raw snapshot on every render.
+    let userFacingIssues: BeadUserFacingIssueCollection
+    /// All user-facing issue ids, precomputed once so hot paths (e.g. per-recompute
+    /// outline pruning) neither rebuild the set nor repeatedly filter system records.
     let allIssueIDs: Set<String>
     let issueIDsByStatus: [String: Set<String>]
     let issueIDsByStatusCategory: [BeadStatusCategory: Set<String>]
@@ -81,6 +112,8 @@ struct BeadProjectIndex: Sendable {
     let baseFilterCountsByBookmark: [BeadBookmark: BeadFilterCounts]
 
     private let issueIDsByBookmark: [BeadBookmark: Set<String>]
+    private let systemRecordIDsByParentID: [String: [String]]
+    private let recordedStateChangesByParentID: [String: [BeadRecordedStateChange]]
 
     /// - Parameter reusingSearchTextFrom: a previous index to carry pre-folded search
     ///   bytes from for issues whose searchable fields are unchanged. Folding is the
@@ -94,9 +127,10 @@ struct BeadProjectIndex: Sendable {
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         reusingSearchTextFrom previousIndex: BeadProjectIndex? = nil
     ) {
+        let userFacingSemantics = semantics.excludingSystemRecordTypes
         self.issues = issues
         self.dependencies = dependencies
-        self.semantics = semantics
+        self.semantics = userFacingSemantics
         self.hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
         let normalizedStaleCutoffDays = max(1, staleCutoffDays)
         self.staleCutoffDays = normalizedStaleCutoffDays
@@ -112,9 +146,14 @@ struct BeadProjectIndex: Sendable {
         var childIDsByParentID: [String: [String]] = [:]
         var ownerNames: Set<String> = []
         var assigneeNames: Set<String> = []
+        var userFacingIssueOffsets: [Int] = []
+        var userFacingIssueIDs: Set<String> = []
         var recordedStateValuesByDimension: [String: Set<String>] = [:]
+        var recordedStateChangeByIssueID: [String: BeadRecordedStateChange] = [:]
         var ambiguousStateEventIndices: [Int] = []
         issueByID.reserveCapacity(issues.count)
+        userFacingIssueOffsets.reserveCapacity(issues.count)
+        userFacingIssueIDs.reserveCapacity(issues.count)
         foldedSearchBytesByID.reserveCapacity(issues.count)
 
         for (issueIndex, issue) in issues.enumerated() {
@@ -124,17 +163,17 @@ struct BeadProjectIndex: Sendable {
             ) {
                 if BeadStateLabel.recordedChangeRequiresDisambiguation(title: issue.title) {
                     ambiguousStateEventIndices.append(issueIndex)
-                } else if let stateChange = BeadStateLabel.recordedChange(
-                    issueType: issue.issueType,
-                    title: issue.title
-                ) {
-                    recordedStateValuesByDimension[stateChange.dimension, default: []]
-                        .insert(stateChange.value)
+                } else if let stateChange = BeadStateLabel.recordedChange(event: issue) {
+                    recordedStateChangeByIssueID[issue.id] = stateChange
                 }
             }
             issueByID[issue.id] = issue
+            guard !issue.isSystemRecord else { continue }
+
+            userFacingIssueOffsets.append(issueIndex)
+            userFacingIssueIDs.insert(issue.id)
             issueIDsByStatus[issue.status, default: []].insert(issue.id)
-            issueIDsByStatusCategory[semantics.category(forStatus: issue.status), default: []].insert(issue.id)
+            issueIDsByStatusCategory[userFacingSemantics.category(forStatus: issue.status), default: []].insert(issue.id)
             issueIDsByType[issue.issueType, default: []].insert(issue.id)
             issueIDsByPriority[issue.priority, default: []].insert(issue.id)
             if let previousIndex,
@@ -152,6 +191,10 @@ struct BeadProjectIndex: Sendable {
             if let assignee = issue.assignee, !assignee.isEmpty { assigneeNames.insert(assignee) }
         }
         self.issueByID = issueByID
+        self.userFacingIssues = BeadUserFacingIssueCollection(
+            records: issues,
+            offsets: userFacingIssueOffsets
+        )
         self.ownerNames = ownerNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         self.assigneeNames = assigneeNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         self.issueIDsByStatus = issueIDsByStatus
@@ -174,30 +217,15 @@ struct BeadProjectIndex: Sendable {
             for issueIndex in ambiguousStateEventIndices {
                 let issue = issues[issueIndex]
                 guard let stateChange = BeadStateLabel.recordedChange(
-                    issueType: issue.issueType,
-                    title: issue.title,
+                    event: issue,
                     knownLabels: knownLabels,
                     knownDimensions: knownDimensions
                 ) else { continue }
-                recordedStateValuesByDimension[stateChange.dimension, default: []]
-                    .insert(stateChange.value)
+                recordedStateChangeByIssueID[issue.id] = stateChange
             }
-        }
-        if !recordedStateValuesByDimension.isEmpty {
-            for label in labelNames {
-                guard let parsed = BeadStateLabel.parse(label),
-                      recordedStateValuesByDimension[parsed.dimension] != nil else {
-                    continue
-                }
-                recordedStateValuesByDimension[parsed.dimension, default: []].insert(parsed.value)
-            }
-        }
-        stateDimensionNames = recordedStateValuesByDimension.keys.sorted(by: BeadStateLabel.isOrderedBefore)
-        stateValuesByDimension = recordedStateValuesByDimension.mapValues { values in
-            values.sorted(by: BeadStateLabel.isOrderedBefore)
         }
         self.foldedSearchBytesByID = foldedSearchBytesByID
-        let allIssueIDs = Set(issueByID.keys)
+        let allIssueIDs = userFacingIssueIDs
         self.allIssueIDs = allIssueIDs
 
         var dependenciesByIssueID: [String: [BeadDependency]] = [:]
@@ -229,8 +257,38 @@ struct BeadProjectIndex: Sendable {
             }
             parentIDCandidatesByIssueID[dependency.issueID] = dependency.dependsOnID
         }
+        var hierarchyParentCandidatesByIssueID: [String: String] = [:]
+        var systemRecordIDsByParentID: [String: [String]] = [:]
+        var recordedStateChangesByParentID: [String: [BeadRecordedStateChange]] = [:]
+        hierarchyParentCandidatesByIssueID.reserveCapacity(parentIDCandidatesByIssueID.count)
+        for (issueID, parentID) in parentIDCandidatesByIssueID {
+            guard let issue = issueByID[issueID], allIssueIDs.contains(parentID) else { continue }
+            if issue.isSystemRecord {
+                systemRecordIDsByParentID[parentID, default: []].append(issueID)
+                if let stateChange = recordedStateChangeByIssueID[issueID] {
+                    recordedStateChangesByParentID[parentID, default: []].append(stateChange)
+                    recordedStateValuesByDimension[stateChange.dimension, default: []]
+                        .insert(stateChange.value)
+                }
+            } else {
+                hierarchyParentCandidatesByIssueID[issueID] = parentID
+            }
+        }
+        if !recordedStateValuesByDimension.isEmpty {
+            for label in labelNames {
+                guard let parsed = BeadStateLabel.parse(label),
+                      recordedStateValuesByDimension[parsed.dimension] != nil else {
+                    continue
+                }
+                recordedStateValuesByDimension[parsed.dimension, default: []].insert(parsed.value)
+            }
+        }
+        stateDimensionNames = recordedStateValuesByDimension.keys.sorted(by: BeadStateLabel.isOrderedBefore)
+        stateValuesByDimension = recordedStateValuesByDimension.mapValues { values in
+            values.sorted(by: BeadStateLabel.isOrderedBefore)
+        }
         let parentIDByIssueID = Self.normalizedParentIDs(
-            candidates: parentIDCandidatesByIssueID,
+            candidates: hierarchyParentCandidatesByIssueID,
             issueByID: issueByID
         )
         self.parentIDByIssueID = parentIDByIssueID
@@ -238,10 +296,19 @@ struct BeadProjectIndex: Sendable {
             childIDsByParentID[parentID, default: []].append(issueID)
         }
         self.childIDsByParentID = childIDsByParentID
+        self.systemRecordIDsByParentID = systemRecordIDsByParentID
+        self.recordedStateChangesByParentID = recordedStateChangesByParentID.mapValues { changes in
+            changes.sorted { lhs, rhs in
+                let leftDate = lhs.date ?? .distantPast
+                let rightDate = rhs.date ?? .distantPast
+                if leftDate != rightDate { return leftDate < rightDate }
+                return lhs.eventID < rhs.eventID
+            }
+        }
         childProgressByParentID = Self.childProgressByParentID(
             childIDsByParentID: childIDsByParentID,
             issueByID: issueByID,
-            semantics: semantics
+            semantics: userFacingSemantics
         )
         dependencyTypeNames = Array(Set(dependencies.map(\.type).filter { !$0.isEmpty })).sorted()
 
@@ -250,7 +317,7 @@ struct BeadProjectIndex: Sendable {
                 let ids = Self.issueIDs(
                     for: bookmark,
                     allIssueIDs: allIssueIDs,
-                    semantics: semantics,
+                    semantics: userFacingSemantics,
                     issueIDsByStatus: issueIDsByStatus,
                     issueIDsByType: issueIDsByType,
                     issueByID: issueByID,
@@ -266,13 +333,35 @@ struct BeadProjectIndex: Sendable {
         baseFilterCountsByBookmark = Dictionary(
             uniqueKeysWithValues: BeadBookmark.allCases.map { bookmark in
                 let ids = issueIDsByBookmark[bookmark, default: []]
-                return (bookmark, Self.baseFilterCounts(for: ids, issueByID: issueByID, semantics: semantics))
+                return (bookmark, Self.baseFilterCounts(
+                    for: ids,
+                    issueByID: issueByID,
+                    semantics: userFacingSemantics
+                ))
             }
         )
     }
 
     func issue(with id: String) -> BeadIssue? {
         issueByID[id]
+    }
+
+    func isUserFacingIssueID(_ issueID: String) -> Bool {
+        allIssueIDs.contains(issueID)
+    }
+
+    /// Internal child records that should follow their owning user-facing beads
+    /// through deletion without appearing in confirmation UI or progress counts.
+    func systemRecordIssueIDs(ownedBy issueIDs: [String]) -> Set<String> {
+        var recordIDs: Set<String> = []
+        for issueID in issueIDs {
+            recordIDs.formUnion(systemRecordIDsByParentID[issueID] ?? [])
+        }
+        return recordIDs
+    }
+
+    func recordedStateChanges(for issueID: String) -> [BeadRecordedStateChange] {
+        recordedStateChangesByParentID[issueID] ?? []
     }
 
     func sortedIssueIDs(_ ids: [String], sortOrder: BeadIssueSortOrder) -> [String] {

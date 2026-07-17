@@ -21,6 +21,7 @@ extension BeadStore {
     }
 
     func setTypeFilter(_ type: String, isOn: Bool) {
+        guard !BeadIssueWorkflowPolicy.isSystemRecordIssueType(type) else { return }
         setFilter(&typeFilters, value: type, isOn: isOn)
     }
 
@@ -182,7 +183,9 @@ extension BeadStore {
         creationDraft = snapshot.creationDraft
         searchText = snapshot.searchText
         statusFilters = snapshot.statusFilters
-        typeFilters = snapshot.typeFilters
+        typeFilters = Set(snapshot.typeFilters.filter {
+            !BeadIssueWorkflowPolicy.isSystemRecordIssueType($0)
+        })
         priorityFilters = snapshot.priorityFilters
         labelFilters = snapshot.labelFilters
         _activeAdvancedPredicate = snapshot.advancedPredicate?.normalized
@@ -232,7 +235,7 @@ extension BeadStore {
 
     internal func syncFullPageDetailWithSelection() {
         guard let fullPageDetailIssueID else { return }
-        if selectedIDs != [fullPageDetailIssueID] || index.issue(with: fullPageDetailIssueID) == nil {
+        if selectedIDs != [fullPageDetailIssueID] || !index.isUserFacingIssueID(fullPageDetailIssueID) {
             self._fullPageDetailIssueID = nil
         }
     }
@@ -596,7 +599,7 @@ extension BeadStore {
         )
         _contentRevision &+= 1
         scheduleSavedViewCountRebuild()
-        _selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
+        _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
         pruneExpandedIssueIDs()
         applyFilters()
         loadDependenciesForSelection()

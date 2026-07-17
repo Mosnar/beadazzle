@@ -417,7 +417,7 @@ extension BeadStore {
         if let warning = loadedProject.snapshotRefreshWarning {
             _snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: warning)
         }
-        _selectedIDs = selectedIDs.filter { index.issue(with: $0) != nil }
+        _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
         reconcileCommentCache(with: loadedProject.snapshot.issues)

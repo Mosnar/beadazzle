@@ -97,6 +97,13 @@ final class BeadProjectIndexTests: XCTestCase {
                 "bd-state-event",
                 title: "State change: phase → design",
                 status: "closed",
+                type: "event",
+                parentID: "bd-1"
+            ),
+            issue(
+                "bd-orphan-state-event",
+                title: "State change: orphan → ignored",
+                status: "closed",
                 type: "event"
             )
         ]
@@ -106,8 +113,72 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(index.stateDimensionNames, ["phase"])
         XCTAssertEqual(index.stateValuesByDimension["phase"], ["design", "implementation"])
         XCTAssertNil(index.stateValuesByDimension["area"])
+        XCTAssertNil(index.stateValuesByDimension["orphan"])
         XCTAssertEqual(index.count(forLabel: "phase:implementation"), 1)
         XCTAssertEqual(index.count(forLabel: "phase:design"), 0)
+    }
+
+    func testSystemEventRecordsStayAvailableWithoutEnteringUserFacingIndexesOrHierarchy() throws {
+        var projectSemantics = semantics()
+        projectSemantics.types.append(BeadTypeDefinition(name: "event", description: "Internal history"))
+        let eventDate = Date(timeIntervalSince1970: 3_000)
+        let issues = [
+            issue("bd-parent", title: "Parent", status: "open", type: "epic"),
+            issue("bd-child", title: "Child", status: "open", type: "task", parentID: "bd-parent"),
+            issue(
+                "bd-event",
+                title: "State change: Phase → Testing",
+                status: "closed",
+                type: "event",
+                labels: ["internal:event"],
+                description: "Set Phase to Testing\n\nReason: Update test",
+                createdAt: eventDate,
+                closedAt: eventDate
+            )
+        ]
+        let dependencies = [
+            BeadDependency(
+                issueID: "bd-event",
+                dependsOnID: "bd-parent",
+                type: "parent-child",
+                createdAt: eventDate
+            )
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: dependencies, semantics: projectSemantics)
+
+        XCTAssertNotNil(index.issue(with: "bd-event"), "Activity provenance remains addressable")
+        XCTAssertEqual(index.userFacingIssues.map(\.id), ["bd-parent", "bd-child"])
+        XCTAssertEqual(index.allIssueIDs, ["bd-parent", "bd-child"])
+        XCTAssertEqual(index.issueIDs(for: .all), ["bd-parent", "bd-child"])
+        XCTAssertNil(index.issueIDsByType["event"])
+        XCTAssertFalse(index.semantics.typeNames.contains("event"))
+        XCTAssertFalse(index.baseFilterCountsByBookmark[.all]?.typeCounts.contains { $0.0 == "event" } == true)
+        XCTAssertFalse(index.labelNames.contains("internal:event"))
+        XCTAssertEqual(
+            index.filteredIssueIDs(
+                within: index.issueIDs(for: .all),
+                statusFilters: [],
+                typeFilters: [],
+                priorityFilters: [],
+                labelFilters: [],
+                searchText: "State change"
+            ),
+            []
+        )
+        XCTAssertEqual(index.childIDsByParentID["bd-parent"], ["bd-child"])
+        XCTAssertEqual(
+            index.childProgress(for: "bd-parent"),
+            IssueChildProgress(completedCount: 0, workedCount: 0, totalCount: 1)
+        )
+        XCTAssertEqual(index.systemRecordIssueIDs(ownedBy: ["bd-parent"]), ["bd-event"])
+
+        let stateChange = try XCTUnwrap(index.recordedStateChanges(for: "bd-parent").first)
+        XCTAssertEqual(stateChange.eventID, "bd-event")
+        XCTAssertEqual(stateChange.dimension, "Phase")
+        XCTAssertEqual(stateChange.value, "Testing")
+        XCTAssertEqual(stateChange.date, eventDate)
+        XCTAssertEqual(stateChange.reason, "Update test")
     }
 
     func testStateCatalogDisambiguatesRecordedDimensionContainingArrow() {
@@ -122,7 +193,8 @@ final class BeadProjectIndexTests: XCTestCase {
                 "bd-state-event",
                 title: "State change: release → phase → ready",
                 status: "closed",
-                type: "event"
+                type: "event",
+                parentID: "bd-1"
             )
         ]
 
@@ -443,6 +515,35 @@ final class BeadProjectIndexTests: XCTestCase {
             guard let issue = index.issue(with: id) else { return false }
             return issue.status == "todo" && issue.labels.contains("crawler") && issue.title.contains("task")
         })
+    }
+
+    func testLargeDatasetPartitionsSystemRecordsOnceDuringIndexing() {
+        let userIssues = (0..<5_000).map { offset in
+            issue("bd-\(offset)", title: "Work \(offset)", status: "open", type: "task")
+        }
+        let eventIssues = (0..<5_000).map { offset in
+            issue(
+                "bd-\(offset).1",
+                title: "Audit event \(offset)",
+                status: "closed",
+                type: "event",
+                parentID: "bd-\(offset)"
+            )
+        }
+
+        let index = BeadProjectIndex(
+            issues: userIssues + eventIssues,
+            dependencies: [],
+            semantics: semantics()
+        )
+        let userIssueIDs = userIssues.map(\.id)
+
+        XCTAssertEqual(index.issueByID.count, 10_000)
+        XCTAssertEqual(index.allIssueIDs.count, 5_000)
+        XCTAssertEqual(index.foldedSearchBytesByID.count, 5_000)
+        XCTAssertEqual(index.count(for: .all), 5_000)
+        XCTAssertEqual(index.systemRecordIssueIDs(ownedBy: userIssueIDs).count, 5_000)
+        XCTAssertTrue(index.childIDsByParentID.isEmpty)
     }
 
     func testOutlineRowsHideChildrenUntilExpanded() {

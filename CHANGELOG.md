@@ -14,6 +14,7 @@ for users, not for the commit log.
 ## [Unreleased]
 
 - Select multiple beads to add labels or set a property from the Bulk Actions toolbar menu or the list's right-click menu. Search stays responsive for very large selections, oversized updates are safely chunked with live success and failure totals, and Stop Remaining keeps completed changes. Failure summaries include command diagnostics, while Try Again targets only the beads that failed and property changes preserve per-bead Activity history.
+- State-change event records now appear in their bead's Activity instead of as selectable sub-issues. They no longer inflate list, filter, search, or child-progress counts, and deleting a bead also removes its internal event records.
 - Activity now separates entries into relative time clusters such as Today, weekday names, and weeks or months ago, while keeping each entry's exact timestamp.
 - Improved responsiveness on projects with thousands of beads, especially when expanding outlines, sorting, and updating saved-view counts. Only blocking relationships now affect sibling order.
 - Project Settings › Properties now lets you pin, reorder, rename, and create state properties, then review their recorded values.
