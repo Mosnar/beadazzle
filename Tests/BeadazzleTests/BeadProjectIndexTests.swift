@@ -118,6 +118,35 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(index.count(forLabel: "phase:design"), 0)
     }
 
+    func testStateClearEventPreservesDimensionWithoutAddingNoneValue() {
+        let issues = [
+            issue("bd-1", status: "open", type: "task"),
+            issue(
+                "bd-state-event",
+                title: "State change: phase → implementation",
+                status: "closed",
+                type: "event",
+                parentID: "bd-1"
+            ),
+            issue(
+                "bd-clear-event",
+                title: "State cleared: phase",
+                status: "closed",
+                type: "event",
+                parentID: "bd-1"
+            )
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.stateDimensionNames, ["phase"])
+        XCTAssertEqual(index.stateValuesByDimension["phase"], ["implementation"])
+        let changes = index.recordedStateChanges(for: "bd-1")
+        XCTAssertEqual(changes.count, 2)
+        XCTAssertTrue(changes.contains { $0.value == "implementation" })
+        XCTAssertTrue(changes.contains { $0.value == nil })
+    }
+
     func testSystemEventRecordsStayAvailableWithoutEnteringUserFacingIndexesOrHierarchy() throws {
         var projectSemantics = semantics()
         projectSemantics.types.append(BeadTypeDefinition(name: "event", description: "Internal history"))

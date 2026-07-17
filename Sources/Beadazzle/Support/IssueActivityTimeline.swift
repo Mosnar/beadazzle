@@ -270,12 +270,16 @@ enum IssueActivityTimeline {
         for change: BeadRecordedStateChange,
         notBefore lowerBound: Date?
     ) -> IssueActivityEventPresentation {
-        IssueActivityEventPresentation(
+        let displayName = BeadStateLabel.displayName(for: change.dimension)
+        let message = change.value.map {
+            "set \(displayName) to \(clamped($0))"
+        } ?? "cleared \(displayName)"
+        return IssueActivityEventPresentation(
             id: "state-\(change.eventID)",
             date: latestDate(change.date, lowerBound),
             actor: change.actor,
             systemImage: "slider.horizontal.3",
-            message: "set \(BeadStateLabel.displayName(for: change.dimension)) to \(clamped(change.value))",
+            message: message,
             reason: change.reason
         )
     }

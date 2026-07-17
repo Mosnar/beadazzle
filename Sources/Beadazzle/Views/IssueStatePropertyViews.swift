@@ -74,7 +74,20 @@ struct InspectorStateDimensionRow: View {
             ) { value, reason in
                 isPresented = false
                 Task {
-                    await store.setState(issueID: issue.id, dimension: dimension, value: value, reason: reason)
+                    if let value {
+                        await store.setState(
+                            issueID: issue.id,
+                            dimension: dimension,
+                            value: value,
+                            reason: reason
+                        )
+                    } else {
+                        await store.clearState(
+                            issueID: issue.id,
+                            dimension: dimension,
+                            reason: reason
+                        )
+                    }
                 }
             }
         }
@@ -89,7 +102,7 @@ struct StateValuePickerPopover: View {
     let currentValue: String?
     private let candidateValues: [BeadStateValuePresentation]
     private let unavailableValues: [BeadStateValuePresentation]
-    let commit: (String, String?) -> Void
+    let commit: (String?, String?) -> Void
     @State private var query = ""
     @State private var reason = ""
 
@@ -98,7 +111,7 @@ struct StateValuePickerPopover: View {
         currentValue: String?,
         currentPresentation: BeadStateValuePresentation?,
         catalog: BeadStateValueCatalog,
-        commit: @escaping (String, String?) -> Void
+        commit: @escaping (String?, String?) -> Void
     ) {
         self.displayName = displayName
         self.currentValue = currentValue
@@ -131,7 +144,15 @@ struct StateValuePickerPopover: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    if suggestions.visibleValues.isEmpty && suggestions.creatableValue == nil {
+                    if suggestions.showsClearValue {
+                        InspectorOptionItemRow(title: "None", isSelected: false) {
+                            commit(nil, normalizedReason)
+                        }
+                    }
+
+                    if suggestions.visibleValues.isEmpty
+                        && suggestions.creatableValue == nil
+                        && !suggestions.showsClearValue {
                         Text(emptyMessage(for: suggestions))
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -203,16 +224,24 @@ struct StateValuePickerPopover: View {
         } else {
             archivedMatch = nil
         }
+        let showsClearValue = currentValue != nil
+            && (query.isEmpty || "None".localizedStandardContains(query))
+        let queryClearsValue = currentValue != nil
+            && "None".caseInsensitiveCompare(query) == .orderedSame
         let creatableValue = BeadStateLabel.normalizedValueInput(query).flatMap { value in
-            queryMatch.hasMatch ? nil : value
+            queryMatch.hasMatch || queryClearsValue ? nil : value
         }
-        let rowCount = visibleValues.isEmpty && creatableValue == nil
+        let optionRowCount = visibleValues.count
+            + (showsClearValue ? 1 : 0)
+            + (creatableValue == nil ? 0 : 1)
+        let rowCount = optionRowCount == 0
             ? 1
-            : visibleValues.count + (creatableValue == nil ? 0 : 1)
+            : optionRowCount
         let visibleRowCount = min(max(rowCount, 1), 5)
         return StateValueSuggestions(
             visibleValues: visibleValues,
             creatableValue: creatableValue,
+            showsClearValue: showsClearValue,
             archivedMatch: archivedMatch,
             queryMatch: queryMatch,
             listHeight: CGFloat(visibleRowCount * 34 + max(visibleRowCount - 1, 0) * 2)
@@ -220,6 +249,11 @@ struct StateValuePickerPopover: View {
     }
 
     private func commitQuery() {
+        if currentValue != nil,
+           "None".caseInsensitiveCompare(trimmedQuery) == .orderedSame {
+            commit(nil, normalizedReason)
+            return
+        }
         switch BeadStateValuePickerPolicy.match(
             query: trimmedQuery,
             in: candidateValues,
@@ -256,6 +290,7 @@ struct StateValuePickerPopover: View {
 private struct StateValueSuggestions {
     let visibleValues: [BeadStateValuePresentation]
     let creatableValue: String?
+    let showsClearValue: Bool
     let archivedMatch: BeadStateValuePresentation?
     let queryMatch: BeadStateValueQueryMatch
     let listHeight: CGFloat
@@ -278,7 +313,6 @@ private struct StateValueCreateRow: View {
                 .background(isHovered ? InspectorChrome.rowHoverFill : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
-        .focusable(false)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { isHovered = $0 }
         .accessibilityLabel("Set \(value)")

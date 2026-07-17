@@ -20,6 +20,39 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         )
     }
 
+    func testClearStateArgumentsRemoveExactLabelAndCreateChildEvent() {
+        XCTAssertEqual(
+            BeadsCommandArguments.removeStateLabel(
+                issueID: "bd-1",
+                dimension: "phase",
+                value: "in,review=ready"
+            ),
+            ["update", "bd-1", "--remove-label", "\"phase:in,review=ready\""]
+        )
+
+        let eventArguments = BeadsCommandArguments.createStateClearEvent(
+            issueID: "bd-1",
+            dimension: "phase",
+            reason: "Reset workflow"
+        )
+        XCTAssertEqual(Array(eventArguments.prefix(2)), ["create", "State cleared: phase"])
+        XCTAssertEqual(value(after: "--type", in: eventArguments), "event")
+        XCTAssertEqual(value(after: "--priority", in: eventArguments), "P4")
+        XCTAssertEqual(value(after: "--description", in: eventArguments), "Cleared phase\n\nReason: Reset workflow")
+        XCTAssertEqual(value(after: "--parent", in: eventArguments), "bd-1")
+        XCTAssertTrue(eventArguments.contains("--silent"))
+    }
+
+    func testClearStateEventOmitsBlankReason() {
+        let eventArguments = BeadsCommandArguments.createStateClearEvent(
+            issueID: "bd-1",
+            dimension: "phase",
+            reason: "  "
+        )
+
+        XCTAssertEqual(value(after: "--description", in: eventArguments), "Cleared phase")
+    }
+
     func testCreateArgumentsOmitStatusBecauseCreateDoesNotAcceptStatus() {
         let draft = draft(id: nil, status: "custom-status")
 

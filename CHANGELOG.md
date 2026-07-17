@@ -13,15 +13,12 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
-- Beadazzle now follows `bd context` for embedded, server, shared-server, redirected, and worktree projects, shows the active mode, role, and tracker directory in Project Settings, and refreshes server-backed projects when the app becomes active. Stealth projects no longer offer Git-hook actions, contributor checkouts leave creation routing to `bd`, and unsupported legacy backends now get a clear explanation instead of being opened ambiguously.
-- Select multiple beads to add labels or set a property from the Bulk Actions toolbar menu or the list's right-click menu. Search stays responsive for very large selections, oversized updates are safely chunked with live success and failure totals, and Stop Remaining keeps completed changes. Failure summaries include command diagnostics, while Try Again targets only the beads that failed and property changes preserve per-bead Activity history.
-- State-change event records now appear in their bead's Activity instead of as selectable sub-issues. They no longer inflate list, filter, search, or child-progress counts, and deleting a bead also removes its internal event records.
-- Activity now separates entries into relative time clusters such as Today, weekday names, and weeks or months ago, while keeping each entry's exact timestamp.
-- Improved responsiveness on projects with thousands of beads, especially when expanding outlines, sorting, and updating saved-view counts. Only blocking relationships now affect sibling order.
-- Project Settings › Properties now lets you pin, reorder, rename, and create state properties, then review their recorded values.
-- Pinned properties appear on every bead with a value picker. Changes appear immediately and are recorded in Activity through `bd set-state`.
-- State values can have custom display names, show usage counts, and open filtered bead lists. Archive values to hide them from new selections without changing existing beads or history.
-- Fixed label edits and saves accidentally removing or rolling back pinned state properties. State identifiers remain case-sensitive, and values containing commas, equals signs, or arrows are handled correctly.
+- Added support for `bd context` across embedded, server, shared-server, redirected, and worktree projects, with backend details in Project Settings and behavior tailored to each mode.
+- Added bulk label and property changes for selected beads, with progress, cancellation, targeted retries, and useful error details.
+- State-change events now appear in Activity instead of as sub-issues, and Activity entries are grouped by date.
+- Improved outline, sorting, and saved-view performance for projects with thousands of beads.
+- Added custom state properties with keyboard-friendly pickers, optional Activity reasons, filtering, and an option to clear values back to None.
+- Fixed state properties being lost during label edits or saves, along with handling for case-sensitive identifiers and values containing punctuation.
 
 ## [1.2.0] - 2026-07-16
 

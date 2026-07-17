@@ -59,7 +59,7 @@ final class BeadProjectStore {
     /// Tiny per-issue overlays make state rows update in O(1) without rebuilding
     /// the project-wide index on the main actor. Authoritative reloads retire
     /// entries once the exported snapshot contains the same value.
-    fileprivate(set) var stateLabelOverridesByIssueID: [String: [String: String]] = [:]
+    fileprivate(set) var stateLabelOverridesByIssueID: [String: [String: BeadStateLabelOverride]] = [:]
 
     @ObservationIgnored fileprivate(set) var refreshTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var initializationTask: Task<Void, Never>?
@@ -282,11 +282,22 @@ final class BeadDetailStore {
 
 /// Runtime-only mutation coordination. Keeping these values outside observable project
 /// and workspace state prevents task bookkeeping from participating in view tracking.
+enum BeadStateLabelOverride: Equatable, Sendable {
+    case value(String)
+    case cleared
+
+    var value: String? {
+        guard case .value(let value) = self else { return nil }
+        return value
+    }
+}
+
 enum BeadLabelMutation: Sendable {
     case replace([String])
     case replaceOrdinary([String], preservingDimensions: [String])
     case add([String])
     case setState(dimension: String, value: String)
+    case clearState(dimension: String)
 
     /// Only a complete replacement can prove that every previously attempted
     /// label is absent or present. Granular ordinary/state writes must leave any
@@ -310,6 +321,8 @@ enum BeadLabelMutation: Sendable {
             Self.uniqueLabels(labels + additions)
         case .setState(let dimension, let value):
             BeadStateLabel.applying(dimension: dimension, value: value, to: labels)
+        case .clearState(let dimension):
+            BeadStateLabel.excluding(dimensions: [dimension], from: labels)
         }
     }
 
@@ -373,6 +386,14 @@ struct BeadMetadataMutationPatch {
         updatesAssignee = false
         assignee = nil
         labelMutation = .setState(dimension: stateDimension, value: value)
+        dueAt = .unchanged
+        deferUntil = .unchanged
+    }
+
+    init(clearingStateDimension stateDimension: String) {
+        updatesAssignee = false
+        assignee = nil
+        labelMutation = .clearState(dimension: stateDimension)
         dueAt = .unchanged
         deferUntil = .unchanged
     }
@@ -1059,7 +1080,7 @@ final class BeadStore {
     internal var isLoadingProjectPreferences: Bool { get { project.isLoadingProjectPreferences } set { project.isLoadingProjectPreferences = newValue } }
     internal var suppressesHistoryRecording: Bool { get { workspace.suppressesHistoryRecording } set { workspace.suppressesHistoryRecording = newValue } }
     internal var suppressesFilterUpdates: Bool { get { workspace.suppressesFilterUpdates } set { workspace.suppressesFilterUpdates = newValue } }
-    internal var stateLabelOverridesByIssueID: [String: [String: String]] {
+    internal var stateLabelOverridesByIssueID: [String: [String: BeadStateLabelOverride]] {
         get { project.stateLabelOverridesByIssueID }
         set { project.stateLabelOverridesByIssueID = newValue }
     }

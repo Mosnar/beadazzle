@@ -6,7 +6,7 @@ import Foundation
 struct BeadRecordedStateChange: Hashable, Sendable {
     let eventID: String
     let dimension: String
-    let value: String
+    let value: String?
     let date: Date?
     let actor: String?
     let reason: String?
@@ -21,7 +21,12 @@ struct BeadRecordedStateChange: Hashable, Sendable {
 /// that dimension.
 enum BeadStateLabel {
     private static let eventTitlePrefix = "State change: "
+    private static let clearEventTitlePrefix = "State cleared: "
     private static let eventTitleSeparator = " → "
+
+    static func clearEventTitle(dimension: String) -> String {
+        clearEventTitlePrefix + dimension
+    }
 
     /// Splits a label into a state dimension and value on the first colon.
     /// This mirrors `bd state list`: any non-empty `dimension:value` label is a
@@ -135,7 +140,7 @@ enum BeadStateLabel {
     /// values containing the event-title arrow can be disambiguated correctly.
     static func isRecordedChangeEvent(issueType: String, title: String) -> Bool {
         BeadIssueWorkflowPolicy.isSystemRecordIssueType(issueType)
-            && title.hasPrefix(eventTitlePrefix)
+            && (title.hasPrefix(eventTitlePrefix) || title.hasPrefix(clearEventTitlePrefix))
     }
 
     /// Most event titles contain exactly one separator and can be parsed while
@@ -167,9 +172,15 @@ enum BeadStateLabel {
         title: String,
         knownLabels: Set<String> = [],
         knownDimensions: Set<String> = []
-    ) -> (dimension: String, value: String)? {
+    ) -> (dimension: String, value: String?)? {
         guard isRecordedChangeEvent(issueType: issueType, title: title) else {
             return nil
+        }
+
+        if title.hasPrefix(clearEventTitlePrefix) {
+            let dimension = String(title.dropFirst(clearEventTitlePrefix.count))
+            guard normalizedDimensionInput(dimension) == dimension else { return nil }
+            return (dimension: dimension, value: nil)
         }
 
         let remainder = title.dropFirst(eventTitlePrefix.count)

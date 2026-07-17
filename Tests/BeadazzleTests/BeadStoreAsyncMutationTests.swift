@@ -2887,6 +2887,39 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.first?.reason, "Design proven")
     }
 
+    func testClearStateRemovesDimensionLabelOptimisticallyAndRecordsReason() async throws {
+        let projectURL = try makeProject(
+            #"{"_type":"issue","id":"bd-1","title":"Task","status":"open","priority":1,"issue_type":"task","labels":["phase:implementation","keeper"],"updated_at":"2026-07-03T20:58:35Z"}"#
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setClearStateDelays([.milliseconds(250)])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let clearTask = Task { @MainActor in
+            await store.clearState(issueID: "bd-1", dimension: "phase", reason: "Reset workflow")
+        }
+        try await waitUntil {
+            BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-1")?.labels ?? []) == nil
+        }
+
+        XCTAssertEqual(
+            BeadStateLabel.value(of: "phase", in: store.index.issue(with: "bd-1")?.labels ?? []),
+            "implementation",
+            "Clearing a state should not rebuild the project index on the interaction path."
+        )
+        XCTAssertTrue(store.issue(with: "bd-1")?.labels.contains("keeper") == true)
+        let didClear = await clearTask.value
+        XCTAssertTrue(didClear)
+        let calls = await commands.clearStateCalls
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.issueID, "bd-1")
+        XCTAssertEqual(calls.first?.dimension, "phase")
+        XCTAssertEqual(calls.first?.currentValue, "implementation")
+        XCTAssertEqual(calls.first?.reason, "Reset workflow")
+    }
+
     func testBulkAddLabelsPreservesExistingLabelsAndUsesOneAdditiveCommand() async throws {
         let projectURL = try makeProject(
             """
@@ -3237,6 +3270,28 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["phase:design"])
         XCTAssertNotNil(store.currentFailure)
         let calls = await commands.setStateCalls
+        XCTAssertEqual(calls.count, 1)
+    }
+
+    func testClearStateFailureRestoresCurrentValue() async throws {
+        let projectURL = try makeProject(
+            #"{"_type":"issue","id":"bd-1","title":"Task","status":"open","priority":1,"issue_type":"task","labels":["phase:design"],"updated_at":"2026-07-03T20:58:35Z"}"#
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setClearStateErrors([StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let didClear = await store.clearState(issueID: "bd-1", dimension: "phase")
+
+        XCTAssertFalse(didClear)
+        XCTAssertEqual(
+            BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-1")?.labels ?? []),
+            "design"
+        )
+        XCTAssertNotNil(store.currentFailure)
+        let calls = await commands.clearStateCalls
         XCTAssertEqual(calls.count, 1)
     }
 
@@ -3862,6 +3917,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     ] = []
     private(set) var setParentCalls: [(projectURL: URL, issueID: String, parentID: String?)] = []
     private(set) var setStateCalls: [(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?)] = []
+    private(set) var clearStateCalls: [
+        (projectURL: URL, issueID: String, dimension: String, currentValue: String, reason: String?)
+    ] = []
     private(set) var addLabelsCalls: [(projectURL: URL, ids: [String], labels: [String])] = []
     private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var mutationEvents: [String] = []
@@ -3893,6 +3951,8 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var setParentErrors: [Error?] = []
     private var setStateDelays: [Duration?] = []
     private var setStateErrors: [Error?] = []
+    private var clearStateDelays: [Duration?] = []
+    private var clearStateErrors: [Error?] = []
     private var addLabelsDelays: [Duration?] = []
     private var addLabelsErrors: [Error?] = []
     private var exportError: Error?
@@ -3984,6 +4044,14 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setSetStateDelays(_ delays: [Duration?]) {
         setStateDelays = delays
+    }
+
+    func setClearStateErrors(_ errors: [Error?]) {
+        clearStateErrors = errors
+    }
+
+    func setClearStateDelays(_ delays: [Duration?]) {
+        clearStateDelays = delays
     }
 
     func setAddLabelsError(_ error: Error?) {
@@ -4183,6 +4251,29 @@ private actor RecordingBeadsCommands: BeadsCommanding {
             throw error
         }
         mutationEvents.append("state:\(issueID):\(dimension)=\(value)")
+    }
+
+    func clearState(
+        projectURL: URL,
+        issueID: String,
+        dimension: String,
+        currentValue: String,
+        reason: String?
+    ) async throws {
+        clearStateCalls.append((
+            projectURL: projectURL,
+            issueID: issueID,
+            dimension: dimension,
+            currentValue: currentValue,
+            reason: reason
+        ))
+        if !clearStateDelays.isEmpty, let delay = clearStateDelays.removeFirst() {
+            try await Task.sleep(for: delay)
+        }
+        if !clearStateErrors.isEmpty, let error = clearStateErrors.removeFirst() {
+            throw error
+        }
+        mutationEvents.append("state:\(issueID):\(dimension)=none")
     }
 
     func addLabels(projectURL: URL, ids: [String], labels: [String]) async throws {

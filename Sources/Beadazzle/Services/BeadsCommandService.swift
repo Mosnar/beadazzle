@@ -38,6 +38,7 @@ protocol BeadsCommanding: Sendable {
     func addLabelsBatch(projectURL: URL, ids: [String], labels: [String]) async throws
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
     func setState(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?) async throws
+    func clearState(projectURL: URL, issueID: String, dimension: String, currentValue: String, reason: String?) async throws
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws
     func loadComments(projectURL: URL, issueID: String) async throws -> [BeadComment]
@@ -119,6 +120,13 @@ extension BeadsCommanding {
         throw BeadError.commandFailed(
             command: "bd set-state",
             output: "State changes are not supported by this command service."
+        )
+    }
+
+    func clearState(projectURL _: URL, issueID _: String, dimension _: String, currentValue _: String, reason _: String?) async throws {
+        throw BeadError.commandFailed(
+            command: "bd update --remove-label",
+            output: "Clearing state is not supported by this command service."
         )
     }
 
@@ -285,6 +293,36 @@ struct BeadsCommandService {
         try await run(
             projectURL: projectURL,
             arguments: BeadsCommandArguments.setState(issueID: issueID, dimension: dimension, value: value, reason: reason)
+        )
+    }
+
+    func clearState(
+        projectURL: URL,
+        issueID: String,
+        dimension: String,
+        currentValue: String,
+        reason: String?
+    ) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.removeStateLabel(
+                issueID: issueID,
+                dimension: dimension,
+                value: currentValue
+            )
+        )
+        let output = try await runOutput(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.createStateClearEvent(
+                issueID: issueID,
+                dimension: dimension,
+                reason: reason
+            )
+        )
+        let eventID = try Self.createdIssueID(from: output)
+        try await run(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.close(ids: [eventID], reason: nil)
         )
     }
 
@@ -1254,6 +1292,36 @@ enum BeadsCommandArguments {
         var arguments = ["set-state", issueID, "\(dimension)=\(value)"]
         appendNonEmpty(&arguments, flag: "--reason", value: reason)
         return arguments
+    }
+
+    static func removeStateLabel(issueID: String, dimension: String, value: String) -> [String] {
+        let label = BeadStateLabel.label(dimension: dimension, value: value)
+        return [
+            "update",
+            issueID,
+            "--remove-label",
+            IssueDraft.normalizedLabelText([label])
+        ]
+    }
+
+    static func createStateClearEvent(issueID: String, dimension: String, reason: String?) -> [String] {
+        var description = "Cleared \(dimension)"
+        if let reason = reason?.nilIfBlank {
+            description += "\n\nReason: \(reason)"
+        }
+        return [
+            "create",
+            BeadStateLabel.clearEventTitle(dimension: dimension),
+            "--type",
+            "event",
+            "--priority",
+            "P4",
+            "--description",
+            description,
+            "--parent",
+            issueID,
+            "--silent"
+        ]
     }
 
     static func saveCustomStatuses(_ statuses: [BeadStatusDefinition]) -> [String] {

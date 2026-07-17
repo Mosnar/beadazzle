@@ -267,8 +267,11 @@ struct BeadProjectIndex: Sendable {
                 systemRecordIDsByParentID[parentID, default: []].append(issueID)
                 if let stateChange = recordedStateChangeByIssueID[issueID] {
                     recordedStateChangesByParentID[parentID, default: []].append(stateChange)
-                    recordedStateValuesByDimension[stateChange.dimension, default: []]
-                        .insert(stateChange.value)
+                    var recordedValues = recordedStateValuesByDimension[stateChange.dimension, default: []]
+                    if let value = stateChange.value {
+                        recordedValues.insert(value)
+                    }
+                    recordedStateValuesByDimension[stateChange.dimension] = recordedValues
                 }
             } else {
                 hierarchyParentCandidatesByIssueID[issueID] = parentID

@@ -125,7 +125,6 @@ struct InspectorOptionItemRow: View {
             .background((isHovered || isSelected) ? InspectorChrome.rowHoverFill : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
-        .focusable(false)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { isHovered = $0 }
         .accessibilityLabel(badge.map { "\(title), \($0)" } ?? title)

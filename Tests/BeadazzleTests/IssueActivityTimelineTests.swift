@@ -347,6 +347,37 @@ final class IssueActivityTimelineTests: XCTestCase {
         XCTAssertNil(presentation.reference)
     }
 
+    func testStateClearEventAppearsAsClearedActivity() throws {
+        let issue = makeIssue()
+        var clearEvent = makeIssue(
+            id: "bd-a.2",
+            title: "State cleared: Phase",
+            issueType: "event",
+            status: "closed",
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            createdBy: "Beadazzle",
+            closedAt: Date(timeIntervalSince1970: 2_000)
+        )
+        clearEvent.description = "Cleared Phase\n\nReason: Reset workflow"
+        let stateChange = try XCTUnwrap(BeadStateLabel.recordedChange(event: clearEvent))
+
+        let items = IssueActivityTimeline.items(
+            issue: issue,
+            events: [],
+            comments: [],
+            dependencies: [],
+            recordedStateChanges: [stateChange],
+            semantics: semantics,
+            resolveIssue: { $0 == clearEvent.id ? clearEvent : nil }
+        )
+
+        guard case .event(let presentation) = items[1] else {
+            return XCTFail("Expected state-clear Activity")
+        }
+        XCTAssertEqual(presentation.message, "cleared Phase")
+        XCTAssertEqual(presentation.reason, "Reset workflow")
+    }
+
     func testDependencyDateCannotPrecedeEitherEndpointCreation() {
         let issue = makeIssue(createdAt: Date(timeIntervalSince1970: 2_000))
         let child = makeIssue(

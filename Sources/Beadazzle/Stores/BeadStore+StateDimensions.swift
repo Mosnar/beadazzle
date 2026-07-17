@@ -279,16 +279,24 @@ extension BeadStore {
             return issue
         }
         var copy = issue
-        copy.labels = BeadStateLabel.applying(overrides: overrides, to: copy.labels)
+        copy.labels = BeadStateLabel.excluding(dimensions: Array(overrides.keys), from: copy.labels)
+        for dimension in overrides.keys.sorted() {
+            guard case .value(let value) = overrides[dimension] else { continue }
+            copy.labels.append(BeadStateLabel.label(dimension: dimension, value: value))
+        }
         return copy
     }
 
-    private func setStateLabelOverride(issueID: String, dimension: String, value: String?) {
+    private func setStateLabelOverride(
+        issueID: String,
+        dimension: String,
+        override: BeadStateLabelOverride?
+    ) {
         var overrides = stateLabelOverridesByIssueID
         guard Self.setStateLabelOverride(
             issueID: issueID,
             dimension: dimension,
-            value: value,
+            override: override,
             in: &overrides
         ) else { return }
         stateLabelOverridesByIssueID = overrides
@@ -298,13 +306,13 @@ extension BeadStore {
     private static func setStateLabelOverride(
         issueID: String,
         dimension: String,
-        value: String?,
-        in overrides: inout [String: [String: String]]
+        override: BeadStateLabelOverride?,
+        in overrides: inout [String: [String: BeadStateLabelOverride]]
     ) -> Bool {
-        guard overrides[issueID]?[dimension] != value else { return false }
+        guard overrides[issueID]?[dimension] != override else { return false }
         var issueOverrides = overrides[issueID, default: [:]]
-        if let value {
-            issueOverrides[dimension] = value
+        if let override {
+            issueOverrides[dimension] = override
         } else {
             issueOverrides.removeValue(forKey: dimension)
         }
@@ -323,7 +331,7 @@ extension BeadStore {
             changed = Self.setStateLabelOverride(
                 issueID: issueID,
                 dimension: dimension,
-                value: value,
+                override: .value(value),
                 in: &overrides
             ) || changed
         }
@@ -349,7 +357,9 @@ extension BeadStore {
         setStateLabelOverride(
             issueID: issueID,
             dimension: dimension,
-            value: resolvedValue == indexedValue ? nil : resolvedValue
+            override: resolvedValue == indexedValue
+                ? nil
+                : resolvedValue.map(BeadStateLabelOverride.value) ?? .cleared
         )
     }
 
@@ -369,7 +379,9 @@ extension BeadStore {
             changed = Self.setStateLabelOverride(
                 issueID: issueID,
                 dimension: dimension,
-                value: resolvedValue == indexedValue ? nil : resolvedValue,
+                override: resolvedValue == indexedValue
+                    ? nil
+                    : resolvedValue.map(BeadStateLabelOverride.value) ?? .cleared,
                 in: &overrides
             ) || changed
         }
@@ -393,8 +405,8 @@ extension BeadStore {
         for (issueID, overrides) in stateLabelOverridesByIssueID {
             guard let issue = index.issue(with: issueID) else { continue }
             var remaining = overrides
-            for (dimension, value) in overrides
-            where BeadStateLabel.value(of: dimension, in: issue.labels) == value {
+            for (dimension, override) in overrides
+            where BeadStateLabel.value(of: dimension, in: issue.labels) == override.value {
                 remaining.removeValue(forKey: dimension)
             }
             if remaining.isEmpty {
@@ -445,7 +457,7 @@ extension BeadStore {
         defer { endMutation(generation: mutationLifetimeGeneration) }
         let perceptibleBusyToken = beginPerceptibleBusy(issueIDs: [issueID])
         defer { endPerceptibleBusy(perceptibleBusyToken) }
-        setStateLabelOverride(issueID: issueID, dimension: dimension, value: value)
+        setStateLabelOverride(issueID: issueID, dimension: dimension, override: .value(value))
 
         let commands = commands
         let reason = reason?.nilIfBlank
@@ -498,6 +510,95 @@ extension BeadStore {
                         issueID: issueID,
                         dimension: dimension,
                         value: value,
+                        reason: reason
+                    )
+                }
+            )
+            return false
+        }
+    }
+
+    /// Clears a state dimension with supported `bd` commands: first remove the
+    /// current label, then add a closed child event so Activity keeps an audit
+    /// record even though `bd` does not yet provide an atomic clear-state command.
+    @discardableResult
+    func clearState(
+        issueID: String,
+        dimension rawDimension: String,
+        reason: String? = nil
+    ) async -> Bool {
+        guard let projectURL else { return false }
+        guard let dimension = BeadStateLabel.normalizedDimensionInput(rawDimension) else {
+            lastError = BeadStateLabel.dimensionInputRequirement
+            return false
+        }
+        guard let originalIssue = issue(with: issueID) else { return false }
+        guard let currentValue = BeadStateLabel.value(of: dimension, in: originalIssue.labels) else {
+            return true
+        }
+
+        let patch = BeadMetadataMutationPatch(clearingStateDimension: dimension)
+        let metadataMutation = beginMetadataMutation(
+            issueID: issueID,
+            originalIssue: originalIssue,
+            patch: patch
+        )
+        let mutationLifetimeGeneration = beginMutation()
+        defer { endMutation(generation: mutationLifetimeGeneration) }
+        let perceptibleBusyToken = beginPerceptibleBusy(issueIDs: [issueID])
+        defer { endPerceptibleBusy(perceptibleBusyToken) }
+        setStateLabelOverride(issueID: issueID, dimension: dimension, override: .cleared)
+
+        let commands = commands
+        let reason = reason?.nilIfBlank
+        var attemptedWrite = false
+        do {
+            attemptedWrite = true
+            try await enqueueMutationWrite {
+                try await commands.clearState(
+                    projectURL: projectURL,
+                    issueID: issueID,
+                    dimension: dimension,
+                    currentValue: currentValue,
+                    reason: reason
+                )
+            }
+            guard self.projectURL == projectURL,
+                  mutations.metadataMutationGeneration == metadataMutation.generation
+            else { return rejectStaleMutation(targeting: projectURL) }
+            guard settleMetadataMutation(
+                issueID: issueID,
+                mutationID: metadataMutation.id,
+                succeeded: true,
+                applyResolvedState: false
+            ) else { return false }
+            synchronizeStateLabelOverride(issueID: issueID, dimension: dimension)
+            reconcileState.request(.mutation)
+            announceCompletion("Cleared \(dimension) of \(issueID)")
+            return true
+        } catch {
+            guard self.projectURL == projectURL,
+                  mutations.metadataMutationGeneration == metadataMutation.generation
+            else { return rejectStaleMutation(targeting: projectURL) }
+            guard settleMetadataMutation(
+                issueID: issueID,
+                mutationID: metadataMutation.id,
+                succeeded: false,
+                applyResolvedState: false
+            ) else { return false }
+            synchronizeStateLabelOverride(issueID: issueID, dimension: dimension)
+            if attemptedWrite {
+                reconcileState.request(.mutation)
+            }
+            let retryBaseline = retryBaseline(for: [issueID])
+            reportMutationFailure(
+                error,
+                title: "Couldn't clear \(dimension) of \(issueID)",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                    await self.clearState(
+                        issueID: issueID,
+                        dimension: dimension,
                         reason: reason
                     )
                 }

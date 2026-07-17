@@ -82,6 +82,19 @@ final class BeadStateLabelTests: XCTestCase {
         XCTAssertEqual(change?.value, "in,review=ready")
     }
 
+    func testRecordedClearUsesDistinctEventTitleAndNoValue() throws {
+        let change = try XCTUnwrap(BeadStateLabel.recordedChange(
+            issueType: "event",
+            title: "State cleared: Phase"
+        ))
+
+        XCTAssertEqual(change.dimension, "Phase")
+        XCTAssertNil(change.value)
+        XCTAssertFalse(
+            BeadStateLabel.recordedChangeRequiresDisambiguation(title: "State cleared: Phase")
+        )
+    }
+
     func testRecordedChangeUsesKnownLabelToDisambiguateArrowInDimension() {
         let change = BeadStateLabel.recordedChange(
             issueType: "event",
