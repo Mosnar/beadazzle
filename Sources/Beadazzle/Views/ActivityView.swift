@@ -62,11 +62,8 @@ struct ActivityView: View {
                 Text("No activity.")
                     .foregroundStyle(.secondary)
             } else {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(items) { item in
-                        ActivityItemRow(item: item, issueReferenceLookup: issueReferenceLookup)
-                    }
-                }
+                ActivityFeed(items: items, issueReferenceLookup: issueReferenceLookup)
+                    .equatable()
             }
 
             Divider()
@@ -145,6 +142,97 @@ private struct ActivityComposer: View {
 private struct ActivityLoadTaskID: Hashable {
     let issueID: String
     let commentCount: Int
+}
+
+/// Own view boundary for relative grouping so unrelated detail-store updates do
+/// not rebuild the presentation sequence. The reference date advances only when
+/// the system calendar day or time zone changes; neither path reloads activity.
+private struct ActivityFeed: View, Equatable {
+    @Environment(\.calendar) private var calendar
+    @Environment(\.locale) private var locale
+    @State private var referenceDate = Date.now
+
+    let items: [IssueActivityItem]
+    let issueReferenceLookup: IssueReferenceLookup
+
+    static func == (lhs: ActivityFeed, rhs: ActivityFeed) -> Bool {
+        lhs.items == rhs.items
+            && lhs.issueReferenceLookup.revision == rhs.issueReferenceLookup.revision
+    }
+
+    var body: some View {
+        let elements = IssueActivityDateGrouping.elements(
+            for: items,
+            relativeTo: referenceDate,
+            calendar: calendar,
+            locale: locale
+        )
+
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(elements) { element in
+                ActivityFeedElementRow(
+                    element: element,
+                    issueReferenceLookup: issueReferenceLookup
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            referenceDate = .now
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+            referenceDate = .now
+        }
+    }
+}
+
+/// A unary row keeps the lazy container's per-element structure constant while
+/// selecting a time boundary or an activity item.
+private struct ActivityFeedElementRow: View {
+    let element: IssueActivityFeedElement
+    let issueReferenceLookup: IssueReferenceLookup
+
+    var body: some View {
+        Group {
+            switch element {
+            case .boundary(let boundary):
+                ActivityDateBoundaryRow(boundary: boundary)
+            case .item(let item):
+                ActivityItemRow(item: item, issueReferenceLookup: issueReferenceLookup)
+            }
+        }
+    }
+}
+
+private struct ActivityDateBoundaryRow: View {
+    let boundary: IssueActivityDateBoundary
+
+    private var accent: Color {
+        boundary.isToday ? .accentColor : .secondary
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            rule
+            Text(boundary.label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(accent)
+                .lineLimit(1)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(accent.opacity(boundary.isToday ? 0.14 : 0.08), in: Capsule())
+                .accessibilityAddTraits(.isHeader)
+            rule
+        }
+        .padding(.vertical, 6)
+        .frame(minWidth: 0, maxWidth: .infinity)
+    }
+
+    private var rule: some View {
+        Rectangle()
+            .fill(accent.opacity(boundary.isToday ? 0.75 : 0.25))
+            .frame(height: 1)
+            .accessibilityHidden(true)
+    }
 }
 
 /// A unary row keeps the lazy container's per-element structure constant while the

@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Activity now separates entries into relative time clusters such as Today, weekday names, and weeks or months ago, while keeping each entry's exact timestamp.
 - Improved responsiveness on projects with thousands of beads, especially when expanding outlines, sorting, and updating saved-view counts. Only blocking relationships now affect sibling order.
 - Project Settings › Properties now lets you pin, reorder, rename, and create state properties, then review their recorded values.
 - Pinned properties appear on every bead with a value picker. Changes appear immediately and are recorded in Activity through `bd set-state`.
