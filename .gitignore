@@ -21,3 +21,7 @@ skills-lock.json
 
 # bv (beads viewer) local config and caches
 .bv/
+
+
+docs/autobot/*
+.beads/
