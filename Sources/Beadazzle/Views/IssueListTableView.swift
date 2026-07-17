@@ -19,6 +19,7 @@ struct IssueListTableView: NSViewRepresentable {
     let store: BeadStore
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
+    let requestBulkEdit: (Set<String>, BulkEditTarget) -> Void
     let requestDelete: (Set<String>) -> Void
     let openDetail: (String) -> Void
 
@@ -490,6 +491,35 @@ struct IssueListTableView: NSViewRepresentable {
             ))
             menu.addItem(.separator())
 
+            menu.addItem(contextMenuItem(
+                title: "Add Labels…",
+                systemSymbolName: "tag",
+                action: #selector(bulkEditContextBeads(_:)),
+                ids: ids,
+                bulkEditTarget: .addLabels
+            ))
+
+            let propertySections = BulkEditPropertySections(store: parent.store)
+            if !propertySections.isEmpty {
+                let propertyItem = NSMenuItem(title: "Set Property", action: nil, keyEquivalent: "")
+                let propertyMenu = NSMenu()
+                appendPropertyItems(propertySections.pinned, to: propertyMenu, ids: ids)
+                if !propertySections.pinned.isEmpty, !propertySections.other.isEmpty {
+                    propertyMenu.addItem(.separator())
+                }
+                if !propertySections.other.isEmpty {
+                    let otherItem = NSMenuItem(title: "Other", action: nil, keyEquivalent: "")
+                    let otherMenu = NSMenu()
+                    appendPropertyItems(propertySections.other, to: otherMenu, ids: ids)
+                    propertyMenu.addItem(otherItem)
+                    propertyMenu.setSubmenu(otherMenu, for: otherItem)
+                }
+                menu.addItem(propertyItem)
+                menu.setSubmenu(propertyMenu, for: propertyItem)
+            }
+
+            menu.addItem(.separator())
+
             let statusOptions = parent.store.statusChangeOptions(forIssueIDs: ids)
             if !statusOptions.isEmpty {
                 let statusItem = NSMenuItem(title: "Set Status", action: nil, keyEquivalent: "")
@@ -528,15 +558,38 @@ struct IssueListTableView: NSViewRepresentable {
             systemSymbolName: String? = nil,
             action: Selector,
             ids: Set<String>,
-            status: String? = nil
+            status: String? = nil,
+            bulkEditTarget: BulkEditTarget? = nil
         ) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
-            item.representedObject = ContextMenuAction(ids: Array(ids), status: status)
+            item.representedObject = ContextMenuAction(
+                ids: Array(ids),
+                status: status,
+                bulkEditTarget: bulkEditTarget
+            )
             if let systemSymbolName {
                 item.image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil)
             }
             return item
+        }
+
+        private func appendPropertyItems(_ dimensions: [String], to menu: NSMenu, ids: Set<String>) {
+            for dimension in dimensions {
+                menu.addItem(contextMenuItem(
+                    title: parent.store.stateDimensionDisplayName(for: dimension),
+                    action: #selector(bulkEditContextBeads(_:)),
+                    ids: ids,
+                    bulkEditTarget: .setProperty(dimension: dimension)
+                ))
+            }
+        }
+
+        @objc private func bulkEditContextBeads(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ContextMenuAction,
+                  let target = action.bulkEditTarget
+            else { return }
+            parent.requestBulkEdit(Set(action.ids), target)
         }
 
         @objc private func copyContextBeadIDs(_ sender: NSMenuItem) {
@@ -576,10 +629,12 @@ extension IssueListTableView.Coordinator: NSMenuDelegate {
 private final class ContextMenuAction {
     let ids: [String]
     let status: String?
+    let bulkEditTarget: BulkEditTarget?
 
-    init(ids: [String], status: String? = nil) {
+    init(ids: [String], status: String? = nil, bulkEditTarget: BulkEditTarget? = nil) {
         self.ids = ids
         self.status = status
+        self.bulkEditTarget = bulkEditTarget
     }
 }
 

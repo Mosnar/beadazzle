@@ -1,5 +1,14 @@
 import Foundation
 
+struct BeadsAddLabelsBatch: Equatable, Sendable {
+    let issueIDs: [String]
+    let labels: [String]
+
+    var arguments: [String] {
+        BeadsCommandArguments.addLabels(ids: issueIDs, labels: labels)
+    }
+}
+
 protocol BeadsCommanding: Sendable {
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws
     func exportReadableSnapshot(projectURL: URL) async throws
@@ -24,6 +33,8 @@ protocol BeadsCommanding: Sendable {
         priority: Int?,
         deferUntil: IssueMetadataDateUpdate
     ) async throws
+    func addLabels(projectURL: URL, ids: [String], labels: [String]) async throws
+    func addLabelsBatch(projectURL: URL, ids: [String], labels: [String]) async throws
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
     func setState(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?) async throws
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
@@ -104,6 +115,20 @@ extension BeadsCommanding {
             command: "bd set-state",
             output: "State changes are not supported by this command service."
         )
+    }
+
+    func addLabels(projectURL _: URL, ids _: [String], labels _: [String]) async throws {
+        throw BeadError.commandFailed(
+            command: "bd update --add-label",
+            output: "Bulk label updates are not supported by this command service."
+        )
+    }
+
+    /// Single-command primitive used by the bulk coordinator. Existing command
+    /// doubles only need to implement `addLabels`; the production service overrides
+    /// this to ensure one call represents exactly one process invocation.
+    func addLabelsBatch(projectURL: URL, ids: [String], labels: [String]) async throws {
+        try await addLabels(projectURL: projectURL, ids: ids, labels: labels)
     }
 
     func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws {
@@ -215,6 +240,24 @@ struct BeadsCommandService {
             deferUntil: deferUntil
         )
         try await run(projectURL: projectURL, arguments: arguments)
+    }
+
+    func addLabels(projectURL: URL, ids: [String], labels: [String]) async throws {
+        for batch in BeadsCommandArguments.addLabelBatchPlans(ids: ids, labels: labels) {
+            try await addLabelsBatch(
+                projectURL: projectURL,
+                ids: batch.issueIDs,
+                labels: batch.labels
+            )
+        }
+    }
+
+    func addLabelsBatch(projectURL: URL, ids: [String], labels: [String]) async throws {
+        guard !ids.isEmpty, !labels.isEmpty else { return }
+        try await run(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.addLabels(ids: ids, labels: labels)
+        )
     }
 
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws {
@@ -862,6 +905,9 @@ struct BeadsInitOptions: Equatable, Sendable {
 
 enum BeadsCommandArguments {
     static let exportedIssuesJSONLPath = ".beads/issues.jsonl"
+    /// Leaves ample room for the executable path and inherited environment beneath
+    /// macOS's process argument limit while keeping normal bulk edits to one command.
+    static let safeBulkArgumentByteLimit = 64 * 1_024
 
     static func initialize(options: BeadsInitOptions) -> [String] {
         var arguments = ["init", "--non-interactive", "--role", "maintainer"]
@@ -1007,6 +1053,150 @@ enum BeadsCommandArguments {
             arguments += ["--defer", dateUpdateArgument(date)]
         }
         return arguments
+    }
+
+    static func addLabels(ids: [String], labels: [String]) -> [String] {
+        ["update"] + Array(Set(ids)).sorted() + addLabelArguments(labels)
+    }
+
+    static func addLabelBatches(
+        ids: [String],
+        labels: [String],
+        maximumArgumentBytes: Int = safeBulkArgumentByteLimit
+    ) -> [[String]] {
+        addLabelBatchPlans(
+            ids: ids,
+            labels: labels,
+            maximumArgumentBytes: maximumArgumentBytes
+        ).map(\.arguments)
+    }
+
+    static func addLabelBatchPlans(
+        ids: [String],
+        labels: [String],
+        maximumArgumentBytes: Int = safeBulkArgumentByteLimit
+    ) -> [BeadsAddLabelsBatch] {
+        let ids = Array(Set(ids)).sorted()
+        let labels = normalizedUniqueLabels(labels)
+        let labelArgumentPairs = labels.map { label in
+            ["--add-label", IssueDraft.normalizedLabelText([label])]
+        }
+        guard !ids.isEmpty, !labels.isEmpty else { return [] }
+
+        let unchunkedArguments = ["update"] + ids + labelArgumentPairs.flatMap { $0 }
+        if estimatedArgumentBytes(unchunkedArguments) <= maximumArgumentBytes {
+            return [BeadsAddLabelsBatch(
+                issueIDs: ids,
+                labels: labels
+            )]
+        }
+
+        let commandByteCount = estimatedArgumentBytes(["update"])
+        let longestIDByteCount = ids.map { estimatedArgumentBytes([$0]) }.max() ?? 0
+        let largestLabelPairByteCount = labelArgumentPairs
+            .map(estimatedArgumentBytes)
+            .max() ?? 0
+        // Giving labels at most roughly half of a large command avoids an
+        // inefficient one-ID-per-command cross product when both axes are huge.
+        // A single indivisible ID or label can still exceed a caller-supplied
+        // synthetic limit; the production limit is intentionally far larger than
+        // Beads' valid identifiers and labels.
+        let availableLabelByteCount = max(
+            1,
+            maximumArgumentBytes - commandByteCount - longestIDByteCount
+        )
+        let balancedLabelByteCount = max(
+            1,
+            (maximumArgumentBytes - commandByteCount) / 2
+        )
+        let labelBatchByteLimit = min(
+            availableLabelByteCount,
+            max(balancedLabelByteCount, largestLabelPairByteCount)
+        )
+        let labelBatches = chunkLabels(
+            labels,
+            maximumArgumentBytes: labelBatchByteLimit
+        )
+
+        // Use the largest label group to size ID groups, then run ID groups on the
+        // outside. Every bead's label commands are therefore adjacent and progress
+        // can finish that bead before advancing to the next group.
+        let largestLabelByteCount = labelBatches.map {
+            estimatedArgumentBytes(addLabelArgumentPairs($0).flatMap { $0 })
+        }.max() ?? 0
+        let fixedByteCount = commandByteCount + largestLabelByteCount
+        var idBatches: [[String]] = []
+        var batchIDs: [String] = []
+        var batchByteCount = fixedByteCount
+        for id in ids {
+            let idByteCount = estimatedArgumentBytes([id])
+            if !batchIDs.isEmpty, batchByteCount + idByteCount > maximumArgumentBytes {
+                idBatches.append(batchIDs)
+                batchIDs = []
+                batchByteCount = fixedByteCount
+            }
+            batchIDs.append(id)
+            batchByteCount += idByteCount
+        }
+        if !batchIDs.isEmpty {
+            idBatches.append(batchIDs)
+        }
+
+        var batches: [BeadsAddLabelsBatch] = []
+        batches.reserveCapacity(idBatches.count * labelBatches.count)
+        for idBatch in idBatches {
+            for labelBatch in labelBatches {
+                batches.append(BeadsAddLabelsBatch(
+                    issueIDs: idBatch,
+                    labels: labelBatch
+                ))
+            }
+        }
+        return batches
+    }
+
+    private static func addLabelArguments(_ labels: [String]) -> [String] {
+        addLabelArgumentPairs(labels).flatMap { $0 }
+    }
+
+    private static func addLabelArgumentPairs(_ labels: [String]) -> [[String]] {
+        normalizedUniqueLabels(labels).map {
+            ["--add-label", IssueDraft.normalizedLabelText([$0])]
+        }
+    }
+
+    private static func normalizedUniqueLabels(_ labels: [String]) -> [String] {
+        let normalizedLabels = IssueDraft.normalizedLabels(IssueDraft.normalizedLabelText(labels))
+        var seen: Set<String> = []
+        return normalizedLabels.filter { seen.insert($0).inserted }
+    }
+
+    private static func chunkLabels(
+        _ labels: [String],
+        maximumArgumentBytes: Int
+    ) -> [[String]] {
+        var batches: [[String]] = []
+        var batch: [String] = []
+        var batchByteCount = 0
+        for label in labels {
+            let pair = ["--add-label", IssueDraft.normalizedLabelText([label])]
+            let pairByteCount = estimatedArgumentBytes(pair)
+            if !batch.isEmpty, batchByteCount + pairByteCount > maximumArgumentBytes {
+                batches.append(batch)
+                batch = []
+                batchByteCount = 0
+            }
+            batch.append(label)
+            batchByteCount += pairByteCount
+        }
+        if !batch.isEmpty {
+            batches.append(batch)
+        }
+        return batches
+    }
+
+    private static func estimatedArgumentBytes(_ arguments: [String]) -> Int {
+        arguments.reduce(0) { $0 + $1.utf8.count + 1 }
     }
 
     static func setParent(issueID: String, parentID: String?) -> [String] {

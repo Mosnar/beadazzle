@@ -285,6 +285,111 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertNil(value(after: "--defer", in: arguments))
     }
 
+    func testBulkAddLabelArgumentsNormalizeIDsAndPreserveComplexLabels() {
+        let arguments = BeadsCommandArguments.addLabels(
+            ids: ["bd-2", "bd-1", "bd-2"],
+            labels: [" area:ui ", "phase:in,review=ready", "area:ui"]
+        )
+
+        XCTAssertEqual(Array(arguments.prefix(3)), ["update", "bd-1", "bd-2"])
+        XCTAssertEqual(
+            values(after: "--add-label", in: arguments),
+            ["area:ui", #""phase:in,review=ready""#]
+        )
+        XCTAssertNil(value(after: "--set-labels", in: arguments))
+        XCTAssertNil(value(after: "--remove-label", in: arguments))
+    }
+
+    func testBulkAddLabelArgumentsChunkLargeSelectionsWithinSafeByteBudget() {
+        let ids = (0..<120).map { "long-project-identifier-\($0)" }
+        let maximumBytes = 180
+
+        let batches = BeadsCommandArguments.addLabelBatches(
+            ids: ids.reversed(),
+            labels: ["area:ui", "ready"],
+            maximumArgumentBytes: maximumBytes
+        )
+
+        XCTAssertGreaterThan(batches.count, 1)
+        let batchedIDs = batches.flatMap { arguments in
+            Array(arguments.dropFirst().prefix { $0 != "--add-label" })
+        }
+        XCTAssertEqual(batchedIDs, ids.sorted())
+        for batch in batches {
+            let byteCount = batch.reduce(0) { $0 + $1.utf8.count + 1 }
+            XCTAssertLessThanOrEqual(byteCount, maximumBytes)
+            XCTAssertEqual(values(after: "--add-label", in: batch), ["area:ui", "ready"])
+        }
+    }
+
+    func testBulkAddLabelArgumentsKeepNormalSelectionsInOneBatch() {
+        let ids = ["bd-2", "bd-1"]
+        let labels = ["area:ui"]
+
+        XCTAssertEqual(
+            BeadsCommandArguments.addLabelBatches(ids: ids, labels: labels),
+            [BeadsCommandArguments.addLabels(ids: ids, labels: labels)]
+        )
+    }
+
+    func testBulkAddLabelArgumentsChunkBothLargeAxesWithoutDroppingPairs() {
+        let ids = (0..<18).map { "project-item-\($0)" }
+        let labels = (0..<16).map { "category-\($0)" }
+        let maximumBytes = 120
+
+        let batches = BeadsCommandArguments.addLabelBatches(
+            ids: ids,
+            labels: labels,
+            maximumArgumentBytes: maximumBytes
+        )
+
+        XCTAssertGreaterThan(batches.count, 1)
+        var observedPairs: Set<String> = []
+        for batch in batches {
+            let byteCount = batch.reduce(0) { $0 + $1.utf8.count + 1 }
+            XCTAssertLessThanOrEqual(byteCount, maximumBytes)
+            let batchIDs = Array(batch.dropFirst().prefix { $0 != "--add-label" })
+            let batchLabels = values(after: "--add-label", in: batch)
+            XCTAssertFalse(batchIDs.isEmpty)
+            XCTAssertFalse(batchLabels.isEmpty)
+            for id in batchIDs {
+                for label in batchLabels {
+                    XCTAssertTrue(observedPairs.insert("\(id)\u{0}\(label)").inserted)
+                }
+            }
+        }
+
+        let expectedPairs = Set(ids.flatMap { id in
+            labels.map { label in "\(id)\u{0}\(label)" }
+        })
+        XCTAssertEqual(observedPairs, expectedPairs)
+    }
+
+    func testBulkAddLabelBatchPlansFinishEachIDGroupBeforeAdvancing() {
+        let plans = BeadsCommandArguments.addLabelBatchPlans(
+            ids: (0..<18).map { "project-item-\($0)" },
+            labels: (0..<16).map { "category-\($0)" },
+            maximumArgumentBytes: 120
+        )
+
+        XCTAssertGreaterThan(plans.count, 1)
+        var completedIDGroups: Set<[String]> = []
+        var currentIDGroup: [String]?
+        for plan in plans {
+            if plan.issueIDs != currentIDGroup {
+                if let currentIDGroup {
+                    completedIDGroups.insert(currentIDGroup)
+                }
+                XCTAssertFalse(completedIDGroups.contains(plan.issueIDs))
+                currentIDGroup = plan.issueIDs
+            }
+            XCTAssertEqual(
+                plan.arguments,
+                BeadsCommandArguments.addLabels(ids: plan.issueIDs, labels: plan.labels)
+            )
+        }
+    }
+
     func testMetadataUpdateArgumentsClearLabelsFromOriginalIssue() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(
             issueID: "bd-1",

@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var searchPresented = false
     @State private var savedViewEditorRequest: SavedViewEditorRequest?
+    @State private var bulkEditRequest: BulkEditRequest?
 
     var body: some View {
         @Bindable var store = store
@@ -38,7 +39,8 @@ struct ContentView: View {
                 BulkActionsMenu(
                     requestDeleteSelected: requestDeleteSelected,
                     requestCloseSelected: requestCloseSelected,
-                    requestSetStatus: requestSetSelectedStatus
+                    requestSetStatus: requestSetSelectedStatus,
+                    requestBulkEdit: requestBulkEditSelected
                 )
                 .disabled(!store.hasReadableProject)
             }
@@ -81,6 +83,9 @@ struct ContentView: View {
                 initialSymbolName: workspace.selectedBookmark.systemImage
             )
         }
+        .sheet(item: $bulkEditRequest) { request in
+            BulkEditSheet(request: request)
+        }
         .mutationErrorDialog(store: store)
         .onAppear {
             store.openDefaultProjectIfAvailable()
@@ -100,6 +105,7 @@ struct ContentView: View {
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
             savedViewEditorRequest = nil
+            bulkEditRequest = nil
         }
         .onChange(of: workspace.requestedSavedViewEditorID) { _, id in
             guard let id else { return }
@@ -172,6 +178,7 @@ struct ContentView: View {
                 IssueListView(
                     requestClose: requestClose,
                     requestSetStatus: requestSetStatus,
+                    requestBulkEdit: requestBulkEdit,
                     requestDelete: requestDelete,
                     openDetail: openDetail
                 )
@@ -244,6 +251,15 @@ struct ContentView: View {
 
     private func requestDeleteSelected() {
         requestDelete(workspace.selectedIDs)
+    }
+
+    private func requestBulkEditSelected(_ target: BulkEditTarget) {
+        requestBulkEdit(workspace.selectedIDs, target)
+    }
+
+    private func requestBulkEdit(_ issueIDs: Set<String>, _ target: BulkEditTarget) {
+        guard !issueIDs.isEmpty else { return }
+        bulkEditRequest = store.makeBulkEditRequest(issueIDs: issueIDs, target: target)
     }
 
     private func requestDelete(_ issueIDs: Set<String>) {

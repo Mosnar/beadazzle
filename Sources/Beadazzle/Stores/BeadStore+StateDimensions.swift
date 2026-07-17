@@ -195,6 +195,16 @@ extension BeadStore {
         return dimensions
     }
 
+    internal func stateDimensionsManagedForLabelEditing(issueIDs: [String]) -> Set<String> {
+        var dimensions = Set(pinnedStateDimensions)
+        for issueID in issueIDs {
+            if let overrides = stateLabelOverridesByIssueID[issueID] {
+                dimensions.formUnion(overrides.keys)
+            }
+        }
+        return dimensions
+    }
+
     @discardableResult
     func pinStateDimension(_ rawDimension: String) -> Bool {
         pinStateDimension(rawDimension, at: pinnedStateDimensions.endIndex)
@@ -274,18 +284,51 @@ extension BeadStore {
     }
 
     private func setStateLabelOverride(issueID: String, dimension: String, value: String?) {
-        guard stateLabelOverridesByIssueID[issueID]?[dimension] != value else { return }
-        var issueOverrides = stateLabelOverridesByIssueID[issueID, default: [:]]
+        var overrides = stateLabelOverridesByIssueID
+        guard Self.setStateLabelOverride(
+            issueID: issueID,
+            dimension: dimension,
+            value: value,
+            in: &overrides
+        ) else { return }
+        stateLabelOverridesByIssueID = overrides
+        _contentRevision &+= 1
+    }
+
+    private static func setStateLabelOverride(
+        issueID: String,
+        dimension: String,
+        value: String?,
+        in overrides: inout [String: [String: String]]
+    ) -> Bool {
+        guard overrides[issueID]?[dimension] != value else { return false }
+        var issueOverrides = overrides[issueID, default: [:]]
         if let value {
             issueOverrides[dimension] = value
         } else {
             issueOverrides.removeValue(forKey: dimension)
         }
         if issueOverrides.isEmpty {
-            stateLabelOverridesByIssueID.removeValue(forKey: issueID)
+            overrides.removeValue(forKey: issueID)
         } else {
-            stateLabelOverridesByIssueID[issueID] = issueOverrides
+            overrides[issueID] = issueOverrides
         }
+        return true
+    }
+
+    private func setStateLabelOverrides(issueIDs: [String], dimension: String, value: String) {
+        var overrides = stateLabelOverridesByIssueID
+        var changed = false
+        for issueID in issueIDs {
+            changed = Self.setStateLabelOverride(
+                issueID: issueID,
+                dimension: dimension,
+                value: value,
+                in: &overrides
+            ) || changed
+        }
+        guard changed else { return }
+        stateLabelOverridesByIssueID = overrides
         _contentRevision &+= 1
     }
 
@@ -308,6 +351,31 @@ extension BeadStore {
             dimension: dimension,
             value: resolvedValue == indexedValue ? nil : resolvedValue
         )
+    }
+
+    private func synchronizeStateLabelOverrides(issueIDs: [String], dimension: String) {
+        var overrides = stateLabelOverridesByIssueID
+        var changed = false
+        for issueID in issueIDs {
+            let resolvedIssue = mutations.metadataMutations[issueID]?.resolvedIssue
+                ?? mutations.metadataSettlement(for: issueID)?.issue
+                ?? index.issue(with: issueID)
+            let resolvedValue = resolvedIssue.flatMap {
+                BeadStateLabel.value(of: dimension, in: $0.labels)
+            }
+            let indexedValue = index.issue(with: issueID).flatMap {
+                BeadStateLabel.value(of: dimension, in: $0.labels)
+            }
+            changed = Self.setStateLabelOverride(
+                issueID: issueID,
+                dimension: dimension,
+                value: resolvedValue == indexedValue ? nil : resolvedValue,
+                in: &overrides
+            ) || changed
+        }
+        guard changed else { return }
+        stateLabelOverridesByIssueID = overrides
+        _contentRevision &+= 1
     }
 
     /// A successful refresh is authoritative and retires every overlay, even if
@@ -436,5 +504,222 @@ extension BeadStore {
             )
             return false
         }
+    }
+
+    /// Applies one state property to several beads while preserving an Activity event
+    /// per bead. Commands run serially but yield between beads so a project switch can
+    /// stop a very large batch. Individual failures do not stop later beads, and the
+    /// standard mutation dialog offers a retry for failures only.
+    @discardableResult
+    func bulkSetState(
+        issueIDs: [String],
+        dimension rawDimension: String,
+        value rawValue: String,
+        reason: String? = nil,
+        expectedProjectURL: URL? = nil,
+        progress reportProgress: ((BulkMutationProgress) -> Void)? = nil
+    ) async -> BulkMutationResult {
+        guard let projectURL else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
+                failures: []
+            )
+        }
+        guard expectedProjectURL == nil || expectedProjectURL == projectURL else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .superseded,
+                failures: []
+            )
+        }
+        guard let dimension = BeadStateLabel.normalizedDimensionInput(rawDimension) else {
+            lastError = BeadStateLabel.dimensionInputRequirement
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
+                failures: []
+            )
+        }
+        guard let value = BeadStateLabel.normalizedValueInput(rawValue) else {
+            lastError = BeadStateLabel.valueInputRequirement
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
+                failures: []
+            )
+        }
+
+        let mutationGeneration = mutations.metadataMutationGeneration
+        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
+        await optimisticMutationQueue.acquire()
+        defer { optimisticMutationQueue.release() }
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .superseded,
+                failures: []
+            )
+        }
+
+        let targetIssues = Array(Set(issueIDs)).sorted().compactMap { issue(with: $0) }.filter {
+            BeadStateLabel.value(of: dimension, in: $0.labels) != value
+        }
+        guard !targetIssues.isEmpty else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .completed,
+                failures: []
+            )
+        }
+
+        let patch = BeadMetadataMutationPatch(stateDimension: dimension, value: value)
+        var handles: [String: MetadataMutationHandle] = [:]
+        for issue in targetIssues {
+            handles[issue.id] = beginMetadataMutation(
+                issueID: issue.id,
+                originalIssue: issue,
+                patch: patch,
+                writeWasAttempted: false
+            )
+        }
+        let targetIDs = targetIssues.map(\.id)
+        var mutationProgress = BulkMutationProgress(totalCount: targetIDs.count)
+        reportProgress?(mutationProgress)
+        let lifetimeGeneration = beginMutation()
+        defer { endMutation(generation: lifetimeGeneration) }
+        let busyToken = beginPerceptibleBusy(issueIDs: Set(targetIDs))
+        defer { endPerceptibleBusy(busyToken) }
+        setStateLabelOverrides(issueIDs: targetIDs, dimension: dimension, value: value)
+
+        let commands = commands
+        let normalizedReason = reason?.nilIfBlank
+        var failures = BulkMutationFailureCollection()
+        var nextIssueIndex = 0
+        var outcome = BulkMutationOutcome.completed
+        var settlementIsValid = true
+        while nextIssueIndex < targetIDs.count {
+            if Task.isCancelled {
+                outcome = .cancelled
+                break
+            }
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                outcome = .superseded
+                break
+            }
+
+            let issueID = targetIDs[nextIssueIndex]
+            guard let handle = handles[issueID] else {
+                settlementIsValid = false
+                break
+            }
+            settlementIsValid = markMetadataMutationWriteAttempted(
+                issueID: issueID,
+                mutationID: handle.id
+            ) && settlementIsValid
+
+            var succeeded = false
+            do {
+                try await enqueueMutationWrite {
+                    try await commands.setState(
+                        projectURL: projectURL,
+                        issueID: issueID,
+                        dimension: dimension,
+                        value: value,
+                        reason: normalizedReason
+                    )
+                }
+                succeeded = true
+            } catch {
+                failures.record(issueIDs: [issueID], error: error)
+            }
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                outcome = .superseded
+                break
+            }
+            settlementIsValid = settleMetadataMutation(
+                issueID: issueID,
+                mutationID: handle.id,
+                succeeded: succeeded,
+                applyResolvedState: false
+            ) && settlementIsValid
+            mutationProgress.recordCompletion(succeeded: succeeded)
+            reportProgress?(mutationProgress)
+            nextIssueIndex += 1
+        }
+
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return BulkMutationResult(
+                progress: mutationProgress,
+                outcome: .superseded,
+                failures: failures.details,
+                failedIssueIDs: failures.failedIssueIDs,
+                failureCount: failures.commandCount
+            )
+        }
+        if nextIssueIndex < targetIDs.count {
+            for issueID in targetIDs[nextIssueIndex...] {
+                guard let handle = handles[issueID] else {
+                    settlementIsValid = false
+                    continue
+                }
+                settlementIsValid = settleMetadataMutation(
+                    issueID: issueID,
+                    mutationID: handle.id,
+                    succeeded: false,
+                    applyResolvedState: false
+                ) && settlementIsValid
+            }
+        }
+        guard settlementIsValid else {
+            requestReconcile()
+            return BulkMutationResult(
+                progress: mutationProgress,
+                outcome: .rejected,
+                failures: failures.details,
+                failedIssueIDs: failures.failedIssueIDs,
+                failureCount: failures.commandCount
+            )
+        }
+
+        synchronizeStateLabelOverrides(issueIDs: targetIDs, dimension: dimension)
+        if nextIssueIndex > 0 {
+            reconcileState.request(.mutation)
+        }
+
+        if mutationProgress.succeededCount > 0 {
+            announceCompletion(
+                mutationProgress.succeededCount == 1
+                    ? "Set \(dimension) on 1 bead"
+                    : "Set \(dimension) on \(mutationProgress.succeededCount) beads"
+            )
+        }
+        let failedIDs = failures.failedIssueIDs
+        if !failures.isEmpty {
+            let baseline = retryBaseline(for: failedIDs)
+            reportBulkMutationFailure(
+                failures,
+                title: failedIDs.count == 1
+                    ? "Couldn't set \(dimension) on 1 bead"
+                    : "Couldn't set \(dimension) on \(failedIDs.count) beads",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(baseline) else { return }
+                    _ = await self.bulkSetState(
+                        issueIDs: failedIDs,
+                        dimension: dimension,
+                        value: value,
+                        reason: normalizedReason,
+                        expectedProjectURL: projectURL
+                    )
+                }
+            )
+        }
+        return BulkMutationResult(
+            progress: mutationProgress,
+            outcome: outcome,
+            failures: failures.details,
+            failedIssueIDs: failedIDs,
+            failureCount: failures.commandCount
+        )
     }
 }

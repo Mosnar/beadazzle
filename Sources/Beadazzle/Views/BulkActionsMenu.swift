@@ -6,11 +6,35 @@ struct BulkActionsMenu: View {
     let requestDeleteSelected: () -> Void
     let requestCloseSelected: () -> Void
     let requestSetStatus: (String) -> Void
+    let requestBulkEdit: (BulkEditTarget) -> Void
 
     var body: some View {
         let statusOptions = store.statusChangeOptions(forIssueIDs: workspace.selectedIDs)
+        let propertySections = BulkEditPropertySections(store: store)
 
         Menu {
+            Button("Add Labels…") {
+                requestBulkEdit(.addLabels)
+            }
+            .disabled(workspace.selectedIDs.isEmpty)
+
+            if !propertySections.isEmpty {
+                Menu("Set Property") {
+                    propertyButtons(propertySections.pinned)
+                    if !propertySections.pinned.isEmpty, !propertySections.other.isEmpty {
+                        Divider()
+                    }
+                    if !propertySections.other.isEmpty {
+                        Menu("Other") {
+                            propertyButtons(propertySections.other)
+                        }
+                    }
+                }
+                .disabled(workspace.selectedIDs.isEmpty)
+            }
+
+            Divider()
+
             Button(closeTitle) {
                 requestCloseSelected()
             }
@@ -61,5 +85,14 @@ struct BulkActionsMenu: View {
 
     private var closeTitle: String {
         store.completionActionTitle(for: workspace.selectedIDs.sorted())
+    }
+
+    @ViewBuilder
+    private func propertyButtons(_ dimensions: [String]) -> some View {
+        ForEach(dimensions, id: \.self) { dimension in
+            Button(store.stateDimensionDisplayName(for: dimension)) {
+                requestBulkEdit(.setProperty(dimension: dimension))
+            }
+        }
     }
 }

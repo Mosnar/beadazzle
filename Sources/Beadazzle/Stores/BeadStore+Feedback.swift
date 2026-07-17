@@ -36,6 +36,55 @@ extension BeadStore {
         enqueueFailure(failure)
     }
 
+    /// Reports bulk failures in one retryable dialog. Counts and retry targets stay
+    /// exact; verbose per-command diagnostics are bounded for very large selections.
+    func reportBulkMutationFailure(
+        _ failures: BulkMutationFailureCollection,
+        title: String,
+        retry: (() async -> Void)? = nil
+    ) {
+        guard !failures.isEmpty else { return }
+        if failures.commandCount == 1, let failure = failures.details.first {
+            enqueueFailure(BeadMutationFailure(
+                title: title,
+                message: failure.command == nil ? failure.output : "The Beads command failed.",
+                command: failure.command,
+                output: failure.command == nil ? nil : failure.output,
+                retry: retry
+            ))
+            return
+        }
+
+        var sections = failures.details.enumerated().map { offset, failure in
+            let displayedIssueIDs = failure.issueIDs.prefix(20)
+            let omittedIssueIDCount = failure.issueIDs.count - displayedIssueIDs.count
+            var beadSummary = displayedIssueIDs.joined(separator: ", ")
+            if omittedIssueIDCount > 0 {
+                beadSummary += " … and \(omittedIssueIDCount.formatted()) more"
+            }
+            var lines = [
+                "Failure \(offset + 1)",
+                "Beads: \(beadSummary)"
+            ]
+            if let command = failure.command?.nilIfBlank {
+                lines.append("Command: \(command)")
+            }
+            if !failure.output.isEmpty {
+                lines.append("Output:\n\(failure.output)")
+            }
+            return lines.joined(separator: "\n")
+        }
+        if failures.omittedDetailCount > 0 {
+            sections.append("… \(failures.omittedDetailCount.formatted()) additional failures omitted")
+        }
+        enqueueFailure(BeadMutationFailure(
+            title: title,
+            message: "\(failures.commandCount.formatted()) commands failed while processing \(failures.issueIDs.count.formatted()) beads. Successful changes were kept.",
+            output: sections.joined(separator: "\n\n"),
+            retry: retry
+        ))
+    }
+
     /// Enqueues a structured failure, coalescing exact duplicates so a repeated failure
     /// does not stack identical dialogs, and announces it to assistive technology.
     func enqueueFailure(_ failure: BeadMutationFailure) {

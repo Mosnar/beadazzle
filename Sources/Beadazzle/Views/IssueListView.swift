@@ -7,6 +7,7 @@ struct IssueListView: View {
     private var detail: BeadDetailStore { store.detail }
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
+    let requestBulkEdit: (Set<String>, BulkEditTarget) -> Void
     let requestDelete: (Set<String>) -> Void
     let openDetail: (String) -> Void
 
@@ -43,6 +44,7 @@ struct IssueListView: View {
                         store: store,
                         requestClose: requestClose,
                         requestSetStatus: requestSetStatus,
+                        requestBulkEdit: requestBulkEdit,
                         requestDelete: requestDelete,
                         openDetail: openDetail
                     )

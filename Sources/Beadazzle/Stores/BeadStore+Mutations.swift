@@ -181,7 +181,8 @@ extension BeadStore {
     internal func beginMetadataMutation(
         issueID: String,
         originalIssue: BeadIssue,
-        patch: BeadMetadataMutationPatch
+        patch: BeadMetadataMutationPatch,
+        writeWasAttempted: Bool = true
     ) -> MetadataMutationHandle {
         let mutationID = UUID()
         var state = mutations.metadataMutations[issueID] ?? BeadMetadataMutationState(
@@ -190,7 +191,7 @@ extension BeadStore {
         )
         let proposedLabels = patch.proposedLabels(for: state.resolvedIssue)
         let possiblePersistedLabels: [String]
-        if let proposedLabels {
+        if let proposedLabels, writeWasAttempted {
             mutations.recordPossiblyPersistedLabels(state.confirmedIssue.labels, for: issueID)
             possiblePersistedLabels = mutations.possiblyPersistedLabels(for: issueID)
             mutations.recordPossiblyPersistedLabels(proposedLabels, for: issueID)
@@ -203,7 +204,8 @@ extension BeadStore {
             patch: patch,
             possiblePersistedLabels: possiblePersistedLabels,
             proposedLabels: proposedLabels,
-            fieldWriteVersions: fieldWriteVersions
+            fieldWriteVersions: fieldWriteVersions,
+            writeWasAttempted: writeWasAttempted
         ))
         mutations.metadataMutations[issueID] = state
         return MetadataMutationHandle(
@@ -211,6 +213,31 @@ extension BeadStore {
             generation: mutations.metadataMutationGeneration,
             possiblePersistedLabels: possiblePersistedLabels
         )
+    }
+
+    /// Marks the point immediately before a bulk command is enqueued. Bulk editors
+    /// register all optimistic patches up front, but cancelled, never-started work
+    /// must not be treated as possibly persisted on disk.
+    @discardableResult
+    internal func markMetadataMutationWriteAttempted(
+        issueID: String,
+        mutationID: UUID
+    ) -> Bool {
+        guard var state = mutations.metadataMutations[issueID],
+              let index = state.pendingMutations.firstIndex(where: { $0.id == mutationID })
+        else { return false }
+        guard !state.pendingMutations[index].writeWasAttempted else { return true }
+
+        if let proposedLabels = state.pendingMutations[index].proposedLabels {
+            mutations.recordPossiblyPersistedLabels(state.confirmedIssue.labels, for: issueID)
+            state.pendingMutations[index].possiblePersistedLabels = mutations.possiblyPersistedLabels(
+                for: issueID
+            )
+            mutations.recordPossiblyPersistedLabels(proposedLabels, for: issueID)
+        }
+        state.pendingMutations[index].writeWasAttempted = true
+        mutations.metadataMutations[issueID] = state
+        return true
     }
 
     private func settleMetadataMutations(
@@ -255,7 +282,8 @@ extension BeadStore {
         guard let completedMutations = state.recordCompletion(id: mutationID, succeeded: succeeded) else {
             return (false, nil)
         }
-        for mutation in completedMutations where mutation.patch.updatesLabels {
+        for mutation in completedMutations
+        where mutation.patch.updatesLabels && mutation.writeWasAttempted {
             if mutation.succeeded == true,
                mutation.patch.confirmsCompleteLabelSetOnSuccess {
                 mutations.confirmPersistedLabels(for: issueID)
@@ -266,7 +294,8 @@ extension BeadStore {
                 )
             }
         }
-        for mutation in state.pendingMutations where mutation.patch.updatesLabels {
+        for mutation in state.pendingMutations
+        where mutation.patch.updatesLabels && mutation.writeWasAttempted {
             mutations.recordPossiblyPersistedLabels(
                 mutation.possiblePersistedLabels + (mutation.proposedLabels ?? []),
                 for: issueID
@@ -956,6 +985,297 @@ extension BeadStore {
             type: type,
             priority: priority,
             deferUntil: deferUntil
+        )
+    }
+
+    /// Adds ordinary labels without replacing existing labels. The command plan is
+    /// explicit here (rather than hidden in the command service) so large selections
+    /// report granular progress, retain successful chunks, and can stop between writes.
+    @discardableResult
+    func addLabels(
+        issueIDs: [String],
+        labels rawLabels: [String],
+        expectedProjectURL: URL? = nil,
+        maximumCommandArgumentBytes: Int = BeadsCommandArguments.safeBulkArgumentByteLimit,
+        progress reportProgress: ((BulkMutationProgress) -> Void)? = nil
+    ) async -> BulkMutationResult {
+        guard let projectURL else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
+                failures: []
+            )
+        }
+        guard expectedProjectURL == nil || expectedProjectURL == projectURL else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .superseded,
+                failures: []
+            )
+        }
+
+        let labels = IssueDraft.normalizedLabels(IssueDraft.normalizedLabelText(rawLabels))
+        guard !labels.isEmpty else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .completed,
+                failures: []
+            )
+        }
+
+        let mutationGeneration = mutations.metadataMutationGeneration
+        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
+        await optimisticMutationQueue.acquire()
+        defer { optimisticMutationQueue.release() }
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .superseded,
+                failures: []
+            )
+        }
+
+        let requestedIssues = Array(Set(issueIDs)).sorted().compactMap { issue(with: $0) }
+        guard !requestedIssues.isEmpty else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .completed,
+                failures: []
+            )
+        }
+        let requestedIDs = requestedIssues.map(\.id)
+        let managedDimensions = stateDimensionsManagedForLabelEditing(issueIDs: requestedIDs)
+        if let propertyDimension = labels.lazy.compactMap(BeadStateLabel.dimension(of:)).first(
+            where: managedDimensions.contains
+        ) {
+            lastError = "\(stateDimensionDisplayName(for: propertyDimension)) is managed as a property. Use Set Property so the change is recorded in Activity."
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .rejected,
+                failures: []
+            )
+        }
+        let labelSet = Set(labels)
+        let targetIssues = requestedIssues.filter { issue in
+            !labelSet.isSubset(of: Set(issue.labels))
+        }
+        guard !targetIssues.isEmpty else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .completed,
+                failures: []
+            )
+        }
+
+        let targetIDs = targetIssues.map(\.id)
+        let targetIDSet = Set(targetIDs)
+        let plans = BeadsCommandArguments.addLabelBatchPlans(
+            ids: targetIDs,
+            labels: labels,
+            maximumArgumentBytes: maximumCommandArgumentBytes
+        )
+        var mutationHandlesByPlan: [[String: MetadataMutationHandle]] = []
+        mutationHandlesByPlan.reserveCapacity(plans.count)
+        for plan in plans {
+            let patch = BeadMetadataMutationPatch(addingLabels: plan.labels)
+            var handles: [String: MetadataMutationHandle] = [:]
+            for issueID in plan.issueIDs {
+                guard let issue = issue(with: issueID) else { continue }
+                handles[issueID] = beginMetadataMutation(
+                    issueID: issueID,
+                    originalIssue: issue,
+                    patch: patch,
+                    writeWasAttempted: false
+                )
+            }
+            mutationHandlesByPlan.append(handles)
+        }
+
+        var mutationProgress = BulkMutationProgress(totalCount: targetIDs.count)
+        reportProgress?(mutationProgress)
+        if Task.isCancelled {
+            for handles in mutationHandlesByPlan {
+                for (issueID, handle) in handles {
+                    _ = settleMetadataMutation(
+                        issueID: issueID,
+                        mutationID: handle.id,
+                        succeeded: false,
+                        applyResolvedState: false
+                    )
+                }
+            }
+            return BulkMutationResult(
+                progress: mutationProgress,
+                outcome: .cancelled,
+                failures: []
+            )
+        }
+
+        let snapshot = currentMutationSnapshot()
+        let optimisticIssues = snapshot.issues.map { issue in
+            guard targetIDSet.contains(issue.id),
+                  let resolved = mutations.metadataMutations[issue.id]?.resolvedIssue
+            else { return issue }
+            return replacingMetadata(.labels, in: issue, with: resolved)
+        }
+        let lifetimeGeneration = beginMutation()
+        defer { endMutation(generation: lifetimeGeneration) }
+        let busyToken = beginPerceptibleBusy(issueIDs: targetIDSet)
+        defer { endPerceptibleBusy(busyToken) }
+        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+
+        var remainingPlanCountByID: [String: Int] = [:]
+        for plan in plans {
+            for issueID in plan.issueIDs {
+                remainingPlanCountByID[issueID, default: 0] += 1
+            }
+        }
+
+        let commands = commands
+        var failures = BulkMutationFailureCollection()
+        var nextPlanIndex = 0
+        var outcome = BulkMutationOutcome.completed
+        var settlementIsValid = true
+
+        while nextPlanIndex < plans.count {
+            if Task.isCancelled {
+                outcome = .cancelled
+                break
+            }
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                outcome = .superseded
+                break
+            }
+
+            let plan = plans[nextPlanIndex]
+            let handles = mutationHandlesByPlan[nextPlanIndex]
+            for issueID in plan.issueIDs {
+                guard let handle = handles[issueID] else {
+                    settlementIsValid = false
+                    continue
+                }
+                settlementIsValid = markMetadataMutationWriteAttempted(
+                    issueID: issueID,
+                    mutationID: handle.id
+                ) && settlementIsValid
+            }
+
+            var succeeded = false
+            do {
+                try await enqueueMutationWrite {
+                    try await commands.addLabelsBatch(
+                        projectURL: projectURL,
+                        ids: plan.issueIDs,
+                        labels: plan.labels
+                    )
+                }
+                succeeded = true
+            } catch {
+                failures.record(issueIDs: plan.issueIDs, error: error)
+            }
+
+            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                outcome = .superseded
+                break
+            }
+            for issueID in plan.issueIDs {
+                guard let handle = handles[issueID] else {
+                    settlementIsValid = false
+                    continue
+                }
+                settlementIsValid = settleMetadataMutation(
+                    issueID: issueID,
+                    mutationID: handle.id,
+                    succeeded: succeeded,
+                    applyResolvedState: false
+                ) && settlementIsValid
+                remainingPlanCountByID[issueID, default: 1] -= 1
+                if remainingPlanCountByID[issueID] == 0 {
+                    mutationProgress.recordCompletion(succeeded: !failures.issueIDs.contains(issueID))
+                }
+            }
+            reportProgress?(mutationProgress)
+            nextPlanIndex += 1
+        }
+
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return BulkMutationResult(
+                progress: mutationProgress,
+                outcome: .superseded,
+                failures: failures.details,
+                failedIssueIDs: failures.failedIssueIDs,
+                failureCount: failures.commandCount
+            )
+        }
+
+        if nextPlanIndex < plans.count {
+            for index in nextPlanIndex..<plans.count {
+                for (issueID, handle) in mutationHandlesByPlan[index] {
+                    settlementIsValid = settleMetadataMutation(
+                        issueID: issueID,
+                        mutationID: handle.id,
+                        succeeded: false,
+                        applyResolvedState: false
+                    ) && settlementIsValid
+                }
+            }
+        }
+        guard settlementIsValid else {
+            requestReconcile()
+            return BulkMutationResult(
+                progress: mutationProgress,
+                outcome: .rejected,
+                failures: failures.details,
+                failedIssueIDs: failures.failedIssueIDs,
+                failureCount: failures.commandCount
+            )
+        }
+
+        let finalSnapshot = currentMutationSnapshot()
+        let finalIssues = finalSnapshot.issues.map { issue in
+            guard targetIDSet.contains(issue.id) else { return issue }
+            let resolved = mutations.metadataMutations[issue.id]?.resolvedIssue
+                ?? mutations.metadataSettlement(for: issue.id)?.issue
+                ?? issue
+            return replacingMetadata(.labels, in: issue, with: resolved)
+        }
+        applyOptimisticState(issues: finalIssues, dependencies: finalSnapshot.dependencies)
+        if nextPlanIndex > 0 {
+            reconcileState.request(.mutation)
+        }
+
+        if mutationProgress.succeededCount > 0 {
+            announceCompletion(
+                mutationProgress.succeededCount == 1
+                    ? "Added labels to 1 bead"
+                    : "Added labels to \(mutationProgress.succeededCount) beads"
+            )
+        }
+        let failedIssueIDs = failures.failedIssueIDs
+        if !failures.isEmpty {
+            let baseline = retryBaseline(for: failedIssueIDs)
+            reportBulkMutationFailure(
+                failures,
+                title: failedIssueIDs.count == 1
+                    ? "Couldn't add labels to 1 bead"
+                    : "Couldn't add labels to \(failedIssueIDs.count) beads",
+                retry: { [weak self] in
+                    guard let self, self.retryBaselineHolds(baseline) else { return }
+                    _ = await self.addLabels(
+                        issueIDs: failedIssueIDs,
+                        labels: labels,
+                        expectedProjectURL: projectURL,
+                        maximumCommandArgumentBytes: maximumCommandArgumentBytes
+                    )
+                }
+            )
+        }
+        return BulkMutationResult(
+            progress: mutationProgress,
+            outcome: outcome,
+            failures: failures.details,
+            failedIssueIDs: failedIssueIDs,
+            failureCount: failures.commandCount
         )
     }
 

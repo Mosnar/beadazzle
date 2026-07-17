@@ -267,6 +267,7 @@ final class BeadDetailStore {
 enum BeadLabelMutation: Sendable {
     case replace([String])
     case replaceOrdinary([String], preservingDimensions: [String])
+    case add([String])
     case setState(dimension: String, value: String)
 
     /// Only a complete replacement can prove that every previously attempted
@@ -287,9 +288,16 @@ enum BeadLabelMutation: Sendable {
                 with: ordinaryLabels,
                 preserving: dimensions
             )
+        case .add(let additions):
+            Self.uniqueLabels(labels + additions)
         case .setState(let dimension, let value):
             BeadStateLabel.applying(dimension: dimension, value: value, to: labels)
         }
+    }
+
+    private static func uniqueLabels(_ labels: [String]) -> [String] {
+        var seen: Set<String> = []
+        return labels.filter { seen.insert($0).inserted }
     }
 }
 
@@ -347,6 +355,14 @@ struct BeadMetadataMutationPatch {
         updatesAssignee = false
         assignee = nil
         labelMutation = .setState(dimension: stateDimension, value: value)
+        dueAt = .unchanged
+        deferUntil = .unchanged
+    }
+
+    init(addingLabels labels: [String]) {
+        updatesAssignee = false
+        assignee = nil
+        labelMutation = .add(labels)
         dueAt = .unchanged
         deferUntil = .unchanged
     }
@@ -453,9 +469,10 @@ struct BeadMetadataSettlementState {
 struct BeadPendingMetadataMutation {
     let id: UUID
     let patch: BeadMetadataMutationPatch
-    let possiblePersistedLabels: [String]
+    var possiblePersistedLabels: [String]
     let proposedLabels: [String]?
     let fieldWriteVersions: BeadMetadataFieldVersions
+    var writeWasAttempted: Bool
     var succeeded: Bool?
 
     init(
@@ -464,6 +481,7 @@ struct BeadPendingMetadataMutation {
         possiblePersistedLabels: [String] = [],
         proposedLabels: [String]? = nil,
         fieldWriteVersions: BeadMetadataFieldVersions = .init(),
+        writeWasAttempted: Bool = true,
         succeeded: Bool? = nil
     ) {
         self.id = id
@@ -471,6 +489,7 @@ struct BeadPendingMetadataMutation {
         self.possiblePersistedLabels = possiblePersistedLabels
         self.proposedLabels = proposedLabels
         self.fieldWriteVersions = fieldWriteVersions
+        self.writeWasAttempted = writeWasAttempted
         self.succeeded = succeeded
     }
 }

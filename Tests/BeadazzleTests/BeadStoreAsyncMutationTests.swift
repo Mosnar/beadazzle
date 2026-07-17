@@ -2887,6 +2887,338 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.first?.reason, "Design proven")
     }
 
+    func testBulkAddLabelsPreservesExistingLabelsAndUsesOneAdditiveCommand() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design","keeper"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["existing"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let result = await store.addLabels(
+            issueIDs: ["bd-2", "bd-1"],
+            labels: ["new", "second"]
+        )
+
+        XCTAssertTrue(result.isSuccessful)
+        XCTAssertEqual(result.progress, BulkMutationProgress(
+            completedCount: 2,
+            totalCount: 2,
+            succeededCount: 2,
+            failedCount: 0
+        ))
+        XCTAssertEqual(
+            Set(store.issue(with: "bd-1")?.labels ?? []),
+            ["phase:design", "keeper", "new", "second"]
+        )
+        XCTAssertEqual(
+            Set(store.issue(with: "bd-2")?.labels ?? []),
+            ["existing", "new", "second"]
+        )
+        let calls = await commands.addLabelsCalls
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.ids, ["bd-1", "bd-2"])
+        XCTAssertEqual(calls.first?.labels, ["new", "second"])
+    }
+
+    func testBulkAddLabelsSkipsBeadsThatAlreadyHaveEveryLabel() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["new"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let result = await store.addLabels(issueIDs: ["bd-1", "bd-2"], labels: ["new"])
+
+        XCTAssertTrue(result.isSuccessful)
+        XCTAssertEqual(result.progress.totalCount, 1)
+
+        let calls = await commands.addLabelsCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-2"]])
+    }
+
+    func testBulkAddLabelsFailureRollsBackEveryTargetAndUsesStandardRetry() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["one"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["two"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setAddLabelsError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let result = await store.addLabels(issueIDs: ["bd-1", "bd-2"], labels: ["new"])
+
+        XCTAssertFalse(result.isSuccessful)
+        XCTAssertEqual(result.progress.failedCount, 2)
+        XCTAssertEqual(store.issue(with: "bd-1")?.labels, ["one"])
+        XCTAssertEqual(store.issue(with: "bd-2")?.labels, ["two"])
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't add labels to 2 beads")
+        XCTAssertTrue(store.currentFailure?.isRetryable == true)
+    }
+
+    func testBulkAddLabelsKeepsSuccessfulChunksAndRetriesOnlyFailedBeads() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["one"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["two"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setAddLabelsErrors([
+            nil,
+            BeadError.commandFailed(command: "bd update bd-2 --add-label new", output: "second batch failed")
+        ])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let result = await store.addLabels(
+            issueIDs: ["bd-1", "bd-2"],
+            labels: ["new"],
+            maximumCommandArgumentBytes: 28
+        )
+
+        XCTAssertFalse(result.isSuccessful)
+        XCTAssertEqual(result.outcome, .completed)
+        XCTAssertEqual(result.progress.succeededCount, 1)
+        XCTAssertEqual(result.progress.failedCount, 1)
+        XCTAssertEqual(result.failedIssueIDs, ["bd-2"])
+        XCTAssertEqual(Set(store.issue(with: "bd-1")?.labels ?? []), ["one", "new"])
+        XCTAssertEqual(store.issue(with: "bd-2")?.labels, ["two"])
+        var calls = await commands.addLabelsCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"], ["bd-2"]])
+        XCTAssertEqual(store.currentFailure?.command, "bd update bd-2 --add-label new")
+        XCTAssertEqual(store.currentFailure?.output, "second batch failed")
+
+        await commands.setAddLabelsErrors([nil])
+        store.retryCurrentFailure()
+        try await waitUntilAsync { await commands.addLabelsCalls.count == 3 }
+
+        calls = await commands.addLabelsCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"], ["bd-2"], ["bd-2"]])
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testBulkAddLabelsStopsBeforeNextChunkAndKeepsCompletedChanges() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setAddLabelsDelays([.milliseconds(300)])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let task = Task { @MainActor in
+            await store.addLabels(
+                issueIDs: ["bd-1", "bd-2"],
+                labels: ["new"],
+                maximumCommandArgumentBytes: 28
+            )
+        }
+        try await waitUntilAsync { await commands.addLabelsCalls.count == 1 }
+        task.cancel()
+
+        let result = await task.value
+        XCTAssertEqual(result.outcome, .cancelled)
+        XCTAssertEqual(result.progress.completedCount, 1)
+        XCTAssertEqual(result.progress.succeededCount, 1)
+        XCTAssertEqual(result.progress.remainingCount, 1)
+        XCTAssertEqual(Set(store.issue(with: "bd-1")?.labels ?? []), ["new"])
+        XCTAssertEqual(store.issue(with: "bd-2")?.labels, [])
+        let calls = await commands.addLabelsCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"]])
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testBulkAddLabelsRejectsManagedPropertyLabelsBeforeRunningCommand() async throws {
+        let projectURL = try makeProject(
+            #"{"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design","keeper"]}"#
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        XCTAssertTrue(store.pinStateDimension("phase"))
+
+        let result = await store.addLabels(issueIDs: ["bd-1"], labels: ["phase:ready"])
+
+        XCTAssertFalse(result.isSuccessful)
+        XCTAssertEqual(result.outcome, .rejected)
+        XCTAssertEqual(Set(store.issue(with: "bd-1")?.labels ?? []), ["phase:design", "keeper"])
+        XCTAssertTrue(store.currentFailure?.message.contains("Use Set Property") == true)
+        let calls = await commands.addLabelsCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testBulkSetStateContinuesAfterFailureAndRetriesOnlyFailedBeads() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-3","title":"Three","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:implementation"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateErrors([nil, StoreMutationTestError.commandFailed])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-3") != nil }
+        var completedCounts: [Int] = []
+        var totalCounts: [Int] = []
+
+        let result = await store.bulkSetState(
+            issueIDs: ["bd-3", "bd-2", "bd-1"],
+            dimension: "phase",
+            value: "implementation",
+            reason: "Ready",
+            progress: { progress in
+                completedCounts.append(progress.completedCount)
+                totalCounts.append(progress.totalCount)
+            }
+        )
+
+        XCTAssertFalse(result.isSuccessful)
+        XCTAssertEqual(result.progress.succeededCount, 1)
+        XCTAssertEqual(result.progress.failedCount, 1)
+        XCTAssertEqual(BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-1")?.labels ?? []), "implementation")
+        XCTAssertEqual(BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-2")?.labels ?? []), "design")
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't set phase on 1 bead")
+        var calls = await commands.setStateCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-1", "bd-2"])
+        XCTAssertEqual(calls.map(\.reason), ["Ready", "Ready"])
+        XCTAssertEqual(completedCounts, [0, 1, 2])
+        XCTAssertEqual(totalCounts, [2, 2, 2])
+
+        await commands.setSetStateErrors([nil])
+        store.retryCurrentFailure()
+        try await waitUntilAsync { await commands.setStateCalls.count == 3 }
+
+        calls = await commands.setStateCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-1", "bd-2", "bd-2"])
+        XCTAssertEqual(BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-2")?.labels ?? []), "implementation")
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testBulkSetStateStopsEnqueuingOldProjectCommandsAfterProjectSwitch() async throws {
+        let firstProjectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-3","title":"Three","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let secondProjectURL = try makeProject(issueLine(id: "other-1", title: "Other"))
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateDelays([.milliseconds(400)])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-3") != nil }
+
+        let task = Task { @MainActor in
+            await store.bulkSetState(
+                issueIDs: ["bd-1", "bd-2", "bd-3"],
+                dimension: "phase",
+                value: "implementation"
+            )
+        }
+        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        store.openProject(secondProjectURL)
+
+        let result = await task.value
+        XCTAssertFalse(result.isSuccessful)
+        XCTAssertEqual(result.outcome, .superseded)
+        let calls = await commands.setStateCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-1"])
+        XCTAssertEqual(store.projectURL, secondProjectURL)
+    }
+
+    func testBulkSetStateStopsBeforeNextBeadAndRestoresUnattemptedOverrides() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-3","title":"Three","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateDelays([.milliseconds(300)])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-3") != nil }
+
+        let task = Task { @MainActor in
+            await store.bulkSetState(
+                issueIDs: ["bd-1", "bd-2", "bd-3"],
+                dimension: "phase",
+                value: "implementation"
+            )
+        }
+        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        task.cancel()
+
+        let result = await task.value
+        XCTAssertEqual(result.outcome, .cancelled)
+        XCTAssertEqual(result.progress.completedCount, 1)
+        XCTAssertEqual(result.progress.succeededCount, 1)
+        XCTAssertEqual(result.progress.remainingCount, 2)
+        let calls = await commands.setStateCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-1"])
+        XCTAssertEqual(BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-1")?.labels ?? []), "implementation")
+        XCTAssertEqual(BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-2")?.labels ?? []), "design")
+        XCTAssertEqual(BeadStateLabel.value(of: "phase", in: store.issue(with: "bd-3")?.labels ?? []), "design")
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testBulkSetStateReportsEveryFailedCommand() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateErrors([
+            BeadError.commandFailed(command: "bd set-state bd-1 phase=ready", output: "first failure"),
+            BeadError.commandFailed(command: "bd set-state bd-2 phase=ready", output: "second failure")
+        ])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let result = await store.bulkSetState(
+            issueIDs: ["bd-1", "bd-2"],
+            dimension: "phase",
+            value: "ready"
+        )
+
+        XCTAssertFalse(result.isSuccessful)
+        XCTAssertEqual(result.failures.count, 2)
+        XCTAssertEqual(result.progress.failedCount, 2)
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't set phase on 2 beads")
+        XCTAssertTrue(store.currentFailure?.message.contains("2 commands failed") == true)
+        XCTAssertTrue(store.currentFailure?.output?.contains("bd set-state bd-1 phase=ready") == true)
+        XCTAssertTrue(store.currentFailure?.output?.contains("first failure") == true)
+        XCTAssertTrue(store.currentFailure?.output?.contains("bd set-state bd-2 phase=ready") == true)
+        XCTAssertTrue(store.currentFailure?.output?.contains("second failure") == true)
+    }
+
     func testSetStateFailureRollsBackOptimisticLabelSwap() async throws {
         let projectURL = try makeProject(
             """
@@ -3530,6 +3862,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     ] = []
     private(set) var setParentCalls: [(projectURL: URL, issueID: String, parentID: String?)] = []
     private(set) var setStateCalls: [(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?)] = []
+    private(set) var addLabelsCalls: [(projectURL: URL, ids: [String], labels: [String])] = []
     private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var mutationEvents: [String] = []
     private(set) var loadGateDetailCalls: [(projectURL: URL, id: String)] = []
@@ -3560,6 +3893,8 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var setParentErrors: [Error?] = []
     private var setStateDelays: [Duration?] = []
     private var setStateErrors: [Error?] = []
+    private var addLabelsDelays: [Duration?] = []
+    private var addLabelsErrors: [Error?] = []
     private var exportError: Error?
     private var commentsByIssueID: [String: [BeadComment]] = [:]
     private var commentLoadError: Error?
@@ -3648,6 +3983,18 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setSetStateDelays(_ delays: [Duration?]) {
         setStateDelays = delays
+    }
+
+    func setAddLabelsError(_ error: Error?) {
+        addLabelsErrors = [error]
+    }
+
+    func setAddLabelsErrors(_ errors: [Error?]) {
+        addLabelsErrors = errors
+    }
+
+    func setAddLabelsDelays(_ delays: [Duration?]) {
+        addLabelsDelays = delays
     }
 
     func setSetParentErrors(_ errors: [Error?]) {
@@ -3824,6 +4171,17 @@ private actor RecordingBeadsCommands: BeadsCommanding {
             throw error
         }
         mutationEvents.append("state:\(issueID):\(dimension)=\(value)")
+    }
+
+    func addLabels(projectURL: URL, ids: [String], labels: [String]) async throws {
+        addLabelsCalls.append((projectURL: projectURL, ids: ids, labels: labels))
+        if !addLabelsDelays.isEmpty, let delay = addLabelsDelays.removeFirst() {
+            try await Task.sleep(for: delay)
+        }
+        if !addLabelsErrors.isEmpty, let error = addLabelsErrors.removeFirst() {
+            throw error
+        }
+        mutationEvents.append("labels:\(ids.joined(separator: ","))")
     }
 
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {
