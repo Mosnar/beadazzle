@@ -110,6 +110,83 @@ final class BeadProjectLoaderTests: XCTestCase {
         XCTAssertTrue(loadedProject.index.semantics.typeNames.contains("custom"))
     }
 
+    func testLoadProjectReadsResolvedTrackerDirectoryInsteadOfProjectLocalBeads() async throws {
+        let projectURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RedirectedProject-\(UUID().uuidString)", isDirectory: true)
+        let trackerURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RedirectedTracker-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: trackerURL, withIntermediateDirectories: true)
+        try issueLine(id: "bd-routed", title: "Resolved", status: "open", type: "task")
+            .write(to: trackerURL.appendingPathComponent("issues.jsonl"), atomically: true, encoding: .utf8)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: projectURL)
+            try? FileManager.default.removeItem(at: trackerURL)
+        }
+        let commands = MetadataTestCommands(beadsDirectoryURL: trackerURL)
+
+        let loaded = try await BeadProjectLoader(commands: commands).loadProject(projectURL: projectURL)
+
+        XCTAssertEqual(loaded.environment.beadsDirectoryURL, trackerURL.standardizedFileURL)
+        XCTAssertEqual(loaded.source.url, trackerURL.appendingPathComponent("issues.jsonl"))
+        XCTAssertEqual(loaded.index.issue(with: "bd-routed")?.title, "Resolved")
+    }
+
+    func testRoutineReloadWithCachedEnvironmentDoesNotProbeContextAgain() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "open", type: "task")
+        )
+        let counter = CommandCallCounter()
+        let commands = MetadataTestCommands(callCounter: counter)
+        let loader = BeadProjectLoader(commands: commands)
+        let initial = try await loader.loadProject(projectURL: projectURL)
+
+        _ = try await loader.loadProject(
+            projectURL: projectURL,
+            cachedDefinitions: initial.definitions,
+            cachedEnvironment: initial.environment
+        )
+
+        XCTAssertEqual(counter.contextReads, 1, "routine reloads must reuse the resolved environment")
+    }
+
+    func testServerProjectUsesExistingSnapshotWhenInitialExportFails() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "open", type: "task")
+        )
+        let commands = MetadataTestCommands(
+            exportError: MetadataTestError.failed,
+            doltMode: "server"
+        )
+
+        let loaded = try await BeadProjectLoader(commands: commands).loadProject(projectURL: projectURL)
+
+        XCTAssertEqual(loaded.index.issue(with: "bd-1")?.title, "One")
+        XCTAssertNotNil(loaded.snapshotRefreshWarning)
+    }
+
+    func testServerProjectDoesNotRepeatFailedInitialExportWhenNoSnapshotExists() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "open", type: "task")
+        )
+        try FileManager.default.removeItem(
+            at: projectURL.appendingPathComponent(".beads/issues.jsonl")
+        )
+        let counter = CommandCallCounter()
+        let commands = MetadataTestCommands(
+            callCounter: counter,
+            exportError: MetadataTestError.failed,
+            doltMode: "server"
+        )
+
+        do {
+            _ = try await BeadProjectLoader(commands: commands).loadProject(projectURL: projectURL)
+            XCTFail("Expected the failed server export to be reported.")
+        } catch {
+            XCTAssertEqual(counter.exportCalls, 1)
+        }
+    }
+
     private func makeProject(_ issuesJSONL: String) throws -> URL {
         let projectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeadProjectLoaderTests-\(UUID().uuidString)", isDirectory: true)
@@ -139,6 +216,20 @@ private final class CommandCallCounter: @unchecked Sendable {
     private var _definitionReadNames: [String] = []
     private var activeDefinitionReads = 0
     private var _maxConcurrentDefinitionReads = 0
+    private var _contextReads = 0
+    private var _exportCalls = 0
+
+    func recordContextRead() {
+        lock.lock()
+        _contextReads += 1
+        lock.unlock()
+    }
+
+    func recordExport() {
+        lock.lock()
+        _exportCalls += 1
+        lock.unlock()
+    }
 
     func beginDefinitionRead(_ name: String) {
         lock.lock()
@@ -172,6 +263,18 @@ private final class CommandCallCounter: @unchecked Sendable {
         defer { lock.unlock() }
         return _maxConcurrentDefinitionReads
     }
+
+    var contextReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _contextReads
+    }
+
+    var exportCalls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _exportCalls
+    }
 }
 
 private struct MetadataTestCommands: BeadsCommanding {
@@ -179,10 +282,27 @@ private struct MetadataTestCommands: BeadsCommanding {
     var typeDefinitions: Result<[BeadTypeDefinition], Error> = .success([])
     var callCounter: CommandCallCounter? = nil
     var definitionReadDelay: Duration? = nil
+    var beadsDirectoryURL: URL? = nil
+    var exportError: Error? = nil
+    var doltMode = "embedded"
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
-    func exportReadableSnapshot(projectURL: URL) async throws {}
+    func exportReadableSnapshot(projectURL: URL) async throws {
+        callCounter?.recordExport()
+        if let exportError {
+            throw exportError
+        }
+    }
+
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        callCounter?.recordContextRead()
+        return .testContext(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            doltMode: doltMode
+        )
+    }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
 

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    @Environment(\.scenePhase) private var scenePhase
     private var project: BeadProjectStore { store.project }
     private var workspace: BeadWorkspaceStore { store.workspace }
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -34,7 +35,7 @@ struct ContentView: View {
                     Label("New Bead", systemImage: "plus")
                 }
                 .disabled(!store.canCreateBead)
-                .help(workspace.selectedBookmark == .gates ? "Gates are created from a bead's ⋯ menu, not here" : "New Bead")
+                .help(newBeadHelp)
 
                 BulkActionsMenu(
                     requestDeleteSelected: requestDeleteSelected,
@@ -107,11 +108,22 @@ struct ContentView: View {
             savedViewEditorRequest = nil
             bulkEditRequest = nil
         }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            store.refreshServerProjectOnActivation()
+        }
         .onChange(of: workspace.requestedSavedViewEditorID) { _, id in
             guard let id else { return }
             savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
             store.clearRequestedSavedViewEditor()
         }
+    }
+
+    private var newBeadHelp: String {
+        if workspace.selectedBookmark == .gates {
+            return "Gates are created from a bead's ⋯ menu, not here"
+        }
+        return "New Bead"
     }
 
     private func workspaceView(searchText: Binding<String>) -> some View {
@@ -211,6 +223,26 @@ struct ContentView: View {
                     onOpenProject: openProject
                 )
             }
+        case .unsupportedProject:
+            if let unsupportedProject = project.projectReadiness.unsupportedProject {
+                UnsupportedProjectView(
+                    projectURL: unsupportedProject.url,
+                    detail: unsupportedProject.detail,
+                    isRetrying: project.isLoading,
+                    onRetry: store.refresh,
+                    onOpenProject: openProject
+                )
+            }
+        case .projectUnavailable:
+            if let unavailableProject = project.projectReadiness.unavailableProject {
+                ProjectUnavailableView(
+                    projectURL: unavailableProject.url,
+                    detail: unavailableProject.detail,
+                    isRetrying: project.isLoading,
+                    onRetry: store.refresh,
+                    onOpenProject: openProject
+                )
+            }
         case .splitDetail, .fullPageDetail, .creation:
             DetailView(requestClose: requestClose)
         case .listOnly:
@@ -223,7 +255,9 @@ struct ContentView: View {
             selectionCount: workspace.selectedIDs.count,
             isFullPageDetailPresented: workspace.fullPageDetailIssueID != nil,
             hasCreationDraft: store.creationDraft != nil,
-            hasMissingDataSource: project.projectReadiness.missingDataSourceURL != nil
+            hasMissingDataSource: project.projectReadiness.missingDataSourceURL != nil,
+            hasUnavailableProject: project.projectReadiness.unavailableProject != nil,
+            hasUnsupportedProject: project.projectReadiness.unsupportedProject != nil
         )
     }
 
@@ -488,6 +522,8 @@ enum WorkspacePresentation: Equatable {
     case fullPageDetail
     case creation
     case missingDataSource
+    case projectUnavailable
+    case unsupportedProject
 
     var showsDetail: Bool {
         self != .listOnly
@@ -497,13 +533,13 @@ enum WorkspacePresentation: Equatable {
         switch self {
         case .listOnly, .splitDetail:
             true
-        case .fullPageDetail, .creation, .missingDataSource:
+        case .fullPageDetail, .creation, .missingDataSource, .projectUnavailable, .unsupportedProject:
             false
         }
     }
 
     var keepsProjectSelectorVisible: Bool {
-        self == .missingDataSource
+        self == .missingDataSource || self == .projectUnavailable || self == .unsupportedProject
     }
 }
 
@@ -524,8 +560,16 @@ enum ContentLayout {
         selectionCount: Int,
         isFullPageDetailPresented: Bool,
         hasCreationDraft: Bool,
-        hasMissingDataSource: Bool = false
+        hasMissingDataSource: Bool = false,
+        hasUnavailableProject: Bool = false,
+        hasUnsupportedProject: Bool = false
     ) -> WorkspacePresentation {
+        if hasUnsupportedProject {
+            return .unsupportedProject
+        }
+        if hasUnavailableProject {
+            return .projectUnavailable
+        }
         if hasMissingDataSource {
             return .missingDataSource
         }

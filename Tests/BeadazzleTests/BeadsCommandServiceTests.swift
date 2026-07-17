@@ -2,6 +2,16 @@ import XCTest
 @testable import Beadazzle
 
 final class BeadsCommandServiceTests: XCTestCase {
+    func testContextMissingDirectoryDetectionUsesCurrentCLIError() {
+        XCTAssertTrue(BeadsCommandService.contextReportsMissingBeadsDirectory("""
+        {
+          "error": "cannot resolve repo context: no .beads directory found",
+          "schema_version": 1
+        }
+        """))
+        XCTAssertFalse(BeadsCommandService.contextReportsMissingBeadsDirectory("bd context timed out"))
+    }
+
     func testCreatedIssueIDParsesLastNonEmptyOutputLine() throws {
         let issueID = try BeadsCommandService.createdIssueID(from: "\nbeadazzle-created\n")
 
@@ -90,6 +100,39 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertTrue(contents.contains(#""id":"bd-exported""#))
         XCTAssertFalse(contents.contains("bd-existing"))
         XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
+    func testExportReadableSnapshotUsesResolvedTrackerDirectory() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let trackerDirectory = projectURL.appendingPathComponent("redirected-tracker", isDirectory: true)
+        try FileManager.default.createDirectory(at: trackerDirectory, withIntermediateDirectories: true)
+        let localSnapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+        let redirectedSnapshotURL = trackerDirectory.appendingPathComponent("issues.jsonl")
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            printf '%s\n' '{"_type":"issue","id":"bd-redirected","title":"Redirected","status":"open","priority":1,"issue_type":"task"}' > "$1"
+            exit 0
+          fi
+          shift
+        done
+        exit 2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        try await service.exportReadableSnapshot(
+            projectURL: projectURL,
+            beadsDirectoryURL: trackerDirectory
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localSnapshotURL.path))
+        XCTAssertTrue(try String(contentsOf: redirectedSnapshotURL, encoding: .utf8).contains("bd-redirected"))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: trackerDirectory.path)
+                .contains { $0.hasPrefix("issues.jsonl.tmp.") }
+        )
     }
 
     func testExportReadableSnapshotPreservesExistingSnapshotWhenExportTimesOut() async throws {
@@ -261,6 +304,9 @@ final class BeadsCommandServiceTests: XCTestCase {
           federation.remote)
             printf 'federation.remote (not set in config.yaml)\\n'
             ;;
+          no-git-ops)
+            printf 'true\\n'
+            ;;
           *)
             printf 'unexpected key: %s\\n' "$key" >&2
             exit 3
@@ -279,6 +325,7 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertEqual(config.importAuto, false)
         XCTAssertNil(config.federationRemote)
         XCTAssertNil(config.federationRemoteStatus.errorMessage)
+        XCTAssertTrue(config.usesStealthMode)
     }
 
     func testUnsetConfigOutputParsesAsNil() {

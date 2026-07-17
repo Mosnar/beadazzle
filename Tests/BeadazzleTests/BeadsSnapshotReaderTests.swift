@@ -1,4 +1,3 @@
-import CSQLite
 import XCTest
 @testable import Beadazzle
 
@@ -70,32 +69,25 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(gate.blocksIssueID, "bd-target")
     }
 
-    func testPopulatedSQLiteWinsOverJSONL() throws {
+    func testCurrentJSONLIgnoresLegacyDatabaseFile() throws {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": issueLine(id: "bd-jsonl", title: "From JSONL")
         ])
-        try createSQLiteDatabase(at: projectURL.appendingPathComponent(".beads/beads.db"), issueID: "bd-sqlite")
-
-        let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
-
-        XCTAssertEqual(loaded.source.kind, .sqlite)
-        XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-sqlite"])
-    }
-
-    func testEmptySQLiteFallsBackToJSONL() throws {
-        let projectURL = try makeProject(jsonlFiles: [
-            "issues.jsonl": issueLine(id: "bd-jsonl", title: "From JSONL")
-        ])
-        FileManager.default.createFile(
-            atPath: projectURL.appendingPathComponent(".beads/beads.db").path,
-            contents: nil
-        )
+        try Data("legacy".utf8).write(to: projectURL.appendingPathComponent(".beads/beads.db"))
 
         let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
 
         XCTAssertEqual(loaded.source.kind, .jsonl)
-        XCTAssertEqual(loaded.source.url.lastPathComponent, "issues.jsonl")
         XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-jsonl"])
+    }
+
+    func testLegacyDatabaseOnlyIsNotDiscovered() throws {
+        let projectURL = try makeProject(jsonlFiles: [:])
+        try Data("legacy".utf8).write(to: projectURL.appendingPathComponent(".beads/beads.db"))
+
+        XCTAssertThrowsError(try BeadsDataSourceDiscovery().discover(projectURL: projectURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("No readable current Beads snapshot"))
+        }
     }
 
     func testJSONLFilenamePriorityIsDeterministic() throws {
@@ -115,7 +107,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         let projectURL = try makeProject(jsonlFiles: [:])
 
         XCTAssertThrowsError(try BeadsDataSourceDiscovery().discover(projectURL: projectURL)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("No readable Beads snapshot"))
+            XCTAssertTrue(error.localizedDescription.contains("No readable current Beads snapshot"))
         }
     }
 
@@ -212,52 +204,6 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-good"])
     }
 
-    func testSQLiteSnapshotLoadsDependenciesCommentCountsAndLabels() throws {
-        let projectURL = try makeProject(jsonlFiles: [:])
-        try createSQLiteDatabase(
-            at: projectURL.appendingPathComponent(".beads/beads.db"),
-            issueID: "bd-sqlite",
-            includeRelatedRecords: true
-        )
-
-        let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
-        let issue = try XCTUnwrap(loaded.snapshot.issues.first { $0.id == "bd-sqlite" })
-
-        XCTAssertEqual(loaded.source.kind, .sqlite)
-        XCTAssertEqual(issue.labels, ["reader", "sqlite"])
-        XCTAssertEqual(issue.dependencyCount, 1)
-        XCTAssertEqual(issue.commentCount, 1)
-        XCTAssertEqual(loaded.snapshot.dependencies.first?.dependsOnID, "bd-blocker")
-        XCTAssertTrue(loaded.snapshot.commentsByIssueID.isEmpty)
-    }
-
-    func testSQLiteSnapshotUsesIssueCommentCountWhenCommentsTableIsUnavailable() throws {
-        let projectURL = try makeProject(jsonlFiles: [:])
-        try createSQLiteDatabaseWithIssueCommentCount(
-            at: projectURL.appendingPathComponent(".beads/beads.db"),
-            issueID: "bd-sqlite-count",
-            commentCount: 4
-        )
-
-        let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
-
-        XCTAssertEqual(loaded.snapshot.issues.first?.commentCount, 4)
-        XCTAssertTrue(loaded.snapshot.commentsByIssueID.isEmpty)
-    }
-
-    func testSourceDiscoverySwitchesFromJSONLToPopulatedSQLite() throws {
-        let projectURL = try makeProject(jsonlFiles: [
-            "issues.jsonl": issueLine(id: "bd-jsonl", title: "From JSONL")
-        ])
-        let discovery = BeadsDataSourceDiscovery()
-
-        XCTAssertEqual(try discovery.discover(projectURL: projectURL).kind, .jsonl)
-
-        try createSQLiteDatabase(at: projectURL.appendingPathComponent(".beads/beads.db"), issueID: "bd-sqlite")
-
-        XCTAssertEqual(try discovery.discover(projectURL: projectURL).kind, .sqlite)
-    }
-
     func testDataSourceMonitorDebouncesRapidFileEvents() async throws {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": issueLine(id: "bd-1", title: "One")
@@ -295,7 +241,10 @@ final class BeadsSnapshotReaderTests: XCTestCase {
                 issueLine(id: "bd-delete", title: "Delete")
             ].joined(separator: "\n")
         ])
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands { _ in }
+        )
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.count(for: .all) == 2 }
 
@@ -312,17 +261,102 @@ final class BeadsSnapshotReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testStoreMarksMissingDataSourceWithoutAlert() throws {
+    func testStoreMarksMissingDataSourceWithoutAlert() async throws {
         let projectURL = try makeDirectoryWithoutBeads()
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands { _ in }
+        )
 
         store.openProject(projectURL)
+
+        try await waitUntil {
+            !store.isLoading && store.projectReadiness == .missingDataSource(projectURL.standardizedFileURL)
+        }
 
         XCTAssertEqual(store.projectReadiness, .missingDataSource(projectURL.standardizedFileURL))
         XCTAssertFalse(store.isLoading)
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.currentDataSource, nil)
         XCTAssertEqual(store.recentProjects.first?.path, projectURL.standardizedFileURL.path)
+    }
+
+    @MainActor
+    func testStoreDoesNotOfferInitializationForGenericContextFailure() async throws {
+        let projectURL = try makeDirectoryWithoutBeads()
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands(contextError: .contextFailed) { _ in }
+        )
+
+        store.openProject(projectURL)
+
+        try await waitUntil {
+            !store.isLoading
+                && store.projectReadiness == .projectUnavailable(
+                    projectURL.standardizedFileURL,
+                    TestProjectCommandError.contextFailed.localizedDescription
+                )
+        }
+
+        XCTAssertNil(store.missingDataSourceURL)
+        XCTAssertNil(store.currentDataSource)
+    }
+
+    @MainActor
+    func testStoreSurfacesUnsupportedLegacyProjectWithoutOfferingInitialization() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-legacy", title: "Legacy")
+        ])
+        let detail = "The project reports the sqlite backend. Migrate it to current Dolt storage with bd, then check again."
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands(backend: "sqlite") { _ in }
+        )
+
+        store.openProject(projectURL)
+
+        try await waitUntil {
+            !store.isLoading
+                && store.projectReadiness == .unsupportedProject(projectURL.standardizedFileURL, detail)
+        }
+
+        XCTAssertFalse(store.hasReadableProject)
+        XCTAssertNil(store.currentDataSource)
+        XCTAssertNil(store.lastError)
+    }
+
+    @MainActor
+    func testContributorRoleLeavesCreationAndGateRoutingToBd() async throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": issueLine(id: "bd-parent", title: "Parent")
+        ])
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands(role: "contributor") { _ in }
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-parent") != nil }
+
+        XCTAssertEqual(store.projectEnvironment?.role, .contributor)
+        XCTAssertTrue(store.canCreateBead)
+        XCTAssertTrue(store.canCreateChildBead(parentID: "bd-parent"))
+        XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-parent"))))
+
+        let createdIssueID = await store.createBead(
+            .blank(defaultType: "task", defaultStatus: "open"),
+            revealCreated: false
+        )
+        let createdGate = await store.createGate(
+            blocks: "bd-parent",
+            type: .timer,
+            reason: nil,
+            timeout: "1h",
+            awaitID: nil
+        )
+
+        XCTAssertEqual(createdIssueID, "bd-created")
+        XCTAssertTrue(createdGate)
     }
 
     @MainActor
@@ -361,9 +395,13 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         store.openProject(projectURL)
 
         try await waitUntil {
-            !store.isLoading && store.lastError == TestProjectCommandError.exportFailed.localizedDescription
+            !store.isLoading
+                && store.projectReadiness == .projectUnavailable(
+                    projectURL.standardizedFileURL,
+                    TestProjectCommandError.exportFailed.localizedDescription
+                )
         }
-        XCTAssertEqual(store.projectReadiness, .missingDataSource(projectURL.standardizedFileURL))
+        XCTAssertNil(store.lastError)
         XCTAssertNil(store.currentDataSource)
     }
 
@@ -372,7 +410,10 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": issueLine(id: "bd-1", title: "One")
         ])
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands { _ in }
+        )
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.currentDataSource != nil && store.count(for: .all) == 1 }
 
@@ -655,7 +696,10 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         let projectURL = try makeProject(jsonlFiles: [
             "beads.jsonl": issueLine(id: "bd-legacy", title: "Legacy")
         ])
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: TestBeadsCommands { _ in }
+        )
         store.openProject(projectURL)
         try await waitUntil {
             !store.isLoading
@@ -676,39 +720,26 @@ final class BeadsSnapshotReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testStoreAutoRefreshSwitchesFromJSONLToPopulatedSQLite() async throws {
+    func testServerProjectRefreshesOnActivationWithoutPollingDuplicates() async throws {
         let projectURL = try makeProject(jsonlFiles: [
-            "issues.jsonl": issueLine(id: "bd-jsonl", title: "From JSONL")
+            "issues.jsonl": issueLine(id: "bd-server", title: "Server")
         ])
-        let store = BeadStore(userDefaults: makeUserDefaults())
-        store.openProject(projectURL)
-        try await waitUntil { !store.isLoading && store.currentDataSource?.kind == .jsonl }
-
-        try createSQLiteDatabase(at: projectURL.appendingPathComponent(".beads/beads.db"), issueID: "bd-sqlite")
-
-        try await waitUntil(timeout: 4.0) {
-            store.currentDataSource?.kind == .sqlite && store.count(for: .all) == 1
+        let recorder = ExportCallRecorder()
+        let commands = TestBeadsCommands(doltMode: "server") { _ in
+            recorder.record()
         }
-        XCTAssertEqual(store.issue(with: "bd-sqlite")?.title, "From SQLite")
-    }
-
-    @MainActor
-    func testStoreAutoRefreshSwitchesWhenExistingSQLiteBecomesPopulated() async throws {
-        let projectURL = try makeProject(jsonlFiles: [
-            "issues.jsonl": issueLine(id: "bd-jsonl", title: "From JSONL")
-        ])
-        let sqliteURL = projectURL.appendingPathComponent(".beads/beads.db")
-        try createEmptySQLiteDatabase(at: sqliteURL)
-
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
-        try await waitUntil { !store.isLoading && store.currentDataSource?.kind == .jsonl }
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-server") != nil }
+        XCTAssertEqual(recorder.count, 1, "initial server load should export current state")
 
-        try insertSQLiteIssue(at: sqliteURL, issueID: "bd-sqlite")
+        let activation = Date(timeIntervalSinceReferenceDate: 1_000)
+        store.refreshServerProjectOnActivation(now: activation)
+        try await waitUntil { !store.isLoading && recorder.count == 2 }
 
-        try await waitUntil(timeout: 4.0) {
-            store.currentDataSource?.kind == .sqlite && store.issue(with: "bd-sqlite")?.title == "From SQLite"
-        }
+        store.refreshServerProjectOnActivation(now: activation.addingTimeInterval(1))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(recorder.count, 2, "duplicate activation notifications should be throttled")
     }
 
     private func makeProject(jsonlFiles: [String: String]) throws -> URL {
@@ -753,182 +784,6 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         try contents.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func createEmptySQLiteDatabase(at url: URL) throws {
-        var database: OpaquePointer?
-        guard sqlite3_open(url.path, &database) == SQLITE_OK else {
-            throw TestSQLiteError.openFailed
-        }
-        defer { sqlite3_close(database) }
-
-        try executeSQL(
-            """
-            CREATE TABLE issues (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                description TEXT,
-                design TEXT,
-                acceptance_criteria TEXT,
-                notes TEXT,
-                status TEXT,
-                priority INTEGER,
-                issue_type TEXT,
-                assignee TEXT,
-                owner TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                closed_at TEXT,
-                due_at TEXT,
-                defer_until TEXT,
-                external_ref TEXT,
-                parent_id TEXT,
-                pinned INTEGER,
-                ephemeral INTEGER,
-                is_template INTEGER,
-                deleted_at TEXT
-            );
-            CREATE TABLE labels (issue_id TEXT, label TEXT);
-            CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT, created_at TEXT);
-            CREATE TABLE comments (id TEXT, issue_id TEXT, author TEXT, text TEXT, created_at TEXT, updated_at TEXT);
-            """,
-            database: database
-        )
-    }
-
-    private func createSQLiteDatabase(
-        at url: URL,
-        issueID: String,
-        includeRelatedRecords: Bool = false
-    ) throws {
-        var database: OpaquePointer?
-        guard sqlite3_open(url.path, &database) == SQLITE_OK else {
-            throw TestSQLiteError.openFailed
-        }
-        defer { sqlite3_close(database) }
-
-        try executeSQL(
-            """
-            CREATE TABLE issues (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                description TEXT,
-                design TEXT,
-                acceptance_criteria TEXT,
-                notes TEXT,
-                status TEXT,
-                priority INTEGER,
-                issue_type TEXT,
-                assignee TEXT,
-                owner TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                closed_at TEXT,
-                due_at TEXT,
-                defer_until TEXT,
-                external_ref TEXT,
-                parent_id TEXT,
-                pinned INTEGER,
-                ephemeral INTEGER,
-                is_template INTEGER,
-                deleted_at TEXT
-            );
-            CREATE TABLE labels (issue_id TEXT, label TEXT);
-            CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT, created_at TEXT);
-            CREATE TABLE comments (id TEXT, issue_id TEXT, author TEXT, text TEXT, created_at TEXT, updated_at TEXT);
-            """,
-            database: database
-        )
-        try insertSQLiteIssue(issueID: issueID, database: database)
-
-        guard includeRelatedRecords else { return }
-        try executeSQL(
-            """
-            INSERT INTO issues (
-                id, title, description, design, acceptance_criteria, notes, status, priority,
-                issue_type, assignee, owner, created_at, updated_at, closed_at, due_at,
-                defer_until, external_ref, parent_id, pinned, ephemeral, is_template, deleted_at
-            ) VALUES (
-                'bd-blocker', 'Blocker', '', '', '', '', 'open', 1,
-                'task', NULL, NULL, '2026-07-03T20:58:35Z', '2026-07-03T20:58:35Z', NULL, NULL,
-                NULL, NULL, NULL, 0, 0, 0, NULL
-            );
-            INSERT INTO labels (issue_id, label) VALUES ('\(issueID)', 'reader');
-            INSERT INTO labels (issue_id, label) VALUES ('\(issueID)', 'sqlite');
-            INSERT INTO dependencies (issue_id, depends_on_id, type, created_at)
-            VALUES ('\(issueID)', 'bd-blocker', 'blocks', '2026-07-03T20:58:35Z');
-            INSERT INTO comments (id, issue_id, author, text, created_at, updated_at)
-            VALUES ('comment-1', '\(issueID)', 'Riley', 'SQLite comment', '2026-07-03T20:58:35Z', NULL);
-            """,
-            database: database
-        )
-    }
-
-    private func insertSQLiteIssue(at url: URL, issueID: String) throws {
-        var database: OpaquePointer?
-        guard sqlite3_open(url.path, &database) == SQLITE_OK else {
-            throw TestSQLiteError.openFailed
-        }
-        defer { sqlite3_close(database) }
-
-        try insertSQLiteIssue(issueID: issueID, database: database)
-    }
-
-    private func createSQLiteDatabaseWithIssueCommentCount(
-        at url: URL,
-        issueID: String,
-        commentCount: Int
-    ) throws {
-        var database: OpaquePointer?
-        guard sqlite3_open(url.path, &database) == SQLITE_OK else {
-            throw TestSQLiteError.openFailed
-        }
-        defer { sqlite3_close(database) }
-
-        try executeSQL(
-            """
-            CREATE TABLE issues (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                status TEXT,
-                priority INTEGER,
-                issue_type TEXT,
-                comment_count INTEGER
-            );
-            INSERT INTO issues (id, title, status, priority, issue_type, comment_count)
-            VALUES ('\(issueID)', 'Counted comments', 'open', 1, 'task', \(commentCount));
-            """,
-            database: database
-        )
-    }
-
-    private func insertSQLiteIssue(issueID: String, database: OpaquePointer?) throws {
-        try executeSQL(
-            """
-            INSERT INTO issues (
-                id, title, description, design, acceptance_criteria, notes, status, priority,
-                issue_type, assignee, owner, created_at, updated_at, closed_at, due_at,
-                defer_until, external_ref, parent_id, pinned, ephemeral, is_template, deleted_at
-            ) VALUES (
-                '\(issueID)', 'From SQLite', '', '', '', '', 'open', 1,
-                'task', NULL, NULL, '2026-07-03T20:58:35Z', '2026-07-03T20:58:35Z', NULL, NULL,
-                NULL, NULL, NULL, 0, 0, 0, NULL
-            );
-            """,
-            database: database
-        )
-    }
-
-    private func executeSQL(_ sql: String, database: OpaquePointer?) throws {
-        var errorMessage: UnsafeMutablePointer<Int8>?
-        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
-        guard result == SQLITE_OK else {
-            let message = errorMessage.map { String(cString: $0) } ?? "Unknown SQLite error"
-            if let errorMessage {
-                sqlite3_free(errorMessage)
-            }
-            throw TestSQLiteError.execFailed(message)
-        }
-    }
-
     private func writeBaselineExportMarker(projectURL: URL) throws -> URL {
         let issuesURL = projectURL.appendingPathComponent(".beads/issues.jsonl")
         let exportStateURL = projectURL.appendingPathComponent(".beads/export-state.json")
@@ -956,11 +811,6 @@ final class BeadsSnapshotReaderTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
     }
-}
-
-private enum TestSQLiteError: Error {
-    case openFailed
-    case execFailed(String)
 }
 
 private final class ExportCallRecorder: @unchecked Sendable {
@@ -1012,8 +862,22 @@ private actor ExportExecutionGate {
 
 private struct TestBeadsCommands: BeadsCommanding {
     var exportReadableSnapshotHandler: @Sendable (URL) async throws -> Void
+    var doltMode: String
+    var backend: String
+    var role: String
+    var contextError: TestProjectCommandError?
 
-    init(_ exportReadableSnapshotHandler: @escaping @Sendable (URL) async throws -> Void) {
+    init(
+        doltMode: String = "embedded",
+        backend: String = "dolt",
+        role: String = "maintainer",
+        contextError: TestProjectCommandError? = nil,
+        _ exportReadableSnapshotHandler: @escaping @Sendable (URL) async throws -> Void
+    ) {
+        self.doltMode = doltMode
+        self.backend = backend
+        self.role = role
+        self.contextError = contextError
         self.exportReadableSnapshotHandler = exportReadableSnapshotHandler
     }
 
@@ -1021,6 +885,25 @@ private struct TestBeadsCommands: BeadsCommanding {
 
     func exportReadableSnapshot(projectURL: URL) async throws {
         try await exportReadableSnapshotHandler(projectURL)
+    }
+
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        if let contextError {
+            throw contextError
+        }
+        var isDirectory: ObjCBool = false
+        let beadsDirectoryURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: beadsDirectoryURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw BeadError.projectMissingDataSource(projectURL)
+        }
+        var context = BeadsProjectContext.testContext(
+            projectURL: projectURL,
+            doltMode: doltMode,
+            role: role
+        )
+        context.backend = backend
+        return context
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
@@ -1069,10 +952,16 @@ private struct TestBeadsCommands: BeadsCommanding {
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws {}
 }
 
-private enum TestProjectCommandError: LocalizedError {
+private enum TestProjectCommandError: LocalizedError, Sendable {
     case exportFailed
+    case contextFailed
 
     var errorDescription: String? {
-        "Test export failed"
+        switch self {
+        case .exportFailed:
+            "Test export failed"
+        case .contextFailed:
+            "Test context failed"
+        }
     }
 }

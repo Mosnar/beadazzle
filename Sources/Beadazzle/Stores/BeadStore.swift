@@ -6,6 +6,8 @@ enum BeadProjectReadiness: Equatable {
     case noProject
     case ready
     case missingDataSource(URL)
+    case projectUnavailable(URL, String)
+    case unsupportedProject(URL, String)
 
     var missingDataSourceURL: URL? {
         if case .missingDataSource(let url) = self {
@@ -16,6 +18,20 @@ enum BeadProjectReadiness: Equatable {
 
     var isReady: Bool {
         self == .ready
+    }
+
+    var unsupportedProject: (url: URL, detail: String)? {
+        if case .unsupportedProject(let url, let detail) = self {
+            return (url, detail)
+        }
+        return nil
+    }
+
+    var unavailableProject: (url: URL, detail: String)? {
+        if case .projectUnavailable(let url, let detail) = self {
+            return (url, detail)
+        }
+        return nil
     }
 }
 
@@ -29,6 +45,7 @@ final class BeadProjectStore {
     fileprivate(set) var recentProjects: [RecentProject] = []
     fileprivate(set) var contentRevision = 0
     fileprivate(set) var currentDataSource: BeadsDataSource?
+    fileprivate(set) var projectEnvironment: BeadsProjectEnvironment?
     fileprivate(set) var snapshotFreshness = ProjectSnapshotFreshness.unknown
     fileprivate(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     fileprivate(set) var isLoadingProjectHealth = false
@@ -55,6 +72,7 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var dataSourceMonitor: BeadsDataSourceMonitor?
     @ObservationIgnored fileprivate(set) var monitoredSourceFingerprint: String?
     @ObservationIgnored fileprivate(set) var cachedDefinitions: BeadSemanticDefinitions?
+    @ObservationIgnored fileprivate(set) var lastServerActivationRefreshAt: Date?
     @ObservationIgnored fileprivate(set) var isLoadingProjectPreferences = false
     @ObservationIgnored fileprivate(set) var issueReferenceRevision = 0
 
@@ -757,6 +775,11 @@ final class BeadStore {
     internal var _contentRevision: Int { get { project.contentRevision } set { project.contentRevision = newValue } }
     var currentDataSource: BeadsDataSource? { project.currentDataSource }
     internal var _currentDataSource: BeadsDataSource? { get { project.currentDataSource } set { project.currentDataSource = newValue } }
+    var projectEnvironment: BeadsProjectEnvironment? { project.projectEnvironment }
+    internal var _projectEnvironment: BeadsProjectEnvironment? {
+        get { project.projectEnvironment }
+        set { project.projectEnvironment = newValue }
+    }
     var snapshotFreshness: ProjectSnapshotFreshness { project.snapshotFreshness }
     internal var _snapshotFreshness: ProjectSnapshotFreshness { get { project.snapshotFreshness } set { project.snapshotFreshness = newValue } }
     var projectHealthSnapshot: ProjectHealthSnapshot? { project.projectHealthSnapshot }
@@ -1023,6 +1046,10 @@ final class BeadStore {
     /// after the app edits custom definitions (which set this back to `nil`). A `nil` cache
     /// forces the next reload to re-read from `bd`, so a failed reload naturally retries.
     internal var cachedDefinitions: BeadSemanticDefinitions? { get { project.cachedDefinitions } set { project.cachedDefinitions = newValue } }
+    internal var lastServerActivationRefreshAt: Date? {
+        get { project.lastServerActivationRefreshAt }
+        set { project.lastServerActivationRefreshAt = newValue }
+    }
     internal var commentCache: [String: [BeadComment]] { get { detail.commentCache } set { detail.commentCache = newValue } }
     internal var activityEvents: [BeadIssueEvent] { get { detail.activityEvents } set { detail.activityEvents = newValue } }
     internal var activityLoadedIssueID: String? { get { detail.activityLoadedIssueID } set { detail.activityLoadedIssueID = newValue } }
@@ -1081,7 +1108,8 @@ final class BeadStore {
     /// The Gates section has no free-standing "new" — gates are created on an existing bead
     /// (a bead's ⋯ menu), so plain bead creation is suppressed there.
     var canCreateBead: Bool {
-        hasReadableProject && selectedBookmark != .gates
+        hasReadableProject
+            && selectedBookmark != .gates
     }
 
     var missingDataSourceURL: URL? {

@@ -38,28 +38,39 @@ struct ProjectSnapshotFileFingerprint: Equatable, Sendable {
 
 struct ProjectSnapshotFreshnessFiles: Equatable, Sendable {
     var activeSource: ProjectSnapshotFileFingerprint
-    var legacySQLite: ProjectSnapshotFileFingerprint
     var exportState: ProjectSnapshotFileFingerprint
     var lastTouched: ProjectSnapshotFileFingerprint
 
-    static func load(projectURL: URL, source: BeadsDataSource) -> ProjectSnapshotFreshnessFiles {
-        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
+    static func load(
+        projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
+        source: BeadsDataSource
+    ) -> ProjectSnapshotFreshnessFiles {
+        let beadsURL = beadsDirectoryURL
+            ?? projectURL.appendingPathComponent(".beads", isDirectory: true)
         return ProjectSnapshotFreshnessFiles(
             activeSource: .load(source.url),
-            legacySQLite: .load(beadsURL.appendingPathComponent("beads.db")),
             exportState: .load(beadsURL.appendingPathComponent("export-state.json")),
             lastTouched: .load(beadsURL.appendingPathComponent("last-touched"))
         )
     }
 
-    static func loaded(projectURL: URL, source: BeadsDataSource) -> ProjectSnapshotFreshnessFiles {
-        var files = load(projectURL: projectURL, source: source)
+    static func loaded(
+        projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
+        source: BeadsDataSource
+    ) -> ProjectSnapshotFreshnessFiles {
+        var files = load(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: source
+        )
         files.activeSource = .source(source)
         return files
     }
 
     func requiresReload(comparedTo loadedFiles: ProjectSnapshotFreshnessFiles) -> Bool {
-        activeSource != loadedFiles.activeSource || legacySQLite != loadedFiles.legacySQLite
+        activeSource != loadedFiles.activeSource
     }
 
     func markerChanged(comparedTo loadedFiles: ProjectSnapshotFreshnessFiles) -> Bool {
@@ -116,8 +127,16 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
         )
     }
 
-    static func loaded(projectURL: URL, source: BeadsDataSource) -> ProjectSnapshotFreshness {
-        let files = ProjectSnapshotFreshnessFiles.loaded(projectURL: projectURL, source: source)
+    static func loaded(
+        projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
+        source: BeadsDataSource
+    ) -> ProjectSnapshotFreshness {
+        let files = ProjectSnapshotFreshnessFiles.loaded(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: source
+        )
         let isPossiblyStale = source.kind == .jsonl && files.hasMarkerNewerThanActiveSource
         return ProjectSnapshotFreshness(
             state: isPossiblyStale ? .possiblyStale : .current,
@@ -133,8 +152,16 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
         )
     }
 
-    func evaluatingCurrentFiles(projectURL: URL, source: BeadsDataSource) -> Evaluation {
-        let observedFiles = ProjectSnapshotFreshnessFiles.load(projectURL: projectURL, source: source)
+    func evaluatingCurrentFiles(
+        projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
+        source: BeadsDataSource
+    ) -> Evaluation {
+        let observedFiles = ProjectSnapshotFreshnessFiles.load(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: source
+        )
         guard let loadedFiles else {
             return Evaluation(
                 freshness: ProjectSnapshotFreshness(
@@ -190,14 +217,22 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
         )
     }
 
-    func refreshing(projectURL: URL, source: BeadsDataSource) -> ProjectSnapshotFreshness {
+    func refreshing(
+        projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
+        source: BeadsDataSource
+    ) -> ProjectSnapshotFreshness {
         ProjectSnapshotFreshness(
             state: .refreshing,
             message: "Refreshing snapshot",
             detail: nil,
             evaluatedAt: Date(),
             loadedFiles: loadedFiles,
-            observedFiles: ProjectSnapshotFreshnessFiles.load(projectURL: projectURL, source: source)
+            observedFiles: ProjectSnapshotFreshnessFiles.load(
+                projectURL: projectURL,
+                beadsDirectoryURL: beadsDirectoryURL,
+                source: source
+            )
         )
     }
 

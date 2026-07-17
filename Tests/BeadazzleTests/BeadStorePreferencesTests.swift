@@ -987,6 +987,10 @@ private actor PreferenceTestCommands: BeadsCommanding {
 
     func exportReadableSnapshot(projectURL: URL) async throws {}
 
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        .testContext(projectURL: projectURL)
+    }
+
     func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {}

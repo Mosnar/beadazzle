@@ -513,9 +513,17 @@ final class BeadsCommandArgumentsTests: XCTestCase {
                 "--prefix",
                 "custom-prefix",
                 "--stealth",
-                "--skip-agents",
-                "--skip-hooks"
+                "--skip-agents"
             ]
+        )
+    }
+
+    func testInitializeArgumentsIncludeSkipHooksOutsideStealthMode() {
+        let options = BeadsInitOptions(skipsHooks: true)
+
+        XCTAssertEqual(
+            BeadsCommandArguments.initialize(options: options),
+            ["init", "--non-interactive", "--role", "maintainer", "--skip-hooks"]
         )
     }
 

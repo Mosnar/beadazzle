@@ -2,21 +2,21 @@ import Foundation
 
 struct BeadsSnapshotReader {
     private let discovery: BeadsDataSourceDiscovery
-    private let sqliteReader: BeadsSQLiteSnapshotReader
     private let jsonlReader: BeadsJSONLSnapshotReader
 
     init(
         discovery: BeadsDataSourceDiscovery = BeadsDataSourceDiscovery(),
-        sqliteReader: BeadsSQLiteSnapshotReader = BeadsSQLiteSnapshotReader(),
         jsonlReader: BeadsJSONLSnapshotReader = BeadsJSONLSnapshotReader()
     ) {
         self.discovery = discovery
-        self.sqliteReader = sqliteReader
         self.jsonlReader = jsonlReader
     }
 
-    func loadProject(projectURL: URL) throws -> LoadedBeadsSnapshot {
-        let source = try discovery.discover(projectURL: projectURL)
+    func loadProject(projectURL: URL, beadsDirectoryURL: URL? = nil) throws -> LoadedBeadsSnapshot {
+        let source = try discovery.discover(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL
+        )
         return LoadedBeadsSnapshot(source: source, snapshot: try loadSnapshot(from: source))
     }
 
@@ -25,12 +25,7 @@ struct BeadsSnapshotReader {
     }
 
     func loadSnapshot(from source: BeadsDataSource) throws -> BeadsSnapshot {
-        switch source.kind {
-        case .sqlite:
-            try sqliteReader.loadSnapshot(from: source)
-        case .jsonl:
-            try jsonlReader.loadSnapshot(from: source)
-        }
+        try jsonlReader.loadSnapshot(from: source)
     }
 
     func loadIssues(projectURL: URL) throws -> [BeadIssue] {

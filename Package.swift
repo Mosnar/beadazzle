@@ -17,14 +17,9 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4")
     ],
     targets: [
-        .systemLibrary(
-            name: "CSQLite",
-            pkgConfig: "sqlite3"
-        ),
         .executableTarget(
             name: "Beadazzle",
             dependencies: [
-                "CSQLite",
                 .product(name: "MarkdownEngine", package: "swift-markdown-engine"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
@@ -32,7 +27,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BeadazzleTests",
-            dependencies: ["Beadazzle", "CSQLite"]
+            dependencies: ["Beadazzle"]
         )
     ]
 )

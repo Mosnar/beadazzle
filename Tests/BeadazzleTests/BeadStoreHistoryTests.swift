@@ -437,7 +437,10 @@ final class BeadStoreHistoryTests: XCTestCase {
             try? FileManager.default.removeItem(at: projectURL)
         }
 
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: CurrentDoltTestCommands()
+        )
         store.openProject(projectURL)
         try await waitForStoreToLoad(store)
         return store

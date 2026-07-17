@@ -25,9 +25,9 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(health.snapshotFile.activeDataSource?.kind, .jsonl)
     }
 
-    func testProjectHealthLoadKeepsPartialResultsWhenOneCommandFails() async throws {
+    func testProjectHealthLoadKeepsPartialResultsWhenOneDiagnosticFails() async throws {
         let projectURL = try makeProject(named: "PartialHealthProject", issueID: "bd-1")
-        let commands = ProjectHealthTestCommands(contextError: ProjectHealthTestError.failedContext)
+        let commands = ProjectHealthTestCommands(storageError: ProjectHealthTestError.failedStorage)
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
@@ -36,9 +36,9 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         await store.waitForPendingProjectHealthLoad()
 
         let health = try XCTUnwrap(store.projectHealthSnapshot)
-        XCTAssertNil(health.context.value)
-        XCTAssertNotNil(health.context.errorMessage)
-        XCTAssertEqual(health.storageConfig.value?.exportPath, "issues.jsonl")
+        XCTAssertNotNil(health.context.value)
+        XCTAssertNil(health.storageConfig.value)
+        XCTAssertNotNil(health.storageConfig.errorMessage)
         XCTAssertTrue(health.hooks.value?.hasMissingHooks == true)
         XCTAssertTrue(health.backup.value?.isConfigured == true)
     }
@@ -79,6 +79,40 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(installHooksCallCount, 1)
         XCTAssertNil(store.projectHealthAction)
         XCTAssertNil(store.projectHealthActionError)
+    }
+
+    func testInstallHooksActionDoesNotRunInStealthMode() async throws {
+        let projectURL = try makeProject(named: "StealthHooksHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(noGitOperations: true)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didInstall = await store.installProjectHooks()
+
+        XCTAssertFalse(didInstall)
+        let installHooksCallCount = await commands.installHooksCallCount
+        XCTAssertEqual(installHooksCallCount, 0)
+        XCTAssertEqual(store.projectEnvironment?.gitIntegration, .disabled)
+    }
+
+    func testInstallHooksActionDoesNotRunWhenGitIntegrationIsUnknown() async throws {
+        let projectURL = try makeProject(named: "UnknownHooksHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(storageError: ProjectHealthTestError.failedStorage)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didInstall = await store.installProjectHooks()
+
+        XCTAssertFalse(didInstall)
+        let installHooksCallCount = await commands.installHooksCallCount
+        XCTAssertEqual(installHooksCallCount, 0)
+        XCTAssertEqual(store.projectEnvironment?.gitIntegration, .unknown)
     }
 
     func testBackupActionRunsOnlyWhenBackupIsConfigured() async throws {
@@ -183,17 +217,24 @@ final class BeadStoreProjectHealthTests: XCTestCase {
 }
 
 private actor ProjectHealthTestCommands: BeadsCommanding {
-    private let contextError: Error?
+    private let storageError: Error?
     private let contextDelay: Duration?
     private let backupConfigured: Bool
+    private let noGitOperations: Bool
     private(set) var exportCallCount = 0
     private(set) var installHooksCallCount = 0
     private(set) var syncBackupCallCount = 0
 
-    init(contextError: Error? = nil, contextDelay: Duration? = nil, backupConfigured: Bool = true) {
-        self.contextError = contextError
+    init(
+        storageError: Error? = nil,
+        contextDelay: Duration? = nil,
+        backupConfigured: Bool = true,
+        noGitOperations: Bool = false
+    ) {
+        self.storageError = storageError
         self.contextDelay = contextDelay
         self.backupConfigured = backupConfigured
+        self.noGitOperations = noGitOperations
     }
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
@@ -259,9 +300,6 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         if let contextDelay {
             try await Task.sleep(for: contextDelay)
         }
-        if let contextError {
-            throw contextError
-        }
         return BeadsProjectContext(
             backend: "dolt",
             bdVersion: "1.0.4",
@@ -279,13 +317,17 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     }
 
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig {
-        ProjectStorageConfig(
+        if let storageError {
+            throw storageError
+        }
+        return ProjectStorageConfig(
             exportAuto: true,
             exportPath: "issues.jsonl",
             exportInterval: "60s",
             exportGitAdd: true,
             importAuto: false,
-            federationRemote: nil
+            federationRemote: nil,
+            noGitOperations: noGitOperations
         )
     }
 
@@ -325,5 +367,5 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
 }
 
 private enum ProjectHealthTestError: Error {
-    case failedContext
+    case failedStorage
 }

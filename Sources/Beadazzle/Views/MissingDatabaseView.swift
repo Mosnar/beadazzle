@@ -24,7 +24,7 @@ struct MissingDatabaseView: View {
                     Text("No Beads Database Found")
                         .font(.title2.weight(.semibold))
 
-                    Text("Beadazzle could not find a readable `.beads/issues.jsonl` snapshot or populated legacy `.beads/beads.db` in this project.")
+                    Text("Beadazzle could not find a current Dolt-backed Beads project with a readable `issues.jsonl` snapshot.")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -164,7 +164,7 @@ private struct MoreOptionsContent: View {
                 compactOptionsStack
             }
 
-            Text("Beadazzle will also export `.beads/issues.jsonl` after initialization so the project can load immediately.")
+            Text("Beadazzle will also export `issues.jsonl` to the active Beads tracker directory so the project can load immediately.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -203,14 +203,16 @@ private struct MoreOptionsContent: View {
                 .gridCellColumns(2)
             }
 
-            GridRow {
-                ToggleOption(
-                    title: "Skip git hooks",
-                    help: "Skips installing bd-managed git hooks for this repository.",
-                    isOn: $options.skipsHooks,
-                    isDisabled: isDisabled
-                )
-                .gridCellColumns(2)
+            if !options.usesStealthMode {
+                GridRow {
+                    ToggleOption(
+                        title: "Skip git hooks",
+                        help: "Skips installing bd-managed git hooks for this repository.",
+                        isOn: $options.skipsHooks,
+                        isDisabled: isDisabled
+                    )
+                    .gridCellColumns(2)
+                }
             }
 
             GridRow(alignment: .top) {
@@ -250,12 +252,14 @@ private struct MoreOptionsContent: View {
                 isDisabled: isDisabled
             )
 
-            ToggleOption(
-                title: "Skip git hooks",
-                help: "Skips installing bd-managed git hooks for this repository.",
-                isOn: $options.skipsHooks,
-                isDisabled: isDisabled
-            )
+            if !options.usesStealthMode {
+                ToggleOption(
+                    title: "Skip git hooks",
+                    help: "Skips installing bd-managed git hooks for this repository.",
+                    isOn: $options.skipsHooks,
+                    isDisabled: isDisabled
+                )
+            }
 
             VStack(alignment: .leading, spacing: 5) {
                 OptionLabel(

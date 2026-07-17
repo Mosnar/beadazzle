@@ -62,6 +62,8 @@ final class ContentLayoutTests: XCTestCase {
         XCTAssertFalse(WorkspacePresentation.fullPageDetail.showsIssueList)
         XCTAssertFalse(WorkspacePresentation.creation.showsIssueList)
         XCTAssertFalse(WorkspacePresentation.missingDataSource.showsIssueList)
+        XCTAssertFalse(WorkspacePresentation.projectUnavailable.showsIssueList)
+        XCTAssertFalse(WorkspacePresentation.unsupportedProject.showsIssueList)
     }
 
     func testPresentationDerivesWorkspaceState() {
@@ -136,6 +138,40 @@ final class ContentLayoutTests: XCTestCase {
             ),
             .missingDataSource
         )
+    }
+
+    func testUnsupportedProjectUsesDetailPaneAndTakesPriority() {
+        let presentation = ContentLayout.presentation(
+            selectionCount: 1,
+            isFullPageDetailPresented: true,
+            hasCreationDraft: true,
+            hasMissingDataSource: true,
+            hasUnsupportedProject: true
+        )
+
+        XCTAssertEqual(presentation, .unsupportedProject)
+        XCTAssertTrue(presentation.showsDetail)
+        XCTAssertFalse(presentation.showsIssueList)
+        XCTAssertTrue(
+            ContentLayout.showsSidebar(
+                for: ContentLayout.detailSidebarCollapseBreakpoint - 1,
+                presentation: presentation
+            )
+        )
+    }
+
+    func testUnavailableProjectUsesDetailPaneWithoutHidingProjectSelector() {
+        let presentation = ContentLayout.presentation(
+            selectionCount: 1,
+            isFullPageDetailPresented: true,
+            hasCreationDraft: true,
+            hasUnavailableProject: true
+        )
+
+        XCTAssertEqual(presentation, .projectUnavailable)
+        XCTAssertTrue(presentation.showsDetail)
+        XCTAssertFalse(presentation.showsIssueList)
+        XCTAssertTrue(presentation.keepsProjectSelectorVisible)
     }
 
     func testSidebarCollapsesBeforeDetailInspectorRailIsLost() {

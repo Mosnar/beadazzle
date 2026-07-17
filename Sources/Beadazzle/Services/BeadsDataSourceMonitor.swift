@@ -4,7 +4,6 @@ import Foundation
 final class BeadsDataSourceMonitor: @unchecked Sendable {
     enum Role: Hashable, Sendable {
         case activeSource
-        case legacySQLite
         case beadsDirectory
         case exportState
         case lastTouched
@@ -30,15 +29,15 @@ final class BeadsDataSourceMonitor: @unchecked Sendable {
 
     init(
         projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
         source: BeadsDataSource,
         debounce: TimeInterval = 0.35,
         callback: @escaping @Sendable (Event) -> Void
     ) {
-        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
-        let sqliteURL = beadsURL.appendingPathComponent("beads.db")
+        let beadsURL = beadsDirectoryURL
+            ?? projectURL.appendingPathComponent(".beads", isDirectory: true)
         self.watchedPaths = Self.uniquePaths([
             WatchedPath(url: source.url, role: .activeSource),
-            WatchedPath(url: sqliteURL, role: .legacySQLite),
             WatchedPath(url: beadsURL, role: .beadsDirectory),
             WatchedPath(url: beadsURL.appendingPathComponent("export-state.json"), role: .exportState),
             WatchedPath(url: beadsURL.appendingPathComponent("last-touched"), role: .lastTouched)
@@ -68,12 +67,10 @@ final class BeadsDataSourceMonitor: @unchecked Sendable {
         }
     }
 
-    /// Content-change events we care about. Deliberately excludes `.attrib`: `bd`
-    /// invocations (including the app's own `--readonly` reads) touch `beads.db`'s
-    /// attributes without changing its contents, and watching `.attrib` turned every
-    /// read into a spurious "data changed" event — the app's reads re-triggered its
-    /// own monitor, driving a runaway reload → `bd` → reload loop. `.delete`/`.rename`
-    /// still catch atomic replaces (e.g. `bd export` rewriting `issues.jsonl`).
+    /// Content-change events we care about. Deliberately excludes `.attrib`: metadata-only
+    /// touches do not change the readable snapshot, and treating them as writes can turn
+    /// the app's own `bd` reads into a reload loop. `.delete`/`.rename` still catch atomic
+    /// replaces such as `bd export` rewriting `issues.jsonl`.
     private static var eventMask: DispatchSource.FileSystemEvent {
         [.write, .extend, .delete, .rename, .revoke]
     }

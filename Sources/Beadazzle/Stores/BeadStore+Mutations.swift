@@ -808,16 +808,17 @@ extension BeadStore {
             return try await projectLoader.refreshSnapshotAndLoadProject(
                 projectURL: projectURL,
                 staleCutoffDays: staleCutoffDays,
-                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+                cachedDefinitions: cachedDefinitions,
+                cachedEnvironment: projectEnvironment
             )
-        } catch BeadError.projectMissingDataSource(let missingURL) {
-            guard Self.beadsDirectoryExists(at: projectURL) else {
-                throw BeadError.projectMissingDataSource(missingURL)
-            }
+        } catch BeadError.projectMissingDataSource {
             return try await projectLoader.exportAndLoadProject(
                 projectURL: projectURL,
                 staleCutoffDays: staleCutoffDays,
-                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+                cachedDefinitions: cachedDefinitions,
+                cachedEnvironment: projectEnvironment
             )
         }
     }

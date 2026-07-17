@@ -31,7 +31,7 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 ## Current Features
 
 - Native macOS SwiftUI app with a sidebar, issue list, and detail pane.
-- Opens a repository containing a populated `.beads/beads.db` or a supported Beads JSONL source.
+- Opens current Dolt-backed Beads projects in embedded, server, and shared-server modes.
 - Reopens the last selected Beads project when available.
 - Fast issue browsing with search, filters, outline mode, sort controls, and multi-selection.
 - Split list/detail navigation with a full-page detail mode, Back/Forward support, and native context menus.
@@ -42,7 +42,7 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 - Fast relationship pickers with search, filters, outline mode, and quick-create flows.
 - Project settings for storage, snapshot freshness, readable export health, hooks, backups, and Ready workflow preferences.
 - CRUD, bulk actions, comments, dependencies, gates, and workflow mutations routed through the `bd` CLI.
-- Source-oriented snapshot reads: populated SQLite first, then JSONL fallback.
+- Context-aware JSONL snapshot reads, including redirected and worktree tracker directories.
 - Live reload for local Beads source changes without polling idle projects.
 - Sparkle automatic updates with stable and beta channels.
 - Local app-bundle and DMG packaging scripts plus GitHub release automation.
@@ -51,25 +51,24 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 
 - macOS 14 or newer.
 - Xcode command line tools or Xcode with SwiftPM support.
-- `bd` installed for write operations. Set `BEADAZZLE_BD_PATH` if `bd` is outside the app's launch-environment `PATH`.
-- A Beads project with either:
-  - a populated `.beads/beads.db`, or
-  - `.beads/issues.jsonl`, `.beads/beads.jsonl`, or `.beads/beads.base.jsonl`.
+- `bd` installed for project discovery and write operations. Set `BEADAZZLE_BD_PATH` if `bd` is outside the app's launch-environment `PATH`.
+- A current Dolt-backed Beads project. Beadazzle reads or creates a readable JSONL snapshot in the tracker directory reported by `bd context`.
 
 ## Supported Beads Modes
 
-Beadazzle is a local desktop client for one local Beads project at a time. It is best with current embedded-Dolt Beads projects that export a readable `.beads/issues.jsonl` snapshot, and it also supports direct reads from a populated legacy `.beads/beads.db`.
+Beadazzle is a desktop client for one current Dolt-backed Beads project at a time. Embedded, server, and shared-server storage modes are supported. Legacy backends, including SQLite-backed projects, are intentionally unsupported.
 
-Read support:
+Beadazzle asks `bd context` for the effective tracker directory before it reads data. This keeps worktree redirects and explicitly routed projects on the same source of truth as the CLI. Supported readable snapshots are:
 
-- `.beads/issues.jsonl`
-- `.beads/beads.jsonl`
-- `.beads/beads.base.jsonl`
-- populated legacy `.beads/beads.db`
+- `issues.jsonl`
+- `beads.jsonl`
+- `beads.base.jsonl`
 
 Write support goes through `bd`, not direct file or database writes. Beadazzle currently covers create, edit, close, reopen, delete, bulk status/type/priority updates, labels, assignee, due/defer dates, comments, dependencies, parent/child relationships, custom status/type definitions, hooks install, backup sync, and common gate workflows.
 
-Embedded-Dolt projects are handled by asking `bd` to export a fresh readable JSONL snapshot after mutations and manual refreshes. The app then reloads that snapshot so Beads remains the source of truth for validation, hooks, history, and storage semantics.
+Beadazzle asks `bd` to export a fresh readable JSONL snapshot after mutations and manual refreshes. Server-backed projects also export when opened and refresh when the app becomes active, without background polling. The app then reloads that snapshot so Beads remains the source of truth for validation, hooks, history, and storage semantics.
+
+Project Storage settings show the resolved storage mode, tracker directory, Git integration, and Beads role. Stealth projects hide Git-hook actions that do not apply. Contributor routing is shown for clarity while creation and gate commands remain delegated to `bd`, which chooses the configured planning repository.
 
 Generally not implemented in v1:
 
@@ -126,9 +125,9 @@ See [`docs/releasing.md`](docs/releasing.md) for the maintainer release checklis
 
 Beadazzle is designed around local repository data.
 
-- Reads come from one local Beads source at a time: a populated `.beads/beads.db` first, then a JSONL fallback when needed.
-- When the app needs a readable snapshot after a mutation, it asks `bd` to export one and then reloads that local snapshot.
-- Create, update, close, delete, dependency, comment, gate, and workflow-definition changes go through the `bd` CLI. Beadazzle does not write directly to `.beads/beads.db` or Beads JSONL files.
+- Reads come from the JSONL snapshot in the tracker directory reported by `bd context`.
+- When the app needs a readable snapshot after a mutation, it asks `bd` to export one and then reloads that snapshot.
+- Create, update, close, delete, dependency, comment, gate, and workflow-definition changes go through the `bd` CLI. Beadazzle does not write directly to Dolt tables or Beads JSONL records.
 - Beadazzle does not ship with `bd`; you must install it separately for write actions.
 - The app does not enable remote telemetry, analytics, or crash reporting by default.
 - Optional diagnostics are local-only: `--logs` and `--telemetry` stream macOS unified logs on your machine, and the performance signposts are only visible if you intentionally inspect them with Apple developer tools.
@@ -163,7 +162,7 @@ Close reason dialog:
 - `Sources/Beadazzle/App`: app entrypoint and commands.
 - `Sources/Beadazzle/Models`: Beads issue, dependency, draft, and sorting models.
 - `Sources/Beadazzle/Stores`: app state, filtering, selection, history, and mutation coordination.
-- `Sources/Beadazzle/Services`: source discovery, SQLite/JSONL snapshot reads, live source monitoring, `bd` command execution, and native panels.
+- `Sources/Beadazzle/Services`: context-aware JSONL snapshot reads, live source monitoring, `bd` command execution, and native panels.
 - `Sources/Beadazzle/Views`: SwiftUI surfaces for sidebar, list, detail, editor, dependencies, and bulk actions.
 - `Sources/Beadazzle/Support`: formatting, notifications, performance signposts, and visual styling helpers.
 

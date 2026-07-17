@@ -62,6 +62,12 @@ struct ProjectPickerButton: View {
         if store.missingDataSourceURL != nil {
             return .needsSetup
         }
+        if project.projectReadiness.unsupportedProject != nil {
+            return .unsupported
+        }
+        if project.projectReadiness.unavailableProject != nil {
+            return .unavailable
+        }
         return .ready
     }
 }
@@ -70,6 +76,8 @@ private enum ProjectPickerButtonState {
     case noProject
     case ready
     case needsSetup
+    case unsupported
+    case unavailable
 
     var systemImage: String {
         switch self {
@@ -78,6 +86,10 @@ private enum ProjectPickerButtonState {
         case .ready:
             "folder"
         case .needsSetup:
+            "folder.badge.questionmark"
+        case .unsupported:
+            "exclamationmark.triangle"
+        case .unavailable:
             "folder.badge.questionmark"
         }
     }
@@ -90,6 +102,10 @@ private enum ProjectPickerButtonState {
             "Project"
         case .needsSetup:
             "Needs Setup"
+        case .unsupported:
+            "Unsupported"
+        case .unavailable:
+            "Needs Attention"
         }
     }
 
@@ -97,6 +113,10 @@ private enum ProjectPickerButtonState {
         switch self {
         case .needsSetup:
             "\(projectName), needs setup"
+        case .unsupported:
+            "\(projectName), unsupported"
+        case .unavailable:
+            "\(projectName), needs attention"
         case .noProject, .ready:
             projectName
         }

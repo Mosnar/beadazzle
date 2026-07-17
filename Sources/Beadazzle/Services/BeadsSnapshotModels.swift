@@ -7,7 +7,6 @@ struct BeadsSnapshot: Sendable {
 }
 
 enum BeadsDataSourceKind: String, Equatable, Sendable {
-    case sqlite
     case jsonl
 }
 
@@ -18,10 +17,6 @@ struct BeadsDataSource: Equatable, Identifiable, Sendable {
     let url: URL
     let size: Int64
     let modifiedAt: Date
-
-    var isValid: Bool {
-        kind == .jsonl || size > 0
-    }
 
     var watchKey: String {
         "\(kind.rawValue):\(url.path)"

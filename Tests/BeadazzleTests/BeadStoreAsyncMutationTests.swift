@@ -2154,21 +2154,21 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
-        let definitionCallsBeforeCreate = await commands.definitionLoadCallCount
-        await commands.setDefinitionLoadDelay(.milliseconds(400))
+        let exportsBeforeCreate = await commands.exportCallCount
+        await commands.setExportDelay(.milliseconds(400))
 
         let createTask = Task { @MainActor in
             await store.createBead(self.draft(title: "Committed create"), revealCreated: true)
         }
         try await waitUntilAsync {
-            await commands.definitionLoadCallCount >= definitionCallsBeforeCreate + 2
+            await commands.exportCallCount > exportsBeforeCreate
         }
         let exportsBeforeRefresh = await commands.exportCallCount
         store.refresh()
         try await Task.sleep(for: .milliseconds(100))
         let exportsDuringCreate = await commands.exportCallCount
         XCTAssertEqual(exportsDuringCreate, exportsBeforeRefresh)
-        await commands.setDefinitionLoadDelay(nil)
+        await commands.setExportDelay(nil)
 
         let createdIssueID = await createTask.value
         XCTAssertEqual(createdIssueID, "bd-created")
@@ -3896,6 +3896,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var addLabelsDelays: [Duration?] = []
     private var addLabelsErrors: [Error?] = []
     private var exportError: Error?
+    private var exportDelay: Duration?
     private var commentsByIssueID: [String: [BeadComment]] = [:]
     private var commentLoadError: Error?
     private var commentLoadDelay: Duration?
@@ -4005,6 +4006,10 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         exportError = error
     }
 
+    func setExportDelay(_ delay: Duration?) {
+        exportDelay = delay
+    }
+
     func setComments(_ comments: [BeadComment], for issueID: String) {
         commentsByIssueID[issueID] = comments
     }
@@ -4039,9 +4044,16 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func exportReadableSnapshot(projectURL: URL) async throws {
         exportCallCount += 1
+        if let exportDelay {
+            try await Task.sleep(for: exportDelay)
+        }
         if let exportError {
             throw exportError
         }
+    }
+
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        .testContext(projectURL: projectURL)
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {

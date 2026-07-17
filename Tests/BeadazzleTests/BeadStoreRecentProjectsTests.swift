@@ -6,7 +6,7 @@ import XCTest
 final class BeadStoreRecentProjectsTests: XCTestCase {
     func testOpenProjectStoresRecentProjectsMostRecentFirstAndCapsList() throws {
         let defaults = makeUserDefaults()
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         let projectURLs = try (0..<10).map { try makeProject(named: "Project-\($0)") }
 
         for projectURL in projectURLs {
@@ -26,7 +26,7 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
 
     func testRemoveRecentProjectForgetsEntryWithoutClosingCurrentProject() throws {
         let defaults = makeUserDefaults()
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         let firstProjectURL = try makeProject(named: "First")
         let secondProjectURL = try makeProject(named: "Second")
 
@@ -43,7 +43,7 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
     }
 
     func testSwitchingProjectsResetsSearchAndFilters() throws {
-        let store = BeadStore(userDefaults: makeUserDefaults())
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: CurrentDoltTestCommands())
         let firstProjectURL = try makeProject(named: "First")
         let secondProjectURL = try makeProject(named: "Second")
 
@@ -66,7 +66,7 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
 
     func testRemoveOnlyRecentProjectClearsLegacyLastProjectPath() throws {
         let defaults = makeUserDefaults()
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         let projectURL = try makeProject(named: "Only")
 
         store.openProject(projectURL)
@@ -84,7 +84,7 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
         let projectURL = try makeProject(named: "Legacy")
         defaults.set(projectURL.path, forKey: "LastProjectPath")
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
 
         XCTAssertEqual(store.recentProjects.map(\.path), [projectURL.standardizedFileURL.path])
         XCTAssertEqual(defaults.stringArray(forKey: "RecentProjectPaths"), [projectURL.standardizedFileURL.path])
@@ -103,7 +103,7 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
             forKey: "RecentProjectPaths"
         )
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
 
         XCTAssertEqual(store.recentProjects.map(\.path), projectURLs[0...7].map { $0.standardizedFileURL.path })
         XCTAssertEqual(Set(store.recentProjects.map(\.id)).count, 8)
@@ -116,7 +116,7 @@ final class BeadStoreRecentProjectsTests: XCTestCase {
         let validProjectURL = try makeProject(named: "Valid")
         defaults.set([staleProjectURL.path, validProjectURL.path], forKey: "RecentProjectPaths")
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openDefaultProjectIfAvailable()
 
         XCTAssertEqual(store.projectURL?.path, validProjectURL.standardizedFileURL.path)

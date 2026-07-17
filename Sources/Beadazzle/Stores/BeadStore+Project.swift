@@ -10,6 +10,7 @@ extension BeadStore {
     func openProject(_ url: URL) {
         let url = url.standardizedFileURL
         let outgoingProjectURL = projectURL
+        let outgoingBeadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
         // Persist the outgoing project's state now, while its URL and live workspace are still
         // current, so a pending debounce can't be dropped by the switch.
         flushPendingWorkspaceState()
@@ -20,7 +21,10 @@ extension BeadStore {
         if let outgoingProjectURL, outgoingProjectURL != url {
             let activityHistoryRepository = activityHistoryRepository
             Task {
-                await activityHistoryRepository.discard(projectURL: outgoingProjectURL)
+                await activityHistoryRepository.discard(
+                    projectURL: outgoingProjectURL,
+                    beadsDirectoryURL: outgoingBeadsDirectoryURL
+                )
             }
         }
         stopDataSourceMonitor()
@@ -37,13 +41,6 @@ extension BeadStore {
         // (selection/saved-view identities are validated against it in applyLoadedProject).
         pendingRestoredWorkspaceSnapshot = workspaceStateRepository.load(projectURL: url)?.snapshot()
         resetWorkspaceHistory()
-        if isMissingDataSourceProject(url) {
-            setMissingDataSource(url)
-            if Self.beadsDirectoryExists(at: url) {
-                refresh(reason: .initial, showsLoadingIndicator: true)
-            }
-            return
-        }
         _projectReadiness = .ready
         refresh(reason: .initial, showsLoadingIndicator: true)
     }
@@ -97,12 +94,6 @@ extension BeadStore {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    internal nonisolated static func beadsDirectoryExists(at url: URL) -> Bool {
-        var isDirectory: ObjCBool = false
-        let beadsURL = url.appendingPathComponent(".beads", isDirectory: true)
-        return FileManager.default.fileExists(atPath: beadsURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
-    }
-
     func initializeBeads(options: BeadsInitOptions) {
         guard let projectURL, !isInitializingBeads else { return }
         let initializationGeneration = project.beginInitialization()
@@ -132,6 +123,15 @@ extension BeadStore {
                 self.applyLoadedProject(loadedProject, projectURL: projectURL)
             } catch is CancellationError {
                 return
+            } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
+                guard !Task.isCancelled,
+                      let self,
+                      self.project.ownsInitialization(
+                          projectURL: projectURL,
+                          generation: initializationGeneration
+                      ) else { return }
+                self._isInitializingBeads = false
+                self.setUnsupportedProject(unsupportedURL, detail: detail)
             } catch {
                 guard !Task.isCancelled,
                       let self,
@@ -146,21 +146,26 @@ extension BeadStore {
         }
     }
 
-    private func isMissingDataSourceProject(_ url: URL) -> Bool {
-        do {
-            _ = try BeadsDataSourceDiscovery().discover(projectURL: url)
-            return false
-        } catch BeadError.projectMissingDataSource {
-            return true
-        } catch {
-            return false
-        }
-    }
-
     private func setMissingDataSource(_ url: URL) {
         _projectReadiness = .missingDataSource(url)
         _isLoading = false
         lastError = nil
+        stopDataSourceMonitor()
+        clearLoadedProjectData()
+        resetWorkspaceHistory()
+    }
+
+    private func setUnsupportedProject(_ url: URL, detail: String) {
+        _projectReadiness = .unsupportedProject(url.standardizedFileURL, detail)
+        _isLoading = false
+        stopDataSourceMonitor()
+        clearLoadedProjectData()
+        resetWorkspaceHistory()
+    }
+
+    private func setProjectUnavailable(_ url: URL, detail: String) {
+        _projectReadiness = .projectUnavailable(url.standardizedFileURL, detail)
+        _isLoading = false
         stopDataSourceMonitor()
         clearLoadedProjectData()
         resetWorkspaceHistory()
@@ -191,8 +196,10 @@ extension BeadStore {
         detail.cancelSelectionWork()
         _gatesByID = [:]
         _currentDataSource = nil
+        _projectEnvironment = nil
         _snapshotFreshness = .unknown
         cachedDefinitions = nil
+        lastServerActivationRefreshAt = nil
         _selectedIDs.removeAll()
         _fullPageDetailIssueID = nil
         creationDraft = nil
@@ -207,6 +214,27 @@ extension BeadStore {
 
     func refresh() {
         refresh(reason: .manual, showsLoadingIndicator: true)
+    }
+
+    /// Server-backed trackers can change without touching this Mac's snapshot files.
+    /// Refresh once when the app becomes active, with a short guard against duplicate
+    /// scene notifications. Embedded projects stay entirely event-driven.
+    func refreshServerProjectOnActivation(now: Date = Date()) {
+        guard automaticallyRefreshesExternalChanges,
+              projectReadiness.isReady,
+              projectEnvironment?.storageMode.refreshesWhenAppActivates == true,
+              !isLoading,
+              activeMutationCount == 0 else {
+            return
+        }
+        if let lastServerActivationRefreshAt {
+            let elapsed = now.timeIntervalSince(lastServerActivationRefreshAt)
+            if elapsed >= 0, elapsed < 5 {
+                return
+            }
+        }
+        lastServerActivationRefreshAt = now
+        refresh(reason: .reconcile, showsLoadingIndicator: false)
     }
 
     internal func refresh(reason: RefreshReason, showsLoadingIndicator: Bool) {
@@ -244,10 +272,16 @@ extension BeadStore {
         // otherwise every routine reload would re-run `bd`.
         let reloadsDefinitions = reason == .initial || reason == .manual || cachedDefinitions == nil
         let definitionsForLoad = reloadsDefinitions ? nil : cachedDefinitions
+        let reloadsEnvironment = reason == .initial || reason == .manual || projectEnvironment == nil
+        let environmentForLoad = reloadsEnvironment ? nil : projectEnvironment
         let metadataBaseline = mutations.reloadBaseline()
         let optimisticMutationRevision = mutations.optimisticMutationRevision
         if let currentDataSource {
-            _snapshotFreshness = snapshotFreshness.refreshing(projectURL: projectURL, source: currentDataSource)
+            _snapshotFreshness = snapshotFreshness.refreshing(
+                projectURL: projectURL,
+                beadsDirectoryURL: projectEnvironment?.beadsDirectoryURL,
+                source: currentDataSource
+            )
         }
 
         refreshTask = Task { @MainActor [weak self] in
@@ -259,14 +293,16 @@ extension BeadStore {
                             projectURL: projectURL,
                             staleCutoffDays: staleCutoffDays,
                             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-                            cachedDefinitions: definitionsForLoad
+                            cachedDefinitions: definitionsForLoad,
+                            cachedEnvironment: environmentForLoad
                         )
                     }
                     return try await projectLoader.loadProject(
                         projectURL: projectURL,
                         staleCutoffDays: staleCutoffDays,
                         hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-                        cachedDefinitions: definitionsForLoad
+                        cachedDefinitions: definitionsForLoad,
+                        cachedEnvironment: environmentForLoad
                     )
                 }
                 let loadedProject = try await withTaskCancellationHandler {
@@ -292,7 +328,11 @@ extension BeadStore {
                     if showsLoadingIndicator {
                         self._isLoading = false
                     }
-                    self.markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
+                    self.markSnapshotFreshnessLoaded(
+                        projectURL: projectURL,
+                        beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
+                        source: loadedProject.source
+                    )
                     return
                 }
                 self.applyLoadedProject(
@@ -312,16 +352,13 @@ extension BeadStore {
                 return
             } catch BeadError.projectMissingDataSource(let missingURL) {
                 guard let self, !Task.isCancelled, self.projectURL == projectURL else { return }
-                guard Self.beadsDirectoryExists(at: projectURL) else {
-                    self.setMissingDataSource(missingURL)
-                    return
-                }
                 let recoveryTask = Task {
                     try await projectLoader.exportAndLoadProject(
                         projectURL: projectURL,
                         staleCutoffDays: self.staleCutoffDays,
                         hidesParentsWithOnlyBlockedChildrenInReady: self.hidesParentsWithOnlyBlockedChildrenInReady,
-                        cachedDefinitions: definitionsForLoad
+                        cachedDefinitions: definitionsForLoad,
+                        cachedEnvironment: environmentForLoad
                     )
                 }
                 do {
@@ -359,18 +396,34 @@ extension BeadStore {
                         refreshGeneration: refreshGeneration
                     )
                     return
-                } catch {
+                } catch BeadError.projectMissingDataSource {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return }
                     self.setMissingDataSource(missingURL)
-                    self.lastError = error.localizedDescription
+                } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
+                    guard !Task.isCancelled, self.projectURL == projectURL else { return }
+                    self.setUnsupportedProject(unsupportedURL, detail: detail)
+                } catch {
+                    guard !Task.isCancelled, self.projectURL == projectURL else { return }
+                    self.setProjectUnavailable(projectURL, detail: error.localizedDescription)
                     self.markSnapshotFreshnessFailed(error.localizedDescription)
                 }
+            } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
+                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return }
+                self.setUnsupportedProject(unsupportedURL, detail: detail)
+                self.finishReconcileAfterRefreshTermination(
+                    projectURL: projectURL,
+                    refreshGeneration: refreshGeneration
+                )
             } catch {
-                guard !Task.isCancelled, self?.projectURL == projectURL else { return }
-                self?.lastError = error.localizedDescription
-                self?._isLoading = false
-                self?.markSnapshotFreshnessFailed(error.localizedDescription)
-                self?.finishReconcileAfterRefreshTermination(
+                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return }
+                if self.currentDataSource == nil {
+                    self.setProjectUnavailable(projectURL, detail: error.localizedDescription)
+                } else {
+                    self.lastError = error.localizedDescription
+                    self._isLoading = false
+                }
+                self.markSnapshotFreshnessFailed(error.localizedDescription)
+                self.finishReconcileAfterRefreshTermination(
                     projectURL: projectURL,
                     refreshGeneration: refreshGeneration
                 )
@@ -412,8 +465,13 @@ extension BeadStore {
         if let definitions = loadedProject.definitions {
             cachedDefinitions = definitions
         }
+        _projectEnvironment = loadedProject.environment
         _currentDataSource = loadedProject.source
-        markSnapshotFreshnessLoaded(projectURL: projectURL, source: loadedProject.source)
+        markSnapshotFreshnessLoaded(
+            projectURL: projectURL,
+            beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
+            source: loadedProject.source
+        )
         if let warning = loadedProject.snapshotRefreshWarning {
             _snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: warning)
         }
@@ -428,7 +486,11 @@ extension BeadStore {
         loadActivityForSelection(force: true)
         _isLoading = false
         lastError = nil
-        synchronizeDataSourceMonitor(projectURL: projectURL, source: loadedProject.source)
+        synchronizeDataSourceMonitor(
+            projectURL: projectURL,
+            beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
+            source: loadedProject.source
+        )
         pruneGateDetailsForCurrentSnapshot()
         loadWaitersForSelectedGateIfNeeded()
         // Restore persisted workspace state exactly once per open, now that the index is available
@@ -452,6 +514,7 @@ extension BeadStore {
            automaticallyRefreshesExternalChanges {
             _snapshotFreshness = snapshotFreshness.refreshing(
                 projectURL: projectURL,
+                beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
                 source: loadedProject.source
             )
             requestReconcile(trigger: .externalMarker)
@@ -548,12 +611,20 @@ extension BeadStore {
         }
     }
 
-    private func synchronizeDataSourceMonitor(projectURL: URL, source: BeadsDataSource) {
+    private func synchronizeDataSourceMonitor(
+        projectURL: URL,
+        beadsDirectoryURL: URL,
+        source: BeadsDataSource
+    ) {
         guard monitoredSourceFingerprint != source.fingerprint else { return }
         stopDataSourceMonitor()
         let expectedProjectURL = projectURL
         let expectedSourceFingerprint = source.fingerprint
-        let monitor = BeadsDataSourceMonitor(projectURL: projectURL, source: source) { [weak self] event in
+        let monitor = BeadsDataSourceMonitor(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: source
+        ) { [weak self] event in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.projectURL == expectedProjectURL,
@@ -576,17 +647,20 @@ extension BeadStore {
 
     private func handleDataSourceMonitorEvent(_ event: BeadsDataSourceMonitor.Event, projectURL: URL) {
         guard !event.roles.isEmpty, self.projectURL == projectURL, let currentDataSource else { return }
+        let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
         if reconcileState.deferMonitorEvent(event.roles) {
             return
         }
         if currentDataSource.kind == .jsonl, event.roles.contains(.beadsDirectory) {
-            // Discovery opens beads.db and can block up to its 5s busy timeout while
-            // bd holds a write lock — exactly when watcher events fire — so the probe
-            // must not run on the main actor.
+            // Directory events can arrive in bursts around atomic snapshot replacement,
+            // so source rediscovery stays off the main actor.
             let expectedSource = currentDataSource
             Task { [weak self] in
                 let discoveredSource = await Task.detached(priority: .utility) {
-                    try? BeadsDataSourceDiscovery().discover(projectURL: projectURL)
+                    try? BeadsDataSourceDiscovery().discover(
+                        projectURL: projectURL,
+                        beadsDirectoryURL: beadsDirectoryURL
+                    )
                 }.value
                 guard let self,
                       self.projectURL == projectURL,
@@ -595,7 +669,11 @@ extension BeadStore {
                 }
                 if let discoveredSource, discoveredSource != expectedSource {
                     self.satisfyPendingExternalRefreshFromSourceChange()
-                    self._snapshotFreshness = self.snapshotFreshness.refreshing(projectURL: projectURL, source: expectedSource)
+                    self._snapshotFreshness = self.snapshotFreshness.refreshing(
+                        projectURL: projectURL,
+                        beadsDirectoryURL: beadsDirectoryURL,
+                        source: expectedSource
+                    )
                     self.refreshAfterDataSourceChange()
                 } else {
                     self.evaluateMonitorFreshness(projectURL: projectURL, source: expectedSource)
@@ -609,6 +687,7 @@ extension BeadStore {
     private func evaluateMonitorFreshness(projectURL: URL, source currentDataSource: BeadsDataSource) {
         let evaluation = snapshotFreshness.evaluatingCurrentFiles(
             projectURL: projectURL,
+            beadsDirectoryURL: projectEnvironment?.beadsDirectoryURL,
             source: currentDataSource
         )
         if evaluation.requiresReload {
@@ -620,6 +699,7 @@ extension BeadStore {
                   automaticallyRefreshesExternalChanges {
             _snapshotFreshness = evaluation.freshness.refreshing(
                 projectURL: projectURL,
+                beadsDirectoryURL: projectEnvironment?.beadsDirectoryURL,
                 source: currentDataSource
             )
             requestReconcile(trigger: .externalMarker)
@@ -628,8 +708,16 @@ extension BeadStore {
         }
     }
 
-    private func markSnapshotFreshnessLoaded(projectURL: URL, source: BeadsDataSource) {
-        _snapshotFreshness = .loaded(projectURL: projectURL, source: source)
+    private func markSnapshotFreshnessLoaded(
+        projectURL: URL,
+        beadsDirectoryURL: URL,
+        source: BeadsDataSource
+    ) {
+        _snapshotFreshness = .loaded(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: source
+        )
     }
 
     private func markSnapshotFreshnessFailed(_ message: String) {

@@ -12,6 +12,7 @@ struct BeadsAddLabelsBatch: Equatable, Sendable {
 protocol BeadsCommanding: Sendable {
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws
     func exportReadableSnapshot(projectURL: URL) async throws
+    func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws
     func create(projectURL: URL, draft: IssueDraft) async throws -> String
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws
     func updateMetadata(
@@ -62,6 +63,10 @@ protocol BeadsCommanding: Sendable {
 }
 
 extension BeadsCommanding {
+    func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL _: URL) async throws {
+        try await exportReadableSnapshot(projectURL: projectURL)
+    }
+
     func loadComments(projectURL _: URL, issueID _: String) async throws -> [BeadComment] { [] }
 
     func loadCustomStatuses(projectURL: URL) async throws -> [BeadStatusDefinition] {
@@ -169,18 +174,27 @@ struct BeadsCommandService {
     }
 
     func exportReadableSnapshot(projectURL: URL) async throws {
-        let tempPath = Self.temporaryExportedIssuesJSONLPath()
-        let tempURL = projectURL.appendingPathComponent(tempPath)
+        try await exportReadableSnapshot(
+            projectURL: projectURL,
+            beadsDirectoryURL: projectURL.appendingPathComponent(".beads", isDirectory: true)
+        )
+    }
+
+    func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws {
+        let tempURL = Self.temporaryExportedIssuesJSONLURL(beadsDirectoryURL: beadsDirectoryURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         _ = try await runOutput(
             projectURL: projectURL,
-            arguments: BeadsCommandArguments.exportJSONL(outputPath: tempPath),
+            arguments: BeadsCommandArguments.exportJSONL(outputPath: tempURL.path),
             terminatesOnCancel: true,
             timeout: snapshotExportTimeout
         )
         try Self.validateExportedIssuesJSONL(at: tempURL)
-        try Self.installExportedIssuesJSONL(tempURL: tempURL, projectURL: projectURL)
+        try Self.installExportedIssuesJSONL(
+            tempURL: tempURL,
+            beadsDirectoryURL: beadsDirectoryURL
+        )
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {
@@ -357,13 +371,25 @@ struct BeadsCommandService {
     }
 
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
-        let text = try await runOutput(
-            projectURL: projectURL,
-            arguments: ["--readonly", "context", "--json"],
-            terminatesOnCancel: true,
-            timeout: readOnlyCommandTimeout
-        )
-        return try BeadsProjectContext.decode(from: text)
+        do {
+            let text = try await runOutput(
+                projectURL: projectURL,
+                arguments: ["--readonly", "context", "--json"],
+                terminatesOnCancel: true,
+                timeout: readOnlyCommandTimeout
+            )
+            return try BeadsProjectContext.decode(from: text)
+        } catch {
+            if case BeadError.commandFailed(_, let output) = error,
+               Self.contextReportsMissingBeadsDirectory(output) {
+                throw BeadError.projectMissingDataSource(projectURL)
+            }
+            throw error
+        }
+    }
+
+    static func contextReportsMissingBeadsDirectory(_ output: String) -> Bool {
+        output.localizedCaseInsensitiveContains("no .beads directory found")
     }
 
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig {
@@ -373,6 +399,7 @@ struct BeadsCommandService {
         async let exportGitAdd = configBoolSetting(projectURL: projectURL, key: "export.git-add")
         async let importAuto = configBoolSetting(projectURL: projectURL, key: "import.auto")
         async let federationRemote = configSetting(projectURL: projectURL, key: "federation.remote")
+        async let noGitOperations = configBoolSetting(projectURL: projectURL, key: "no-git-ops")
 
         return ProjectStorageConfig(
             exportAutoStatus: await exportAuto,
@@ -380,7 +407,8 @@ struct BeadsCommandService {
             exportIntervalStatus: await exportInterval,
             exportGitAddStatus: await exportGitAdd,
             importAutoStatus: await importAuto,
-            federationRemoteStatus: await federationRemote
+            federationRemoteStatus: await federationRemote,
+            noGitOperationsStatus: await noGitOperations
         )
     }
 
@@ -691,17 +719,34 @@ struct BeadsCommandService {
     }
 
     static func exportedIssuesJSONLURL(projectURL: URL) -> URL {
-        projectURL
-            .appendingPathComponent(".beads", isDirectory: true)
+        exportedIssuesJSONLURL(
+            beadsDirectoryURL: projectURL.appendingPathComponent(".beads", isDirectory: true)
+        )
+    }
+
+    static func exportedIssuesJSONLURL(beadsDirectoryURL: URL) -> URL {
+        beadsDirectoryURL
             .appendingPathComponent("issues.jsonl")
     }
 
-    private static func temporaryExportedIssuesJSONLPath() -> String {
-        ".beads/issues.jsonl.tmp.\(UUID().uuidString)"
+    private static func temporaryExportedIssuesJSONLURL(beadsDirectoryURL: URL) -> URL {
+        beadsDirectoryURL.appendingPathComponent("issues.jsonl.tmp.\(UUID().uuidString)")
     }
 
     static func installExportedIssuesJSONL(tempURL: URL, projectURL: URL, fileManager: FileManager = .default) throws {
-        let destinationURL = exportedIssuesJSONLURL(projectURL: projectURL)
+        try installExportedIssuesJSONL(
+            tempURL: tempURL,
+            beadsDirectoryURL: projectURL.appendingPathComponent(".beads", isDirectory: true),
+            fileManager: fileManager
+        )
+    }
+
+    static func installExportedIssuesJSONL(
+        tempURL: URL,
+        beadsDirectoryURL: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        let destinationURL = exportedIssuesJSONLURL(beadsDirectoryURL: beadsDirectoryURL)
         var isDirectory: ObjCBool = false
         if fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory) {
             guard !isDirectory.boolValue else {
@@ -918,7 +963,7 @@ enum BeadsCommandArguments {
         if options.skipsAgents {
             arguments.append("--skip-agents")
         }
-        if options.skipsHooks {
+        if options.skipsHooks && !options.usesStealthMode {
             arguments.append("--skip-hooks")
         }
         return arguments

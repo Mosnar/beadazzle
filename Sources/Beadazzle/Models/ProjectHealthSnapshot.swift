@@ -27,17 +27,16 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
 
     static func load(
         projectURL: URL,
+        environment: BeadsProjectEnvironment?,
         activeDataSource: BeadsDataSource?,
         commands: any BeadsCommanding
     ) async -> ProjectHealthSnapshot {
         let snapshotFile = ProjectSnapshotFileStatus.load(
             projectURL: projectURL,
+            beadsDirectoryURL: environment?.beadsDirectoryURL,
             activeDataSource: activeDataSource
         )
 
-        async let context = ProjectHealthValue.capture {
-            try await commands.loadProjectContext(projectURL: projectURL)
-        }
         async let storageConfig = ProjectHealthValue.capture {
             try await commands.loadProjectStorageConfig(projectURL: projectURL)
         }
@@ -48,9 +47,18 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
             try await commands.loadBackupStatus(projectURL: projectURL)
         }
 
+        let context: ProjectHealthValue<BeadsProjectContext>
+        if let environment {
+            context = .available(environment.context)
+        } else {
+            context = await ProjectHealthValue.capture {
+                try await commands.loadProjectContext(projectURL: projectURL)
+            }
+        }
+
         return ProjectHealthSnapshot(
             loadedAt: Date(),
-            context: await context,
+            context: context,
             storageConfig: await storageConfig,
             hooks: await hooks,
             backup: await backup,
@@ -213,31 +221,19 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                 title: "Beads Data",
                 status: .blocked,
                 summary: "Beads is not initialized",
-                detail: "The selected folder does not have a readable .beads data source.",
+                detail: "The selected folder does not have a readable snapshot in its active Beads tracker directory.",
                 actionHint: "Initialize Beads for this project."
             )
         }
         if let activeDataSource {
-            switch activeDataSource.kind {
-            case .jsonl:
-                return Check(
-                    id: .readableData,
-                    title: "Beads Data",
-                    status: .ready,
-                    summary: "Reading JSONL snapshot",
-                    detail: activeDataSource.displayPath,
-                    actionHint: nil
-                )
-            case .sqlite:
-                return Check(
-                    id: .readableData,
-                    title: "Beads Data",
-                    status: .warning,
-                    summary: "Reading legacy SQLite data",
-                    detail: activeDataSource.displayPath,
-                    actionHint: "Export a JSONL snapshot for the current embedded-Dolt flow."
-                )
-            }
+            return Check(
+                id: .readableData,
+                title: "Beads Data",
+                status: .ready,
+                summary: "Reading JSONL snapshot",
+                detail: activeDataSource.displayPath,
+                actionHint: nil
+            )
         }
         return pendingCheck(
             id: .readableData,
@@ -264,16 +260,6 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                 summary: "No snapshot yet",
                 detail: "Beadazzle has no Beads data to read for this folder.",
                 actionHint: "Initialize Beads for this project."
-            )
-        }
-        if activeDataSource?.kind == .sqlite {
-            return Check(
-                id: .snapshotFreshness,
-                title: "Readable Snapshot",
-                status: .warning,
-                summary: "Using SQLite instead of JSONL",
-                detail: "The app can read this project, but the current embedded-Dolt setup works best with .beads/issues.jsonl.",
-                actionHint: "Export Snapshot"
             )
         }
         switch freshness.state {
@@ -368,7 +354,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                     title: "Export Config",
                     status: .warning,
                     summary: "Export path is not configured",
-                    detail: "Beadazzle expects a readable JSONL snapshot such as .beads/issues.jsonl.",
+                    detail: "Beadazzle expects a readable JSONL snapshot such as issues.jsonl in the active tracker directory.",
                     actionHint: "Set export.path in bd config."
                 )
             }
@@ -398,6 +384,36 @@ struct ProjectPreflightHealth: Equatable, Sendable {
     }
 
     private static func gitHooksCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+        if let storageError = health?.storageConfig.errorMessage {
+            return Check(
+                id: .gitHooks,
+                title: "Git Integration",
+                status: .warning,
+                summary: "Git integration status unavailable",
+                detail: storageError,
+                actionHint: "Refresh Status"
+            )
+        }
+        if let noGitOperationsError = health?.storageConfig.value?.noGitOperationsStatus.errorMessage {
+            return Check(
+                id: .gitHooks,
+                title: "Git Integration",
+                status: .warning,
+                summary: "Git integration status unavailable",
+                detail: noGitOperationsError,
+                actionHint: "Refresh Status"
+            )
+        }
+        if health?.storageConfig.value?.usesStealthMode == true {
+            return Check(
+                id: .gitHooks,
+                title: "Git Integration",
+                status: .info,
+                summary: "Disabled by stealth mode",
+                detail: "Beads files stay local and Git hooks are intentionally not installed.",
+                actionHint: nil
+            )
+        }
         if let hooks = health?.hooks.value {
             guard !hooks.hooks.isEmpty else {
                 return Check(
@@ -624,6 +640,7 @@ struct ProjectStorageConfig: Equatable, Sendable {
     var exportGitAddStatus: ProjectStorageConfigValue<Bool>
     var importAutoStatus: ProjectStorageConfigValue<Bool>
     var federationRemoteStatus: ProjectStorageConfigValue<String>
+    var noGitOperationsStatus: ProjectStorageConfigValue<Bool>
 
     init(
         exportAuto: Bool?,
@@ -631,7 +648,8 @@ struct ProjectStorageConfig: Equatable, Sendable {
         exportInterval: String?,
         exportGitAdd: Bool?,
         importAuto: Bool?,
-        federationRemote: String?
+        federationRemote: String?,
+        noGitOperations: Bool? = nil
     ) {
         self.init(
             exportAutoStatus: .available(exportAuto),
@@ -639,7 +657,8 @@ struct ProjectStorageConfig: Equatable, Sendable {
             exportIntervalStatus: .available(exportInterval),
             exportGitAddStatus: .available(exportGitAdd),
             importAutoStatus: .available(importAuto),
-            federationRemoteStatus: .available(federationRemote)
+            federationRemoteStatus: .available(federationRemote),
+            noGitOperationsStatus: .available(noGitOperations)
         )
     }
 
@@ -649,7 +668,8 @@ struct ProjectStorageConfig: Equatable, Sendable {
         exportIntervalStatus: ProjectStorageConfigValue<String>,
         exportGitAddStatus: ProjectStorageConfigValue<Bool>,
         importAutoStatus: ProjectStorageConfigValue<Bool>,
-        federationRemoteStatus: ProjectStorageConfigValue<String>
+        federationRemoteStatus: ProjectStorageConfigValue<String>,
+        noGitOperationsStatus: ProjectStorageConfigValue<Bool> = .available(nil)
     ) {
         self.exportAutoStatus = exportAutoStatus
         self.exportPathStatus = exportPathStatus
@@ -657,6 +677,7 @@ struct ProjectStorageConfig: Equatable, Sendable {
         self.exportGitAddStatus = exportGitAddStatus
         self.importAutoStatus = importAutoStatus
         self.federationRemoteStatus = federationRemoteStatus
+        self.noGitOperationsStatus = noGitOperationsStatus
     }
 
     var exportAuto: Bool? {
@@ -681,6 +702,14 @@ struct ProjectStorageConfig: Equatable, Sendable {
 
     var federationRemote: String? {
         federationRemoteStatus.value
+    }
+
+    var noGitOperations: Bool? {
+        noGitOperationsStatus.value
+    }
+
+    var usesStealthMode: Bool {
+        noGitOperations == true
     }
 
     var exportSummary: String {
@@ -863,8 +892,15 @@ struct ProjectSnapshotFileStatus: Equatable, Sendable {
             && activeDataSource?.url.standardizedFileURL.path == url.standardizedFileURL.path
     }
 
-    static func load(projectURL: URL, activeDataSource: BeadsDataSource?) -> ProjectSnapshotFileStatus {
-        let url = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+    static func load(
+        projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
+        activeDataSource: BeadsDataSource?
+    ) -> ProjectSnapshotFileStatus {
+        let url = beadsDirectoryURL.map {
+            BeadsCommandService.exportedIssuesJSONLURL(beadsDirectoryURL: $0)
+        }
+            ?? BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         return ProjectSnapshotFileStatus(
             url: url,

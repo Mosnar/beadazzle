@@ -14,7 +14,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
 
-        let firstStore = BeadStore(userDefaults: defaults)
+        let firstStore = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         firstStore.openProject(projectURL)
         try await waitForStoreToLoad(firstStore)
 
@@ -30,7 +30,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
             $0.selectedIDs.contains("bd-child") && $0.issueListMode == .flat
         }
 
-        let secondStore = BeadStore(userDefaults: defaults)
+        let secondStore = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         secondStore.openProject(projectURL)
         try await waitForStoreToLoad(secondStore)
 
@@ -72,7 +72,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         BeadWorkspaceStateRepository(userDefaults: defaults)
             .save(BeadWorkspaceStatePayload(snapshot: snapshot), projectURL: projectURL)
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openProject(projectURL)
         try await waitForStoreToLoad(store)
 
@@ -112,7 +112,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         BeadWorkspaceStateRepository(userDefaults: defaults)
             .save(BeadWorkspaceStatePayload(snapshot: snapshot), projectURL: projectURL)
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openProject(projectURL)
         try await waitForStoreToLoad(store)
 
@@ -135,7 +135,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openProject(projectURL)
         try await waitForStoreToLoad(store)
 
@@ -162,7 +162,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         let projectB = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openProject(projectA)
         try await waitForStoreToLoad(store)
         store.searchText = "Sibling"
@@ -182,7 +182,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openProject(projectURL)
         try await waitForStoreToLoad(store)
 
@@ -198,7 +198,7 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         let projectB = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
 
-        let store = BeadStore(userDefaults: defaults)
+        let store = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
         store.openProject(projectA)
         try await waitForStoreToLoad(store)
         store.searchText = "Sibling"

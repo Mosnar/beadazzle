@@ -74,6 +74,38 @@ final class BeadsInteractionsReaderTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func testRepositoryReadsInteractionsFromResolvedTrackerDirectory() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RedirectedInteractionsTests-\(UUID().uuidString)", isDirectory: true)
+        let projectURL = rootURL.appendingPathComponent("worktree", isDirectory: true)
+        let localDirectory = projectURL.appendingPathComponent(".beads", isDirectory: true)
+        let trackerDirectory = rootURL.appendingPathComponent("tracker", isDirectory: true)
+        try FileManager.default.createDirectory(at: localDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: trackerDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        try #"{"id":"local","kind":"field_change","created_at":"2026-07-03T20:24:02Z","issue_id":"bd-a","extra":{"field":"priority","old_value":"2","new_value":"1"}}"#
+            .write(
+                to: localDirectory.appendingPathComponent("interactions.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        try #"{"id":"redirected","kind":"field_change","created_at":"2026-07-03T20:24:03Z","issue_id":"bd-a","extra":{"field":"status","old_value":"open","new_value":"closed"}}"#
+            .write(
+                to: trackerDirectory.appendingPathComponent("interactions.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let events = try await BeadActivityHistoryRepository().events(
+            projectURL: projectURL,
+            beadsDirectoryURL: trackerDirectory,
+            issueID: "bd-a"
+        )
+
+        XCTAssertEqual(events.map(\.id), ["redirected"])
+    }
+
     func testSnapshotReaderDoesNotPutInteractionsOnProjectLoadPath() throws {
         let projectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("InteractionsSnapshotTests-\(UUID().uuidString)", isDirectory: true)

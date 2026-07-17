@@ -191,6 +191,7 @@ extension BeadStore {
         _activityLoadError = nil
         _isLoadingActivity = true
         let repository = activityHistoryRepository
+        let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
         let validIssueIDs = index.allIssueIDs
         let issueSetRevision = project.issueReferenceLookup.revision
 
@@ -199,6 +200,7 @@ extension BeadStore {
             do {
                 let loadedEvents = try await repository.events(
                     projectURL: projectURL,
+                    beadsDirectoryURL: beadsDirectoryURL,
                     issueID: issueID,
                     validIssueIDs: validIssueIDs,
                     issueSetRevision: issueSetRevision

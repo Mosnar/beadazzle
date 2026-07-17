@@ -31,13 +31,14 @@ actor BeadActivityHistoryRepository {
 
     func events(
         projectURL: URL,
+        beadsDirectoryURL: URL? = nil,
         issueID: String,
         validIssueIDs: Set<String>? = nil,
         issueSetRevision: Int = 0
     ) throws -> [BeadIssueEvent] {
         try Task.checkCancellation()
-        let url = projectURL
-            .appendingPathComponent(".beads", isDirectory: true)
+        let url = (beadsDirectoryURL
+            ?? projectURL.appendingPathComponent(".beads", isDirectory: true))
             .appendingPathComponent(BeadsInteractionsReader.fileName)
         guard let fingerprint = fingerprint(for: url) else {
             if cachedIndex?.url.standardizedFileURL == url.standardizedFileURL {
@@ -58,9 +59,9 @@ actor BeadActivityHistoryRepository {
         return try readEvents(at: locations, from: url)
     }
 
-    func discard(projectURL: URL) {
-        let url = projectURL
-            .appendingPathComponent(".beads", isDirectory: true)
+    func discard(projectURL: URL, beadsDirectoryURL: URL? = nil) {
+        let url = (beadsDirectoryURL
+            ?? projectURL.appendingPathComponent(".beads", isDirectory: true))
             .appendingPathComponent(BeadsInteractionsReader.fileName)
             .standardizedFileURL
         if cachedIndex?.url.standardizedFileURL == url {

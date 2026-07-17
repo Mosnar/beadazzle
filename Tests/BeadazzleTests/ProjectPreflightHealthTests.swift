@@ -143,6 +143,54 @@ final class ProjectPreflightHealthTests: XCTestCase {
             "Enable automatic external refresh or export.auto."
         )
     }
+
+    func testStealthModeTreatsMissingHooksAsIntentional() {
+        let fixture = PreflightFixture()
+        let health = fixture.health(
+            noGitOperations: true,
+            hooks: BeadsHooksStatus(hooks: [
+                BeadsHooksStatus.Hook(name: "pre-commit", state: .missing, detail: "not installed")
+            ])
+        )
+
+        let preflight = ProjectPreflightHealth.evaluate(
+            projectURL: fixture.projectURL,
+            missingDataSourceURL: nil,
+            activeDataSource: fixture.jsonlSource,
+            snapshotFreshness: fixture.freshness,
+            health: health,
+            automaticallyRefreshesExternalChanges: true,
+            isLoading: false
+        )
+
+        XCTAssertEqual(preflight.check(.gitHooks)?.status, .info)
+        XCTAssertEqual(preflight.check(.gitHooks)?.summary, "Disabled by stealth mode")
+        XCTAssertNil(preflight.check(.gitHooks)?.actionHint)
+    }
+
+    func testUnknownGitIntegrationDoesNotOfferHookInstallation() {
+        let fixture = PreflightFixture()
+        var health = fixture.health(hooks: BeadsHooksStatus(hooks: [
+            BeadsHooksStatus.Hook(name: "pre-commit", state: .missing, detail: "not installed")
+        ]))
+        var config = health.storageConfig.value!
+        config.noGitOperationsStatus = .unavailable("configuration read failed")
+        health.storageConfig = .available(config)
+
+        let preflight = ProjectPreflightHealth.evaluate(
+            projectURL: fixture.projectURL,
+            missingDataSourceURL: nil,
+            activeDataSource: fixture.jsonlSource,
+            snapshotFreshness: fixture.freshness,
+            health: health,
+            automaticallyRefreshesExternalChanges: true,
+            isLoading: false
+        )
+
+        XCTAssertEqual(preflight.check(.gitHooks)?.status, .warning)
+        XCTAssertEqual(preflight.check(.gitHooks)?.summary, "Git integration status unavailable")
+        XCTAssertEqual(preflight.check(.gitHooks)?.actionHint, "Refresh Status")
+    }
 }
 
 private extension ProjectPreflightHealth {
@@ -171,6 +219,7 @@ private struct PreflightFixture {
 
     func health(
         exportAuto: Bool = true,
+        noGitOperations: Bool = false,
         hooks: BeadsHooksStatus = BeadsHooksStatus(hooks: []),
         backup: BeadsBackupStatus = BeadsBackupStatus(
             backup: BeadsBackupStatus.Backup(lastDoltCommit: "commit", timestamp: "2026-07-08T13:35:44.99568Z"),
@@ -200,7 +249,8 @@ private struct PreflightFixture {
                 exportInterval: "60s",
                 exportGitAdd: true,
                 importAuto: false,
-                federationRemote: nil
+                federationRemote: nil,
+                noGitOperations: noGitOperations
             )),
             hooks: .available(hooks),
             backup: .available(backup),

@@ -122,7 +122,8 @@ private struct ProjectStorageActionsSection: View {
                             Task { await store.exportProjectSnapshotNow() }
                         }
 
-                        if project.projectHealthSnapshot?.hooks.value?.hasMissingHooks == true {
+                        if project.projectHealthSnapshot?.hooks.value?.hasMissingHooks == true,
+                           project.projectEnvironment?.gitIntegration == .enabled {
                             ProjectHealthActionButton(
                                 title: "Install Hooks",
                                 systemImage: "wrench.and.screwdriver",
@@ -196,12 +197,15 @@ private struct ProjectStorageOverviewSection: View {
 
     var body: some View {
         Section("Overview") {
-            LabeledContent("Source of truth") {
-                if let context = project.projectHealthSnapshot?.context.value {
+            LabeledContent("Storage mode") {
+                if let environment = project.projectEnvironment {
                     HStack(spacing: 8) {
-                        ProjectHealthValueText(context.usesCurrentEmbeddedDolt ? "Embedded Dolt" : context.storageSummary)
-                        if !context.usesCurrentEmbeddedDolt {
-                            ProjectHealthBadge(title: "Check", style: .warning)
+                        ProjectHealthValueText(environment.storageMode.displayName)
+                        if environment.isRedirected {
+                            ProjectHealthBadge(title: "Redirected", style: .info)
+                        }
+                        if environment.storageMode.refreshesWhenAppActivates {
+                            ProjectHealthBadge(title: "Activation Refresh", style: .info)
                         }
                     }
                 } else {
@@ -209,14 +213,28 @@ private struct ProjectStorageOverviewSection: View {
                 }
             }
 
-            LabeledContent("App reads") {
-                if let source = project.projectHealthSnapshot?.snapshotFile.activeDataSource {
+            LabeledContent("Git integration") {
+                ProjectHealthValueText(project.projectEnvironment?.gitIntegration.displayName)
+            }
+
+            LabeledContent("Role") {
+                if let environment = project.projectEnvironment {
                     HStack(spacing: 8) {
-                        ProjectHealthValueText(source.kind == .jsonl ? "JSONL snapshot" : "SQLite snapshot")
-                        if source.kind == .sqlite {
-                            ProjectHealthBadge(title: "Legacy", style: .warning)
+                        ProjectHealthValueText(environment.role.displayName)
+                        if environment.role == .contributor {
+                            ProjectHealthBadge(title: "Routed", style: .info)
+                                .help("bd routes new planning beads according to this checkout's contributor configuration.")
                         }
                     }
+                } else {
+                    ProjectHealthValueText(nil)
+                }
+            }
+
+            LabeledContent("App reads") {
+                if let source = project.projectHealthSnapshot?.snapshotFile.activeDataSource {
+                    ProjectHealthValueText("JSONL snapshot")
+                        .help(source.displayPath)
                 } else {
                     ProjectHealthValueText(nil)
                 }
@@ -231,7 +249,12 @@ private struct ProjectStorageOverviewSection: View {
             }
 
             LabeledContent("Git hooks") {
-                if let hooks = project.projectHealthSnapshot?.hooks.value {
+                if project.projectHealthSnapshot?.storageConfig.value?.usesStealthMode == true {
+                    HStack(spacing: 8) {
+                        ProjectHealthValueText("Disabled")
+                        ProjectHealthBadge(title: "Stealth", style: .info)
+                    }
+                } else if let hooks = project.projectHealthSnapshot?.hooks.value {
                     HStack(spacing: 8) {
                         ProjectHealthValueText(hooks.summary)
                         if hooks.hasMissingHooks {
@@ -270,6 +293,7 @@ private struct ProjectStorageOverviewSection: View {
 
 private struct ProjectStorageRefreshSection: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
 
     var body: some View {
         @Bindable var store = store
@@ -282,8 +306,15 @@ private struct ProjectStorageRefreshSection: View {
         } header: {
             Text("Automatic Refresh")
         } footer: {
-            Text("When Beads changes outside Beadazzle, export and reload its readable snapshot. Direct snapshot changes are always reloaded.")
+            Text(refreshExplanation)
         }
+    }
+
+    private var refreshExplanation: String {
+        if project.projectEnvironment?.storageMode.refreshesWhenAppActivates == true {
+            return "Reload server-backed Beads when Beadazzle becomes active. Local snapshot changes are always reloaded."
+        }
+        return "When Beads changes outside Beadazzle, export and reload its readable snapshot. Direct snapshot changes are always reloaded."
     }
 }
 
@@ -324,8 +355,20 @@ private struct ProjectStorageDetailsSection: View {
             SettingsDetailRow("Backend") { ProjectHealthValueText(context.backend) }
             SettingsDetailRow("Dolt Mode") { ProjectHealthValueText(context.doltMode) }
             SettingsDetailRow("Database") { ProjectHealthValueText(context.database) }
-            SettingsDetailRow("Database Path") {
-                ProjectHealthPathText(context.databasePath(projectURL: project.projectURL ?? URL(fileURLWithPath: "")))
+            if project.projectEnvironment?.storageMode == .embedded {
+                SettingsDetailRow("Database Path") {
+                    ProjectHealthPathText(
+                        project.projectEnvironment?.beadsDirectoryURL
+                            .appendingPathComponent("embeddeddolt", isDirectory: true)
+                            .path
+                    )
+                }
+            }
+            SettingsDetailRow("Tracker Directory") {
+                ProjectHealthPathText(project.projectEnvironment?.beadsDirectoryURL.path ?? context.beadsDirectory)
+            }
+            SettingsDetailRow("Redirected") {
+                ProjectHealthValueText(ProjectHealthFormatting.formattedBool(project.projectEnvironment?.isRedirected))
             }
             SettingsDetailRow("Role") { ProjectHealthValueText(context.role) }
             SettingsDetailRow("Schema") { ProjectHealthValueText(context.schemaVersion.map(String.init)) }
@@ -380,10 +423,14 @@ private struct ProjectStorageDetailsSection: View {
                 )
             }
             SettingsDetailRow("Git Add Export") {
-                ProjectHealthConfigValueText(
-                    config.exportGitAddStatus.display { ProjectHealthFormatting.formattedBool($0) },
-                    errorMessage: config.exportGitAddStatus.errorMessage
-                )
+                if config.usesStealthMode {
+                    ProjectHealthValueText("Disabled by stealth mode")
+                } else {
+                    ProjectHealthConfigValueText(
+                        config.exportGitAddStatus.display { ProjectHealthFormatting.formattedBool($0) },
+                        errorMessage: config.exportGitAddStatus.errorMessage
+                    )
+                }
             }
         } else {
             ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
@@ -409,7 +456,11 @@ private struct ProjectStorageDetailsSection: View {
             ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
         }
 
-        if let hooks = project.projectHealthSnapshot?.hooks.value {
+        if project.projectHealthSnapshot?.storageConfig.value?.usesStealthMode == true {
+            SettingsDetailRow("Git Integration") {
+                ProjectHealthValueText("Disabled by stealth mode")
+            }
+        } else if let hooks = project.projectHealthSnapshot?.hooks.value {
             if hooks.hasMissingHooks {
                 SettingsDetailRow("Missing Hooks") {
                     ProjectHealthPathText(
