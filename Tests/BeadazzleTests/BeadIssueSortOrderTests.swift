@@ -68,12 +68,51 @@ final class BeadIssueSortOrderTests: XCTestCase {
         XCTAssertEqual([older, lowerPriority, newer].sorted(by: order.areInIncreasingOrder).map(\.id), ["bd-2", "bd-1", "bd-3"])
     }
 
+    func testCompactIndexSortMatchesFullIssueComparatorForEveryFieldAndDirection() {
+        let issues = [
+            issue(
+                "bd-10", title: "Issue 10", status: "open", type: "task", priority: 2,
+                createdAt: Date(timeIntervalSince1970: 30), updatedAt: Date(timeIntervalSince1970: 40)
+            ),
+            issue(
+                "bd-2", title: "Issue 2", status: "closed", type: "bug", priority: 0,
+                createdAt: nil, updatedAt: Date(timeIntervalSince1970: 20)
+            ),
+            issue(
+                "bd-1", title: "Álpha", status: "open", type: "epic", priority: 2,
+                createdAt: Date(timeIntervalSince1970: 10), updatedAt: nil
+            ),
+            issue(
+                "bd-20", title: "beta", status: "review", type: "task", priority: 3,
+                createdAt: Date(timeIntervalSince1970: 20), updatedAt: Date(timeIntervalSince1970: 30)
+            )
+        ]
+        let index = BeadProjectIndex(
+            issues: issues,
+            dependencies: [],
+            semantics: .fallback(issues: issues)
+        )
+
+        for sort in IssueSort.allCases {
+            for direction in SortDirection.allCases {
+                let order = BeadIssueSortOrder(sort: sort, direction: direction)
+                let expected = issues.sorted(by: order.areInIncreasingOrder).map(\.id)
+                XCTAssertEqual(
+                    index.sortedIssueIDs(Array(issues.map(\.id).reversed()), sortOrder: order),
+                    expected,
+                    "\(sort.rawValue) \(direction.rawValue)"
+                )
+            }
+        }
+    }
+
     private func issue(
         _ id: String,
         title: String,
         status: String,
         type: String,
         priority: Int = 2,
+        createdAt: Date? = nil,
         updatedAt: Date? = nil
     ) -> BeadIssue {
         BeadIssue(
@@ -88,7 +127,7 @@ final class BeadIssueSortOrderTests: XCTestCase {
             issueType: type,
             assignee: nil,
             owner: nil,
-            createdAt: nil,
+            createdAt: createdAt,
             updatedAt: updatedAt,
             closedAt: nil,
             dueAt: nil,

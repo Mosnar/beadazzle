@@ -275,6 +275,17 @@ struct BeadProjectIndex: Sendable {
         issueByID[id]
     }
 
+    func sortedIssueIDs(_ ids: [String], sortOrder: BeadIssueSortOrder) -> [String] {
+        var candidates: [BeadIssueSortCandidate] = []
+        candidates.reserveCapacity(ids.count)
+        for id in ids {
+            guard let issue = issueByID[id] else { continue }
+            candidates.append(sortOrder.candidate(for: issue))
+        }
+        candidates.sort(by: sortOrder.areInIncreasingOrder)
+        return candidates.map(\.id)
+    }
+
     func parentID(for issueID: String) -> String? {
         parentIDByIssueID[issueID]
     }
@@ -286,8 +297,8 @@ struct BeadProjectIndex: Sendable {
     func immediateChildRows(parentID: String, sortOrder: BeadIssueSortOrder) -> [IssueListRow] {
         let childIDs = childIDsByParentID[parentID] ?? []
         guard !childIDs.isEmpty else { return [] }
-        let visibleIDs = Set(childIDs)
-        return sortedSiblingIDs(childIDs, visibleIDs: visibleIDs, sortOrder: sortOrder).map { issueID in
+        let sortedChildIDs = sortedIssueIDs(childIDs, sortOrder: sortOrder)
+        return dependencyOrderedSiblingIDs(sortedChildIDs).map { issueID in
             IssueListRow(
                 issueID: issueID,
                 depth: 0,
@@ -485,6 +496,7 @@ struct BeadProjectIndex: Sendable {
         expandedIssueIDs: Set<String>,
         collapsedIssueIDs: Set<String> = [],
         sortOrder: BeadIssueSortOrder,
+        filteredIssueIDsAreSorted: Bool = false,
         bookmark: BeadBookmark = .all,
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
@@ -517,10 +529,11 @@ struct BeadProjectIndex: Sendable {
             return rows
         case .outline:
             return outlineRows(
-                matchingIssueIDs: Set(filteredIssueIDs),
+                matchingIssueIDs: filteredIssueIDs,
                 expandedIssueIDs: expandedIssueIDs,
                 collapsedIssueIDs: collapsedIssueIDs,
                 sortOrder: sortOrder,
+                matchingIssueIDsAreSorted: filteredIssueIDsAreSorted,
                 shouldCancel: shouldCancel
             )
         }
@@ -753,37 +766,75 @@ struct BeadProjectIndex: Sendable {
     }
 
     private func outlineRows(
-        matchingIssueIDs: Set<String>,
+        matchingIssueIDs: [String],
         expandedIssueIDs: Set<String>,
         collapsedIssueIDs: Set<String>,
         sortOrder: BeadIssueSortOrder,
+        matchingIssueIDsAreSorted: Bool,
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
+        let matchingIDSet = Set(matchingIssueIDs)
         let visibleContextIDs = outlineVisibleIDs(
-            matchingIssueIDs: matchingIssueIDs,
+            matchingIssueIDs: matchingIDSet,
             expandedIssueIDs: expandedIssueIDs,
             collapsedIssueIDs: collapsedIssueIDs,
             shouldCancel: shouldCancel
         )
         guard !shouldCancel() else { return [] }
 
-        let rootIDs = visibleContextIDs.filter { parentID(for: $0) == nil }
+        let orderedMatchingIDs = matchingIssueIDsAreSorted
+            ? matchingIssueIDs
+            : sortedIssueIDs(matchingIssueIDs, sortOrder: sortOrder)
+        var rootIDs: [String] = []
+        rootIDs.reserveCapacity(orderedMatchingIDs.count)
+        var visibleChildIDsByParentID: [String: [String]] = [:]
+        for issueID in orderedMatchingIDs {
+            guard !shouldCancel() else { return [] }
+            if let parentID = parentID(for: issueID), visibleContextIDs.contains(parentID) {
+                visibleChildIDsByParentID[parentID, default: []].append(issueID)
+            } else {
+                rootIDs.append(issueID)
+            }
+        }
+
+        // Matching IDs already follow the requested sort. Append context separately and
+        // re-sort only sibling groups whose order can have been disturbed. This avoids a
+        // project-wide context sort and merge when a sparse match has a deep ancestor chain.
+        var rootIDsNeedSorting = false
+        var childGroupsNeedingSort: Set<String> = []
+        for issueID in visibleContextIDs where !matchingIDSet.contains(issueID) {
+            guard !shouldCancel() else { return [] }
+            if let parentID = parentID(for: issueID), visibleContextIDs.contains(parentID) {
+                if !(visibleChildIDsByParentID[parentID]?.isEmpty ?? true) {
+                    childGroupsNeedingSort.insert(parentID)
+                }
+                visibleChildIDsByParentID[parentID, default: []].append(issueID)
+            } else {
+                rootIDsNeedSorting = rootIDsNeedSorting || !rootIDs.isEmpty
+                rootIDs.append(issueID)
+            }
+        }
+        if rootIDsNeedSorting {
+            rootIDs = sortedIssueIDs(rootIDs, sortOrder: sortOrder)
+        }
+        for parentID in childGroupsNeedingSort {
+            guard !shouldCancel() else { return [] }
+            guard let childIDs = visibleChildIDsByParentID[parentID] else { continue }
+            visibleChildIDsByParentID[parentID] = sortedIssueIDs(childIDs, sortOrder: sortOrder)
+        }
+
         var rows: [IssueListRow] = []
         rows.reserveCapacity(visibleContextIDs.count)
 
-        var nodesToVisit = sortedSiblingIDs(
-            Array(rootIDs),
-            visibleIDs: visibleContextIDs,
-            sortOrder: sortOrder
-        )
+        var nodesToVisit = dependencyOrderedSiblingIDs(rootIDs)
             .reversed()
             .map { OutlineNode(issueID: $0, depth: 0) }
 
         while let node = nodesToVisit.popLast() {
             guard !shouldCancel() else { return [] }
             let childIDs = childIDsByParentID[node.issueID] ?? []
-            let visibleChildIDs = childIDs.filter { visibleContextIDs.contains($0) }
-            let isContext = !matchingIssueIDs.contains(node.issueID)
+            let visibleChildIDs = visibleChildIDsByParentID[node.issueID] ?? []
+            let isContext = !matchingIDSet.contains(node.issueID)
             let isExpanded = !collapsedIssueIDs.contains(node.issueID)
                 && (expandedIssueIDs.contains(node.issueID) || (isContext && !visibleChildIDs.isEmpty))
             rows.append(
@@ -798,11 +849,7 @@ struct BeadProjectIndex: Sendable {
             )
 
             guard isExpanded, !visibleChildIDs.isEmpty else { continue }
-            let childNodes = sortedSiblingIDs(
-                visibleChildIDs,
-                visibleIDs: visibleContextIDs,
-                sortOrder: sortOrder
-            )
+            let childNodes = dependencyOrderedSiblingIDs(visibleChildIDs)
                 .reversed()
                 .map { OutlineNode(issueID: $0, depth: node.depth + 1) }
             nodesToVisit.append(contentsOf: childNodes)
@@ -848,34 +895,47 @@ struct BeadProjectIndex: Sendable {
         return visibleIDs
     }
 
-    private func sortedSiblingIDs(
-        _ ids: [String],
-        visibleIDs: Set<String>,
-        sortOrder: BeadIssueSortOrder
-    ) -> [String] {
-        let siblingIDs = Set(ids)
-        let baseSortedIssues = ids.compactMap { issueByID[$0] }.sorted(by: sortOrder.areInIncreasingOrder)
-        let baseSortedIDs = baseSortedIssues.map(\.id)
-        let baseRank = Dictionary(uniqueKeysWithValues: baseSortedIDs.enumerated().map { ($0.element, $0.offset) })
-        var indegree = Dictionary(uniqueKeysWithValues: baseSortedIDs.map { ($0, 0) })
-        var blockedIDsByBlockerID: [String: [String]] = [:]
+    /// Applies blocker-before-blocked ordering only when a sibling group actually has
+    /// an internal dependency edge. The incoming IDs already follow the requested list
+    /// sort, so the overwhelmingly common no-edge path is allocation-free.
+    private func dependencyOrderedSiblingIDs(_ ids: [String]) -> [String] {
+        guard ids.count > 1 else { return ids }
+        guard ids.contains(where: { issueID in
+            (dependenciesByIssueID[issueID] ?? []).contains(where: \.isBlocking)
+        }) else { return ids }
 
-        for issueID in siblingIDs {
-            for dependency in dependenciesByIssueID[issueID] ?? [] {
-                guard siblingIDs.contains(dependency.issueID),
-                      siblingIDs.contains(dependency.dependsOnID),
-                      visibleIDs.contains(dependency.issueID),
-                      visibleIDs.contains(dependency.dependsOnID) else {
-                    continue
-                }
-                blockedIDsByBlockerID[dependency.dependsOnID, default: []].append(dependency.issueID)
-                indegree[dependency.issueID, default: 0] += 1
-            }
+        var baseRank: [String: Int] = [:]
+        baseRank.reserveCapacity(ids.count)
+        for (rank, issueID) in ids.enumerated() {
+            baseRank[issueID] = rank
         }
 
-        var readyIDs = Array(baseSortedIDs.filter { indegree[$0, default: 0] == 0 }.reversed())
+        var edges: [(blockerID: String, blockedID: String)] = []
+        for issueID in ids {
+            for dependency in dependenciesByIssueID[issueID] ?? [] where dependency.isBlocking {
+                guard baseRank[dependency.issueID] != nil,
+                      baseRank[dependency.dependsOnID] != nil else {
+                    continue
+                }
+                edges.append((blockerID: dependency.dependsOnID, blockedID: dependency.issueID))
+            }
+        }
+        guard !edges.isEmpty else { return ids }
+
+        var indegree: [String: Int] = [:]
+        indegree.reserveCapacity(ids.count)
+        for issueID in ids {
+            indegree[issueID] = 0
+        }
+        var blockedIDsByBlockerID: [String: [String]] = [:]
+        for edge in edges {
+            blockedIDsByBlockerID[edge.blockerID, default: []].append(edge.blockedID)
+            indegree[edge.blockedID, default: 0] += 1
+        }
+
+        var readyIDs = Array(ids.filter { indegree[$0, default: 0] == 0 }.reversed())
         var orderedIDs: [String] = []
-        orderedIDs.reserveCapacity(baseSortedIDs.count)
+        orderedIDs.reserveCapacity(ids.count)
 
         while let issueID = readyIDs.popLast() {
             orderedIDs.append(issueID)
@@ -888,9 +948,9 @@ struct BeadProjectIndex: Sendable {
             }
         }
 
-        guard orderedIDs.count == baseSortedIDs.count else {
+        guard orderedIDs.count == ids.count else {
             let orderedSet = Set(orderedIDs)
-            return orderedIDs + baseSortedIDs.filter { !orderedSet.contains($0) }
+            return orderedIDs + ids.filter { !orderedSet.contains($0) }
         }
 
         return orderedIDs

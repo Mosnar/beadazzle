@@ -43,6 +43,36 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
         }
     }
 
+    private func outlineIssue(id: String, title: String, parentID: String?) -> BeadIssue {
+        BeadIssue(
+            id: id,
+            title: title,
+            description: "",
+            design: "",
+            acceptanceCriteria: "",
+            notes: "",
+            status: "todo",
+            priority: 2,
+            issueType: "task",
+            assignee: nil,
+            owner: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            closedAt: nil,
+            dueAt: nil,
+            deferUntil: nil,
+            externalRef: nil,
+            parentID: parentID,
+            labels: [],
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
+        )
+    }
+
     private func time(_ label: String, iterations: Int = 5, _ body: () -> Void) {
         // Warm up once.
         body()
@@ -85,11 +115,37 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
             _ = index.filteredIssueIDs(within: allIDs, statusFilters: [], typeFilters: [], priorityFilters: [], labelFilters: [], searchText: "a")
         }
         let sortOrder = BeadIssueSortOrder(sort: .priority, direction: .ascending)
+        var sorted: [String] = []
+        time("sort") {
+            sorted = index.sortedIssueIDs(filtered, sortOrder: sortOrder)
+        }
+        time("sort + outline (collapsed)") {
+            let ids = index.sortedIssueIDs(filtered, sortOrder: sortOrder)
+            _ = index.issueListRows(
+                for: ids,
+                mode: .outline,
+                expandedIssueIDs: [],
+                sortOrder: sortOrder,
+                filteredIssueIDsAreSorted: true
+            )
+        }
         time("outline rows (collapsed)") {
-            _ = index.issueListRows(for: filtered, mode: .outline, expandedIssueIDs: [], sortOrder: sortOrder)
+            _ = index.issueListRows(
+                for: sorted,
+                mode: .outline,
+                expandedIssueIDs: [],
+                sortOrder: sortOrder,
+                filteredIssueIDsAreSorted: true
+            )
         }
         time("outline rows (all expanded)") {
-            _ = index.issueListRows(for: filtered, mode: .outline, expandedIssueIDs: Set(filtered), sortOrder: sortOrder)
+            _ = index.issueListRows(
+                for: sorted,
+                mode: .outline,
+                expandedIssueIDs: Set(sorted),
+                sortOrder: sortOrder,
+                filteredIssueIDsAreSorted: true
+            )
         }
     }
 
@@ -147,15 +203,132 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
             }
 
             let sortOrder = BeadIssueSortOrder(sort: .priority, direction: .ascending)
-            time("outline rows (collapsed)") {
-                _ = index.issueListRows(for: filtered, mode: .outline, expandedIssueIDs: [], sortOrder: sortOrder)
+            var sorted: [String] = []
+            time("sort") {
+                sorted = index.sortedIssueIDs(filtered, sortOrder: sortOrder)
             }
-            let allExpanded = Set(filtered)
+            time("sort + outline (collapsed)") {
+                let ids = index.sortedIssueIDs(filtered, sortOrder: sortOrder)
+                _ = index.issueListRows(
+                    for: ids,
+                    mode: .outline,
+                    expandedIssueIDs: [],
+                    sortOrder: sortOrder,
+                    filteredIssueIDsAreSorted: true
+                )
+            }
+            time("outline rows (collapsed)") {
+                _ = index.issueListRows(
+                    for: sorted,
+                    mode: .outline,
+                    expandedIssueIDs: [],
+                    sortOrder: sortOrder,
+                    filteredIssueIDsAreSorted: true
+                )
+            }
+            let allExpanded = Set(sorted)
             time("outline rows (all expanded)") {
-                _ = index.issueListRows(for: filtered, mode: .outline, expandedIssueIDs: allExpanded, sortOrder: sortOrder)
+                _ = index.issueListRows(
+                    for: sorted,
+                    mode: .outline,
+                    expandedIssueIDs: allExpanded,
+                    sortOrder: sortOrder,
+                    filteredIssueIDsAreSorted: true
+                )
             }
             time("flat rows") {
-                _ = index.issueListRows(for: filtered, mode: .flat, expandedIssueIDs: [], sortOrder: sortOrder)
+                _ = index.issueListRows(
+                    for: sorted,
+                    mode: .flat,
+                    expandedIssueIDs: [],
+                    sortOrder: sortOrder,
+                    filteredIssueIDsAreSorted: true
+                )
+            }
+        }
+    }
+
+    func testOutlineStressTimingsAtScale() throws {
+        guard ProcessInfo.processInfo.environment["BEADAZZLE_BENCH"] != nil else {
+            throw XCTSkip("Set BEADAZZLE_BENCH=1 to run the synthetic scale benchmark")
+        }
+
+        let scale = 10_000
+        let semantics = makeSemantics()
+        let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
+
+        do {
+            let issues = (0..<scale).map { offset in
+                outlineIssue(
+                    id: "deep-\(offset)",
+                    title: String(format: "Deep issue %05d", offset),
+                    parentID: offset == 0 ? nil : "deep-\(offset - 1)"
+                )
+            }
+            let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics)
+            let matchingIDs = ["deep-\(scale - 1)"]
+            let rows = index.issueListRows(
+                for: matchingIDs,
+                mode: .outline,
+                expandedIssueIDs: [],
+                sortOrder: sortOrder,
+                filteredIssueIDsAreSorted: true
+            )
+            XCTAssertEqual(rows.count, scale)
+
+            time("outline sparse deep context", iterations: 3) {
+                _ = index.issueListRows(
+                    for: matchingIDs,
+                    mode: .outline,
+                    expandedIssueIDs: [],
+                    sortOrder: sortOrder,
+                    filteredIssueIDsAreSorted: true
+                )
+            }
+        }
+
+        do {
+            let rootID = "sibling-root"
+            let childIDs = (1..<scale).map { "sibling-\($0)" }
+            let issues = [outlineIssue(id: rootID, title: "Root", parentID: nil)]
+                + childIDs.enumerated().map { offset, issueID in
+                    outlineIssue(
+                        id: issueID,
+                        title: String(format: "Sibling %05d", offset),
+                        parentID: rootID
+                    )
+                }
+            let dependencies = zip(childIDs.dropLast(), childIDs.dropFirst()).map { pair in
+                BeadDependency(
+                    issueID: pair.0,
+                    dependsOnID: pair.1,
+                    type: "blocks",
+                    createdAt: nil
+                )
+            }
+            let index = BeadProjectIndex(
+                issues: issues,
+                dependencies: dependencies,
+                semantics: semantics
+            )
+            let sortedIDs = index.sortedIssueIDs([rootID] + childIDs, sortOrder: sortOrder)
+            let rows = index.issueListRows(
+                for: sortedIDs,
+                mode: .outline,
+                expandedIssueIDs: [rootID],
+                sortOrder: sortOrder,
+                filteredIssueIDsAreSorted: true
+            )
+            XCTAssertEqual(rows.count, scale)
+
+            time("outline blocking siblings", iterations: 3) {
+                _ = index.issueListRows(
+                    for: sortedIDs,
+                    mode: .outline,
+                    expandedIssueIDs: [rootID],
+                    sortOrder: sortOrder,
+                    filteredIssueIDsAreSorted: true
+                )
             }
         }
     }

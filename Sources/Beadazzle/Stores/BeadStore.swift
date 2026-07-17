@@ -128,6 +128,34 @@ final class BeadProjectStore {
     }
 }
 
+enum BeadQueryRecomputeScope: Sendable {
+    case rowsOnly
+    case resort
+    case full
+
+    func merging(_ other: Self) -> Self {
+        switch (self, other) {
+        case (.full, _), (_, .full): .full
+        case (.resort, _), (_, .resort): .resort
+        case (.rowsOnly, .rowsOnly): .rowsOnly
+        }
+    }
+}
+
+struct BeadQueryRecomputeRequest: Sendable {
+    let scope: BeadQueryRecomputeScope
+    let recomputeCounts: Bool
+    let pruneExpansion: Bool
+
+    func merging(_ other: Self) -> Self {
+        Self(
+            scope: scope.merging(other.scope),
+            recomputeCounts: recomputeCounts || other.recomputeCounts,
+            pruneExpansion: pruneExpansion || other.pruneExpansion
+        )
+    }
+}
+
 /// Ephemeral workspace state: list presentation, selection, saved views and history.
 @Observable
 @MainActor
@@ -154,6 +182,7 @@ final class BeadWorkspaceStore {
     @ObservationIgnored fileprivate(set) var filterTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var recomputeTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var queryGeneration = 0
+    @ObservationIgnored fileprivate(set) var pendingQueryRecomputeRequest: BeadQueryRecomputeRequest?
     @ObservationIgnored fileprivate(set) var savedViewCountTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var savedViewCountGeneration = 0
     @ObservationIgnored fileprivate(set) var sidebarSelectionTask: Task<Void, Never>?
@@ -168,6 +197,7 @@ final class BeadWorkspaceStore {
         filterTask = nil
         recomputeTask?.cancel()
         recomputeTask = nil
+        pendingQueryRecomputeRequest = nil
         savedViewCountTask?.cancel()
         savedViewCountTask = nil
         sidebarSelectionTask?.cancel()
@@ -955,6 +985,10 @@ final class BeadStore {
     internal var filterTask: Task<Void, Never>? { get { workspace.filterTask } set { workspace.filterTask = newValue } }
     internal var recomputeTask: Task<Void, Never>? { get { workspace.recomputeTask } set { workspace.recomputeTask = newValue } }
     internal var queryGeneration: Int { get { workspace.queryGeneration } set { workspace.queryGeneration = newValue } }
+    internal var pendingQueryRecomputeRequest: BeadQueryRecomputeRequest? {
+        get { workspace.pendingQueryRecomputeRequest }
+        set { workspace.pendingQueryRecomputeRequest = newValue }
+    }
     internal var savedViewCountTask: Task<Void, Never>? { get { workspace.savedViewCountTask } set { workspace.savedViewCountTask = newValue } }
     internal var savedViewCountGeneration: Int { get { workspace.savedViewCountGeneration } set { workspace.savedViewCountGeneration = newValue } }
     internal var sidebarSelectionTask: Task<Void, Never>? { get { workspace.sidebarSelectionTask } set { workspace.sidebarSelectionTask = newValue } }

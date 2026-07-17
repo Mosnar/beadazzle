@@ -677,9 +677,13 @@ final class BeadStorePreferencesTests: XCTestCase {
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
 
         store.saveCurrentViewAsBookmark(name: "First", symbolName: "bookmark")
-        store.saveCurrentViewAsBookmark(name: "Second", symbolName: "star")
+        await store.waitForPendingSavedViewCountRebuild()
         let firstID = try XCTUnwrap(store.savedViews.first?.id)
+
+        store.saveCurrentViewAsBookmark(name: "Second", symbolName: "star")
+        await store.waitForPendingSavedViewCountRebuild()
         let secondID = try XCTUnwrap(store.savedViews.last?.id)
+        XCTAssertEqual(Set(store.savedViewCounts.keys), Set([firstID, secondID]))
 
         store.renameSavedView(id: firstID, to: "Renamed")
         store.setSavedViewSymbol(id: firstID, symbolName: "flag")
@@ -693,6 +697,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let duplicateID = try XCTUnwrap(store.savedViews.last?.id)
         XCTAssertNotEqual(duplicateID, firstID)
         XCTAssertEqual(store.savedViews.last?.name, "Renamed Copy")
+        XCTAssertEqual(store.count(forSavedViewID: duplicateID), store.count(forSavedViewID: firstID))
         store.deleteSavedView(id: secondID)
         await store.waitForPendingSavedViewCountRebuild()
         XCTAssertEqual(Set(store.savedViewCounts.keys), Set([firstID, duplicateID]))

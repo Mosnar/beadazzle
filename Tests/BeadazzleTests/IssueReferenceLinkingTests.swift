@@ -57,13 +57,8 @@ final class IssueReferenceLinkingTests: XCTestCase {
             throw XCTSkip("Set BEADAZZLE_LINK_BENCH=1 to run the automatic-link performance gate")
         }
         #if DEBUG
-        let isOptimizedBuild = false
+        throw XCTSkip("Thresholds are calibrated for optimized builds — run with `swift test -c release`")
         #else
-        let isOptimizedBuild = true
-        #endif
-        guard isOptimizedBuild else {
-            throw XCTSkip("Thresholds are calibrated for optimized builds — run with `swift test -c release`")
-        }
         let issueIDs = Set((0..<25_000).map { "bd-\($0)" })
         let matcher = IssueReferenceMatcher(issueIDs: issueIDs)
         let smallText = makeText(byteCount: 8 * 1_024)
@@ -77,6 +72,7 @@ final class IssueReferenceLinkingTests: XCTestCase {
 
         XCTAssertLessThanOrEqual(smallP95, 2.0, "8 KB p95 was \(smallP95) ms")
         XCTAssertLessThanOrEqual(largeP95, 8.0, "100 KB p95 was \(largeP95) ms")
+        #endif
     }
 
     private func makeText(byteCount: Int) -> String {

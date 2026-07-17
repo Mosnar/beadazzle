@@ -64,9 +64,7 @@ struct BeadIssueListQuery: Sendable {
                 return index.sortedGateIssueIDs(ids, now: now)
             }
             let sortOrder = BeadIssueSortOrder(sort: sort, direction: direction)
-            return ids.compactMap(index.issue)
-                .sorted(by: sortOrder.areInIncreasingOrder)
-                .map(\.id)
+            return index.sortedIssueIDs(ids, sortOrder: sortOrder)
         }
     }
 
@@ -109,6 +107,7 @@ struct BeadIssueListQuery: Sendable {
                 expandedIssueIDs: outlineState.expandedIssueIDs,
                 collapsedIssueIDs: outlineState.collapsedIssueIDs,
                 sortOrder: sortOrder,
+                filteredIssueIDsAreSorted: true,
                 bookmark: bookmark,
                 shouldCancel: shouldCancel
             )
@@ -155,6 +154,7 @@ struct BeadOutlineSelectionState: Codable, Equatable, Hashable, Sendable {
     }
 
     mutating func prune(toVisibleRows rows: [IssueListRow]) -> Bool {
+        guard !expandedIssueIDs.isEmpty || !collapsedIssueIDs.isEmpty else { return false }
         let visibleIssueIDs = Set(rows.map(\.issueID))
         return prune(toValidIssueIDs: visibleIssueIDs)
     }

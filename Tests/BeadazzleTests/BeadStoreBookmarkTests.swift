@@ -45,6 +45,27 @@ final class BeadStoreBookmarkTests: XCTestCase {
         )
     }
 
+    func testDisclosureChangePreservesPendingFilterAndCountRecompute() async throws {
+        let store = try await makeLoadedStore(
+            issuesJSONL: """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"task"}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent"}
+            {"_type":"issue","id":"bd-closed","title":"Closed bug","status":"closed","priority":2,"issue_type":"bug"}
+            """
+        )
+
+        store.applyBookmark(.all)
+        // This rows-only request lands in the same main-actor turn as the full request.
+        // It must carry the pending filtering, counts, and pruning work forward when it
+        // cancels and replaces that task.
+        store.setIssueExpansion(issueID: "bd-parent", isExpanded: true)
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.filteredIssueIDs.count, 3)
+        XCTAssertEqual(store.filterCounts.typeCounts.reduce(0) { $0 + $1.1 }, 3)
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent", "bd-child", "bd-closed"])
+    }
+
     func testSwitchingBookmarksClearsDetailSelectionToReturnToList() async throws {
         let store = try await makeLoadedStore(
             issuesJSONL: """

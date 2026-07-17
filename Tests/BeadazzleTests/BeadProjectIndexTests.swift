@@ -823,6 +823,30 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(rows.map(\.issueID), ["bd-parent", "bd-blocker", "bd-blocked"])
     }
 
+    func testSiblingNonBlockingRelationshipsPreserveRequestedSort() {
+        let index = BeadProjectIndex(
+            issues: [
+                issue("bd-parent", title: "Parent", status: "open", type: "epic"),
+                issue("bd-alpha", title: "Alpha", status: "open", type: "task", parentID: "bd-parent"),
+                issue("bd-zulu", title: "Zulu", status: "open", type: "task", parentID: "bd-parent")
+            ],
+            dependencies: [
+                BeadDependency(issueID: "bd-alpha", dependsOnID: "bd-zulu", type: "related", createdAt: nil)
+            ],
+            semantics: semantics()
+        )
+        let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
+
+        let rows = index.issueListRows(
+            for: ["bd-parent", "bd-alpha", "bd-zulu"],
+            mode: .outline,
+            expandedIssueIDs: ["bd-parent"],
+            sortOrder: sortOrder
+        )
+
+        XCTAssertEqual(rows.map(\.issueID), ["bd-parent", "bd-alpha", "bd-zulu"])
+    }
+
     func testParentCycleFallsBackToDeterministicRootRows() {
         let index = BeadProjectIndex(
             issues: [
@@ -891,7 +915,8 @@ final class BeadProjectIndexTests: XCTestCase {
             for: ["bd-\(issueCount - 1)"],
             mode: .outline,
             expandedIssueIDs: [],
-            sortOrder: sortOrder
+            sortOrder: sortOrder,
+            filteredIssueIDsAreSorted: true
         )
 
         XCTAssertEqual(rows.count, issueCount)

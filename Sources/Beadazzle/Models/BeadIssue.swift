@@ -433,8 +433,21 @@ struct BeadIssueSortOrder: Sendable {
     var sort: IssueSort
     var direction: SortDirection
 
+    func candidate(for issue: BeadIssue) -> BeadIssueSortCandidate {
+        BeadIssueSortCandidate(issue: issue, sort: sort)
+    }
+
     func areInIncreasingOrder(_ lhs: BeadIssue, _ rhs: BeadIssue) -> Bool {
         let comparison = compare(lhs, rhs)
+        return isAscending(comparison)
+    }
+
+    func areInIncreasingOrder(_ lhs: BeadIssueSortCandidate, _ rhs: BeadIssueSortCandidate) -> Bool {
+        let comparison = compare(lhs, rhs)
+        return isAscending(comparison)
+    }
+
+    private func isAscending(_ comparison: ComparisonResult) -> Bool {
         switch comparison {
         case .orderedAscending:
             return direction == .ascending
@@ -443,6 +456,23 @@ struct BeadIssueSortOrder: Sendable {
         case .orderedSame:
             return false
         }
+    }
+
+    private func compare(_ lhs: BeadIssueSortCandidate, _ rhs: BeadIssueSortCandidate) -> ComparisonResult {
+        let primary: ComparisonResult
+        switch (lhs.value, rhs.value) {
+        case let (.priority(leftPriority, leftUpdatedAt), .priority(rightPriority, rightUpdatedAt)):
+            primary = compareInts(leftPriority, rightPriority)
+                .then(compareDates(rightUpdatedAt, leftUpdatedAt))
+        case let (.date(left), .date(right)):
+            primary = compareDates(left, right)
+        case let (.text(left), .text(right)):
+            primary = compareStrings(left, right)
+        default:
+            assertionFailure("Sort candidates must be created for the same sort field")
+            primary = .orderedSame
+        }
+        return primary.then(compareStrings(lhs.id, rhs.id))
     }
 
     private func compare(_ lhs: BeadIssue, _ rhs: BeadIssue) -> ComparisonResult {
@@ -481,6 +511,32 @@ struct BeadIssueSortOrder: Sendable {
 
     private func compareStrings(_ lhs: String, _ rhs: String) -> ComparisonResult {
         lhs.naturalCompare(rhs)
+    }
+}
+
+/// A compact projection of the fields needed by one list sort. Keeping these in the
+/// temporary sort buffer avoids retaining and moving complete `BeadIssue` values —
+/// including all of their long-form text — throughout an O(n log n) sort.
+struct BeadIssueSortCandidate: Sendable {
+    enum Value: Sendable {
+        case priority(Int, updatedAt: Date?)
+        case date(Date?)
+        case text(String)
+    }
+
+    let id: String
+    let value: Value
+
+    init(issue: BeadIssue, sort: IssueSort) {
+        id = issue.id
+        value = switch sort {
+        case .priority: .priority(issue.priority, updatedAt: issue.updatedAt)
+        case .updated: .date(issue.updatedAt)
+        case .created: .date(issue.createdAt)
+        case .title: .text(issue.title)
+        case .status: .text(issue.status)
+        case .type: .text(issue.issueType)
+        }
     }
 }
 

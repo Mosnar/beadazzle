@@ -337,7 +337,7 @@ extension BeadStore {
         tree.append(view)
         _savedViewTree = tree
         persistSavedViews()
-        scheduleSavedViewCountRebuild()
+        scheduleSavedViewCountRebuild(for: [view.id])
         applySavedView(id: view.id)
     }
 
@@ -359,7 +359,7 @@ extension BeadStore {
         tree.append(view)
         _savedViewTree = tree
         persistSavedViews()
-        scheduleSavedViewCountRebuild()
+        scheduleSavedViewCountRebuild(for: [view.id])
         applySavedView(id: view.id)
     }
 
@@ -383,7 +383,7 @@ extension BeadStore {
         }) else { return }
         _savedViewTree = tree
         persistSavedViews()
-        scheduleSavedViewCountRebuild()
+        scheduleSavedViewCountRebuild(for: [id])
         applySavedView(id: id)
     }
 
@@ -466,13 +466,20 @@ extension BeadStore {
 
     func duplicateSavedView(id: UUID) {
         guard canMutateSavedViews, var duplicate = savedViewTree.savedView(id: id) else { return }
+        let sourceCount = savedViewCounts[id]
         duplicate.id = UUID()
         duplicate.name = uniqueSavedViewName("\(duplicate.name) Copy")
+        let duplicateID = duplicate.id
         var tree = savedViewTree
         guard tree.insertSavedView(normalizedSavedView(duplicate), after: id) else { return }
         _savedViewTree = tree
+        if let sourceCount {
+            _savedViewCounts[duplicateID] = sourceCount
+        }
         persistSavedViews()
-        scheduleSavedViewCountRebuild()
+        if sourceCount == nil || savedViewCountTask != nil {
+            scheduleSavedViewCountRebuild(for: [duplicateID])
+        }
     }
 
     func updateSavedViewFilterFromCurrentState(id: UUID) {
@@ -491,6 +498,7 @@ extension BeadStore {
 
     func deleteSavedView(id: UUID) {
         guard canMutateSavedViews, savedViews.contains(where: { $0.id == id }) else { return }
+        let wasRebuildingCounts = savedViewCountTask != nil
         let wasActive = activeSavedViewID == id
         let wasSource = sourceSavedViewID == id
         var tree = savedViewTree
@@ -504,7 +512,9 @@ extension BeadStore {
             _sourceSavedViewID = nil
         }
         persistSavedViews()
-        scheduleSavedViewCountRebuild()
+        if wasRebuildingCounts {
+            scheduleSavedViewCountRebuild()
+        }
         if wasActive {
             recordWorkspaceSnapshotIfNeeded()
         } else if wasSource {
@@ -607,7 +617,7 @@ extension BeadStore {
         _savedViewTree = tree
         persistSavedViews()
         if invalidatesCount {
-            scheduleSavedViewCountRebuild()
+            scheduleSavedViewCountRebuild(for: [id])
         }
     }
 

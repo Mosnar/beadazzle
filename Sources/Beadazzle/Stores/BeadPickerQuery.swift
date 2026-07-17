@@ -20,12 +20,15 @@ struct BeadPickerQuery: Sendable {
         )
         guard !shouldCancel() else { return .empty }
         let candidateIDSet = Set(candidateIDs)
+        let sortedCandidateIDs = index.sortedIssueIDs(candidateIDs, sortOrder: sortOrder)
+        guard !shouldCancel() else { return .empty }
         let rows = index.issueListRows(
-            for: candidateIDs,
+            for: sortedCandidateIDs,
             mode: mode,
             expandedIssueIDs: outlineState.expandedIssueIDs,
             collapsedIssueIDs: outlineState.collapsedIssueIDs,
             sortOrder: sortOrder,
+            filteredIssueIDsAreSorted: true,
             shouldCancel: shouldCancel
         )
         guard !shouldCancel() else { return .empty }

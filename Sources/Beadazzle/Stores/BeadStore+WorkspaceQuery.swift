@@ -264,11 +264,19 @@ extension BeadStore {
     }
 
     internal func applyFilters() {
-        scheduleQueryRecompute(recomputeCounts: true, pruneExpansion: true)
+        scheduleQueryRecompute(BeadQueryRecomputeRequest(
+            scope: .full,
+            recomputeCounts: true,
+            pruneExpansion: true
+        ))
     }
 
     private func applySortOnly() {
-        scheduleQueryRecompute(recomputeCounts: false, pruneExpansion: false)
+        scheduleQueryRecompute(BeadQueryRecomputeRequest(
+            scope: .resort,
+            recomputeCounts: false,
+            pruneExpansion: false
+        ))
     }
 
     internal var selectedOutlineRow: IssueListRow? {
@@ -315,21 +323,27 @@ extension BeadStore {
     }
 
     internal func rebuildIssueListRows(pruneExpansion: Bool = false) {
-        scheduleQueryRecompute(recomputeCounts: false, pruneExpansion: pruneExpansion)
+        scheduleQueryRecompute(BeadQueryRecomputeRequest(
+            scope: .rowsOnly,
+            recomputeCounts: false,
+            pruneExpansion: pruneExpansion
+        ))
     }
 
-    /// Computes the filtered/sorted ID list, list rows, and (optionally) filter counts
-    /// off the main actor, then applies the result back on the main actor. Successive
-    /// calls cancel the in-flight computation and a generation token guards against
-    /// applying stale results.
-    private func scheduleQueryRecompute(recomputeCounts: Bool, pruneExpansion: Bool) {
+    /// Computes the requested portion of the issue-list query off the main actor, then
+    /// applies the result back on the main actor. A new request absorbs any stronger
+    /// in-flight work before canceling it, so a disclosure click cannot discard pending
+    /// filtering, sorting, counts, or expansion pruning.
+    private func scheduleQueryRecompute(_ requested: BeadQueryRecomputeRequest) {
         // Keep outline state coherent on the main actor: dropping IDs that no longer
         // exist is cheap and must not race with the background computation.
         _ = outlineState.prune(toValidIssueIDs: index.allIssueIDs)
 
+        let request = pendingQueryRecomputeRequest?.merging(requested) ?? requested
         queryGeneration &+= 1
         let generation = queryGeneration
         recomputeTask?.cancel()
+        pendingQueryRecomputeRequest = request
 
         let index = index
         let bookmark = selectedBookmark
@@ -345,65 +359,82 @@ extension BeadStore {
         let gateClock = gateClock
         let savedViewFilterClock = savedViewFilterClock
         let outlineSnapshot = outlineState
+        let currentFilteredIssueIDs = request.scope == .full ? [] : filteredIssueIDs
 
         recomputeTask = Task { @MainActor [weak self] in
             defer {
                 if let self, self.queryGeneration == generation {
                     self.recomputeTask = nil
+                    self.pendingQueryRecomputeRequest = nil
                 }
             }
             let worker = Task.detached(priority: .userInitiated) { () -> QueryResults in
-                let filteredIDs: [String]
+                let sortedIDs: [String]
                 var counts: BeadFilterCounts?
-                if advancedPredicate == nil, recomputeCounts, bookmark != .gates {
-                    (filteredIDs, counts) = BeadIssueListQuery.filteredIssueIDsAndCounts(
+                switch request.scope {
+                case .rowsOnly:
+                    sortedIDs = currentFilteredIssueIDs
+                case .resort:
+                    sortedIDs = BeadIssueListQuery.sortedIssueIDs(
                         index: index,
+                        ids: currentFilteredIssueIDs,
+                        sort: sort,
+                        direction: direction,
                         bookmark: bookmark,
-                        statusFilters: statusFilters,
-                        typeFilters: typeFilters,
-                        priorityFilters: priorityFilters,
-                        labelFilters: labelFilters,
-                        searchText: searchText,
-                        shouldCancel: { Task.isCancelled }
+                        now: gateClock
                     )
-                } else {
-                    filteredIDs = BeadSavedViewQueryEvaluator.filteredIssueIDs(
-                        index: index,
-                        filter: BeadSavedViewQuery(
-                            basePreset: BeadBookmarkToken(bookmark),
-                            statusFilters: statusFilters,
-                            typeFilters: typeFilters,
-                            priorityFilters: priorityFilters,
-                            labelFilters: labelFilters,
-                            searchText: searchText,
-                            advancedPredicate: advancedPredicate
-                        ),
-                        now: savedViewFilterClock,
-                        shouldCancel: { Task.isCancelled }
-                    )
-                    counts = recomputeCounts
-                        ? BeadIssueListQuery.filterCounts(
+                case .full:
+                    let filteredIDs: [String]
+                    if advancedPredicate == nil, request.recomputeCounts, bookmark != .gates {
+                        (filteredIDs, counts) = BeadIssueListQuery.filteredIssueIDsAndCounts(
                             index: index,
                             bookmark: bookmark,
                             statusFilters: statusFilters,
                             typeFilters: typeFilters,
                             priorityFilters: priorityFilters,
+                            labelFilters: labelFilters,
                             searchText: searchText,
-                            selectedLabels: labelFilters
+                            shouldCancel: { Task.isCancelled }
                         )
-                        : nil
+                    } else {
+                        filteredIDs = BeadSavedViewQueryEvaluator.filteredIssueIDs(
+                            index: index,
+                            filter: BeadSavedViewQuery(
+                                basePreset: BeadBookmarkToken(bookmark),
+                                statusFilters: statusFilters,
+                                typeFilters: typeFilters,
+                                priorityFilters: priorityFilters,
+                                labelFilters: labelFilters,
+                                searchText: searchText,
+                                advancedPredicate: advancedPredicate
+                            ),
+                            now: savedViewFilterClock,
+                            shouldCancel: { Task.isCancelled }
+                        )
+                        counts = request.recomputeCounts
+                            ? BeadIssueListQuery.filterCounts(
+                                index: index,
+                                bookmark: bookmark,
+                                statusFilters: statusFilters,
+                                typeFilters: typeFilters,
+                                priorityFilters: priorityFilters,
+                                searchText: searchText,
+                                selectedLabels: labelFilters
+                            )
+                            : nil
+                    }
+                    sortedIDs = BeadIssueListQuery.sortedIssueIDs(
+                        index: index,
+                        ids: filteredIDs,
+                        sort: sort,
+                        direction: direction,
+                        bookmark: bookmark,
+                        now: gateClock
+                    )
                 }
-                let sortedIDs = BeadIssueListQuery.sortedIssueIDs(
-                    index: index,
-                    ids: filteredIDs,
-                    sort: sort,
-                    direction: direction,
-                    bookmark: bookmark,
-                    now: gateClock
-                )
 
                 var outlineState = outlineSnapshot
-                var rows = BeadIssueListQuery.rows(
+                let rows = BeadIssueListQuery.rows(
                     index: index,
                     filteredIssueIDs: sortedIDs,
                     mode: mode,
@@ -413,19 +444,10 @@ extension BeadStore {
                     bookmark: bookmark,
                     shouldCancel: { Task.isCancelled }
                 )
-                let didPruneExpansion = pruneExpansion && outlineState.prune(toVisibleRows: rows)
-                if didPruneExpansion {
-                    rows = BeadIssueListQuery.rows(
-                        index: index,
-                        filteredIssueIDs: sortedIDs,
-                        mode: mode,
-                        outlineState: outlineState,
-                        sort: sort,
-                        direction: direction,
-                        bookmark: bookmark,
-                        shouldCancel: { Task.isCancelled }
-                    )
-                }
+                let didPruneExpansion = request.pruneExpansion && outlineState.prune(toVisibleRows: rows)
+                // Pruning only removes expansion IDs absent from these rows. Those IDs
+                // could not have affected this row build, so rebuilding it would be pure
+                // duplicate work.
 
                 return QueryResults(
                     filteredIssueIDs: sortedIDs,
@@ -445,17 +467,28 @@ extension BeadStore {
         }
     }
 
-    internal func scheduleSavedViewCountRebuild() {
+    internal func scheduleSavedViewCountRebuild(for requestedViewIDs: Set<UUID>? = nil) {
+        // Never replace an in-flight full refresh with a partial one. Content changes
+        // need every count rebuilt against the same immutable index revision.
+        let viewIDs = savedViewCountTask == nil ? requestedViewIDs : nil
         savedViewCountGeneration &+= 1
         let generation = savedViewCountGeneration
         savedViewCountTask?.cancel()
 
         let index = index
-        let views = savedViews
+        let views = viewIDs == nil
+            ? savedViews
+            : savedViews.filter { viewIDs?.contains($0.id) == true }
+        let replacesAllCounts = viewIDs == nil
         let expectedProjectURL = projectURL
         let expectedContentRevision = contentRevision
         let evaluationNow = Date()
         _isRebuildingSavedViewCounts = !views.isEmpty
+        guard !views.isEmpty else {
+            if replacesAllCounts { _savedViewCounts = [:] }
+            savedViewCountTask = nil
+            return
+        }
         savedViewCountTask = Task { @MainActor [weak self] in
             defer {
                 if let self, self.savedViewCountGeneration == generation {
@@ -484,7 +517,13 @@ extension BeadStore {
                   self.projectURL == expectedProjectURL,
                   self.contentRevision == expectedContentRevision
             else { return }
-            self._savedViewCounts = counts
+            if replacesAllCounts {
+                self._savedViewCounts = counts
+            } else {
+                for (id, count) in counts {
+                    self._savedViewCounts[id] = count
+                }
+            }
             self._isRebuildingSavedViewCounts = false
         }
     }
