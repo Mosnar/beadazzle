@@ -3,6 +3,7 @@ import SwiftUI
 private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
     case storage
     case workflow
+    case properties
     case types
     case statuses
 
@@ -14,6 +15,8 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
             "Storage"
         case .workflow:
             "Workflow"
+        case .properties:
+            "Properties"
         case .types:
             "Types"
         case .statuses:
@@ -27,6 +30,8 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
             "externaldrive"
         case .workflow:
             "checklist"
+        case .properties:
+            "slider.horizontal.3"
         case .types:
             "tag"
         case .statuses:
@@ -59,7 +64,7 @@ struct ProjectSettingsView: View {
             panes: Array(ProjectSettingsPane.allCases),
             selection: selectedPane,
             title: \.title,
-            minDetailWidth: 560,
+            minDetailWidth: 680,
             minHeight: 500
         ) { pane in
             Label(pane.title, systemImage: pane.systemImage)
@@ -85,6 +90,8 @@ private struct ProjectSettingsDetail: View {
                 ProjectStorageSettingsPane()
             case .workflow:
                 ProjectWorkflowSettingsPane()
+            case .properties:
+                ProjectStatePropertiesSettingsPane()
             case .types:
                 ProjectTypesSettingsPane()
             case .statuses:

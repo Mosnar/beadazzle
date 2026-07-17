@@ -53,7 +53,8 @@ struct IssueMetadataRibbon: View {
                 IssueMetadataLabelsControl(
                     draft: $draft,
                     availableLabels: store.availableLabels,
-                    presentation: .ribbonChip
+                    presentation: .ribbonChip,
+                    managedStateDimensions: store.pinnedStateDimensions
                 )
 
                 if let issueID = draft.id {

@@ -351,6 +351,41 @@ final class BeadStoreHistoryTests: XCTestCase {
         XCTAssertTrue(store.selectedIDs.isEmpty)
     }
 
+    func testShowStateValueBeadsCreatesExactReversibleWorkspaceStep() async throws {
+        let store = try await makeLoadedStore()
+
+        store.searchText = "Parent"
+        store.statusFilters = ["open"]
+        await store.waitForPendingQueryRecompute()
+        let previousSnapshot = try XCTUnwrap(store.currentWorkspaceSnapshot)
+
+        XCTAssertTrue(store.showBeads(withStateValue: "implementation", in: "phase"))
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedBookmark, .all)
+        XCTAssertEqual(store.labelFilters, ["phase:implementation"])
+        XCTAssertTrue(store.statusFilters.isEmpty)
+        XCTAssertTrue(store.typeFilters.isEmpty)
+        XCTAssertTrue(store.priorityFilters.isEmpty)
+        XCTAssertEqual(store.searchText, "")
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-child"])
+
+        store.goBack()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.currentWorkspaceSnapshot, previousSnapshot)
+        XCTAssertEqual(store.searchText, "Parent")
+        XCTAssertEqual(store.statusFilters, ["open"])
+
+        store.goForward()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.selectedBookmark, .all)
+        XCTAssertEqual(store.labelFilters, ["phase:implementation"])
+        XCTAssertTrue(store.statusFilters.isEmpty)
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-child"])
+    }
+
     func testFullPageDetailRecordsReversibleHistoryStep() async throws {
         let store = try await makeLoadedStore()
 
@@ -394,7 +429,7 @@ final class BeadStoreHistoryTests: XCTestCase {
         let projectURL = try makeProject(
             issuesJSONL: """
             {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic"}
-            {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent"}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent","labels":["phase:implementation"]}
             {"_type":"issue","id":"bd-sibling","title":"Sibling","status":"open","priority":3,"issue_type":"task"}
             """
         )

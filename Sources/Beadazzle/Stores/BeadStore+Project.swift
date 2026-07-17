@@ -170,6 +170,7 @@ extension BeadStore {
         project.cancelReconciliationWork()
         reconcileState.reset()
         index = .empty
+        stateLabelOverridesByIssueID = [:]
         _filteredIssueIDs = []
         _issueListRows = []
         _dependencies = []
@@ -400,6 +401,9 @@ extension BeadStore {
         index = metadataBaseline.map {
             indexPreservingMetadataChanges(in: loadedIndex, since: $0)
         } ?? loadedIndex
+        reconcileStateLabelOverrides(
+            authoritative: loadedProject.snapshotRefreshWarning == nil
+        )
         if loadedProject.snapshotRefreshWarning == nil {
             mutations.confirmAuthoritativeMetadata()
         }

@@ -141,7 +141,8 @@ extension BeadStore {
     }
 
     func issue(with id: String) -> BeadIssue? {
-        index.issue(with: id)
+        guard let issue = index.issue(with: id) else { return nil }
+        return applyingStateLabelOverrides(to: issue)
     }
 
     func activityItems(for issueID: String) -> [IssueActivityItem] {

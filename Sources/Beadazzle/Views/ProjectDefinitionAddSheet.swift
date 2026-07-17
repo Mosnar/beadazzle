@@ -205,7 +205,7 @@ struct ProjectStatusAddSheet: View {
     }
 }
 
-private struct ProjectDefinitionAddSheetLayout<Fields: View>: View {
+struct ProjectDefinitionAddSheetLayout<Fields: View>: View {
     let title: String
     let description: String
     let height: CGFloat

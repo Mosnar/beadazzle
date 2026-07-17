@@ -1,6 +1,6 @@
 import Foundation
 
-private struct MetadataMutationHandle {
+struct MetadataMutationHandle {
     let id: UUID
     let generation: Int
     let possiblePersistedLabels: [String]
@@ -178,7 +178,7 @@ extension BeadStore {
         return copy
     }
 
-    private func beginMetadataMutation(
+    internal func beginMetadataMutation(
         issueID: String,
         originalIssue: BeadIssue,
         patch: BeadMetadataMutationPatch
@@ -188,11 +188,12 @@ extension BeadStore {
             confirmedIssue: originalIssue,
             pendingMutations: []
         )
+        let proposedLabels = patch.proposedLabels(for: state.resolvedIssue)
         let possiblePersistedLabels: [String]
-        if let labels = patch.labels {
+        if let proposedLabels {
             mutations.recordPossiblyPersistedLabels(state.confirmedIssue.labels, for: issueID)
             possiblePersistedLabels = mutations.possiblyPersistedLabels(for: issueID)
-            mutations.recordPossiblyPersistedLabels(labels, for: issueID)
+            mutations.recordPossiblyPersistedLabels(proposedLabels, for: issueID)
         } else {
             possiblePersistedLabels = mutations.possiblyPersistedLabels(for: issueID)
         }
@@ -201,6 +202,7 @@ extension BeadStore {
             id: mutationID,
             patch: patch,
             possiblePersistedLabels: possiblePersistedLabels,
+            proposedLabels: proposedLabels,
             fieldWriteVersions: fieldWriteVersions
         ))
         mutations.metadataMutations[issueID] = state
@@ -253,19 +255,20 @@ extension BeadStore {
         guard let completedMutations = state.recordCompletion(id: mutationID, succeeded: succeeded) else {
             return (false, nil)
         }
-        for mutation in completedMutations where mutation.patch.labels != nil {
-            if mutation.succeeded == true {
+        for mutation in completedMutations where mutation.patch.updatesLabels {
+            if mutation.succeeded == true,
+               mutation.patch.confirmsCompleteLabelSetOnSuccess {
                 mutations.confirmPersistedLabels(for: issueID)
-            } else {
+            } else if mutation.succeeded == false {
                 mutations.recordPossiblyPersistedLabels(
-                    mutation.possiblePersistedLabels + (mutation.patch.labels ?? []),
+                    mutation.possiblePersistedLabels + (mutation.proposedLabels ?? []),
                     for: issueID
                 )
             }
         }
-        for mutation in state.pendingMutations where mutation.patch.labels != nil {
+        for mutation in state.pendingMutations where mutation.patch.updatesLabels {
             mutations.recordPossiblyPersistedLabels(
-                mutation.possiblePersistedLabels + (mutation.patch.labels ?? []),
+                mutation.possiblePersistedLabels + (mutation.proposedLabels ?? []),
                 for: issueID
             )
         }
@@ -318,7 +321,21 @@ extension BeadStore {
     }
 
     @discardableResult
-    private func settleMetadataMutation(issueID: String, mutationID: UUID, succeeded: Bool) -> Bool {
+    internal func settleMetadataMutation(
+        issueID: String,
+        mutationID: UUID,
+        succeeded: Bool,
+        applyResolvedState: Bool = true
+    ) -> Bool {
+        if !applyResolvedState {
+            return resolveMetadataMutationSettlement(
+                issueID: issueID,
+                mutationID: mutationID,
+                succeeded: succeeded,
+                currentIssue: nil
+            ).isValid
+        }
+
         let snapshot = currentMutationSnapshot()
         let settlement = resolveMetadataMutationSettlement(
             issueID: issueID,
@@ -465,7 +482,7 @@ extension BeadStore {
         await optimisticMutationQueue.acquire()
         defer { optimisticMutationQueue.release() }
         guard ownsMutation(projectURL: projectURL, generation: mutationGeneration),
-              let originalIssue = index.issue(with: draftID)
+              let originalIssue = issue(with: draftID)
         else {
             return false
         }
@@ -502,24 +519,46 @@ extension BeadStore {
             lastError = "No active status is configured for reopened beads."
             return false
         }
+        let managedStateDimensions = stateDimensionsManagedForLabelEditing(issueID: draftID)
+        let ordinaryDraftLabels = BeadStateLabel.excluding(
+            dimensions: managedStateDimensions,
+            from: draft.labels
+        )
+        let ordinaryOriginalLabels = BeadStateLabel.excluding(
+            dimensions: managedStateDimensions,
+            from: originalIssue.labels
+        )
         guard !blockUnsafeLabelClear(
             issueID: draftID,
-            labels: draft.labels,
-            knownPossibleLabels: originalIssue.labels
+            labels: ordinaryDraftLabels,
+            knownPossibleLabels: ordinaryOriginalLabels
         ) else { return false }
+        let metadataPatch = BeadMetadataMutationPatch(
+            assignee: nil,
+            labels: draft.labels,
+            preservingStateDimensions: managedStateDimensions,
+            dueAt: .set(draft.dueAt),
+            deferUntil: .set(draft.deferUntil)
+        )
         let metadataMutation = beginMetadataMutation(
             issueID: draftID,
             originalIssue: originalIssue,
-            patch: BeadMetadataMutationPatch(
-                assignee: nil,
-                labels: draft.labels,
-                dueAt: .set(draft.dueAt),
-                deferUntil: .set(draft.deferUntil)
-            )
+            patch: metadataPatch
         )
+        var optimisticDraft = draft
+        optimisticDraft.labels = metadataPatch.proposedLabels(for: originalIssue) ?? draft.labels
+        var preparedCommandDraft = optimisticDraft
+        preparedCommandDraft.labels = BeadStateLabel.excluding(
+            dimensions: managedStateDimensions,
+            from: optimisticDraft.labels
+        )
+        let commandDraft = preparedCommandDraft
         let commandOriginalIssue: BeadIssue = {
             var copy = originalIssue
-            copy.labels = metadataMutation.possiblePersistedLabels
+            copy.labels = BeadStateLabel.excluding(
+                dimensions: managedStateDimensions,
+                from: metadataMutation.possiblePersistedLabels
+            )
             return copy
         }()
         let childIDSet = Set(childIDs)
@@ -528,7 +567,7 @@ extension BeadStore {
         let now = Date()
         let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
             if issue.id == draftID {
-                return optimisticallyUpdatedIssue(issue, from: draft)
+                return optimisticallyUpdatedIssue(issue, from: optimisticDraft)
             }
             if ancestorIDSet.contains(issue.id), let ancestorReopenStatus {
                 var copy = issue
@@ -573,7 +612,11 @@ extension BeadStore {
                         priority: nil
                     )
                 }
-                try await commands.update(projectURL: projectURL, draft: draft, originalIssue: commandOriginalIssue)
+                try await commands.update(
+                    projectURL: projectURL,
+                    draft: commandDraft,
+                    originalIssue: commandOriginalIssue
+                )
             }
             guard self.projectURL == projectURL,
                   mutations.metadataMutationGeneration == metadataMutation.generation
@@ -1081,13 +1124,20 @@ extension BeadStore {
         dueAt: IssueMetadataDateUpdate = .unchanged,
         deferUntil: IssueMetadataDateUpdate = .unchanged
     ) async -> Bool {
-        guard let projectURL, let originalIssue = index.issue(with: issueID) else { return false }
+        guard let projectURL, let originalIssue = issue(with: issueID) else { return false }
+        let managedStateDimensions = stateDimensionsManagedForLabelEditing(issueID: issueID)
+        let commandLabels = labels.map {
+            BeadStateLabel.excluding(dimensions: managedStateDimensions, from: $0)
+        }
         let retainedPossibleLabels = mutations.possiblyPersistedLabels(for: issueID)
-        let clearsLabels = labels?.isEmpty == true
-        if let labels, blockUnsafeLabelClear(
+        let clearsLabels = commandLabels?.isEmpty == true
+        if let commandLabels, blockUnsafeLabelClear(
             issueID: issueID,
-            labels: labels,
-            knownPossibleLabels: originalIssue.labels
+            labels: commandLabels,
+            knownPossibleLabels: BeadStateLabel.excluding(
+                dimensions: managedStateDimensions,
+                from: originalIssue.labels
+            )
         ) { return false }
         let requiresAuthoritativeLabelReplacement = labels?.isEmpty == false
             && (!retainedPossibleLabels.isEmpty || mutations.labelUncertaintyOverflowed(for: issueID))
@@ -1095,6 +1145,7 @@ extension BeadStore {
         let patch = BeadMetadataMutationPatch(
             assignee: assignee,
             labels: labels,
+            preservingStateDimensions: managedStateDimensions,
             dueAt: dueAt,
             deferUntil: deferUntil
         )
@@ -1132,8 +1183,13 @@ extension BeadStore {
                     projectURL: projectURL,
                     issueID: issueID,
                     assignee: assignee,
-                    labels: labels,
-                    originalLabels: metadataMutation.possiblePersistedLabels,
+                    labels: commandLabels,
+                    originalLabels: commandLabels == nil
+                        ? nil
+                        : BeadStateLabel.excluding(
+                            dimensions: managedStateDimensions,
+                            from: metadataMutation.possiblePersistedLabels
+                        ),
                     dueAt: dueAt,
                     deferUntil: deferUntil
                 )

@@ -78,9 +78,22 @@ struct InspectorOptionRow<Option: Hashable>: View {
 
 struct InspectorOptionItemRow: View {
     let title: String
+    let badge: String?
     let isSelected: Bool
     let action: () -> Void
     @State private var isHovered = false
+
+    init(
+        title: String,
+        badge: String? = nil,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.badge = badge
+        self.isSelected = isSelected
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
@@ -95,6 +108,13 @@ struct InspectorOptionItemRow: View {
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
+
+                if let badge {
+                    Text(badge)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .font(.callout)
             .foregroundStyle(.primary)
@@ -108,7 +128,7 @@ struct InspectorOptionItemRow: View {
         .focusable(false)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { isHovered = $0 }
-        .accessibilityLabel(title)
+        .accessibilityLabel(badge.map { "\(title), \($0)" } ?? title)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }

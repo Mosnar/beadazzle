@@ -47,7 +47,157 @@ extension BeadStore {
         loadStaleCutoffDaysPreference(for: url)
         loadReadyParentRollUpPreference(for: url)
         loadExternalRefreshPreference(for: url)
+        loadPinnedStateDimensions(for: url)
+        loadStateDimensionDisplayNames(for: url)
+        loadStateValueDisplayNames(for: url)
+        loadArchivedStateValues(for: url)
         loadSavedViews(for: url)
+    }
+
+    private func loadPinnedStateDimensions(for url: URL) {
+        let stored = userDefaults.stringArray(forKey: BeadazzlePreferenceKeys.pinnedStateDimensions(projectURL: url)) ?? []
+        pinnedStateDimensions = Self.normalizedPinnedStateDimensions(stored)
+    }
+
+    internal func persistPinnedStateDimensions() {
+        guard let projectURL else { return }
+        userDefaults.set(
+            pinnedStateDimensions,
+            forKey: BeadazzlePreferenceKeys.pinnedStateDimensions(projectURL: projectURL)
+        )
+    }
+
+    private func loadStateDimensionDisplayNames(for url: URL) {
+        let key = BeadazzlePreferenceKeys.stateDimensionDisplayNames(projectURL: url)
+        let stored = userDefaults.dictionary(forKey: key)?.compactMapValues { $0 as? String } ?? [:]
+        stateDimensionDisplayNames = Self.normalizedStateDimensionDisplayNames(stored)
+    }
+
+    internal func persistStateDimensionDisplayNames() {
+        guard let projectURL else { return }
+        let key = BeadazzlePreferenceKeys.stateDimensionDisplayNames(projectURL: projectURL)
+        if stateDimensionDisplayNames.isEmpty {
+            userDefaults.removeObject(forKey: key)
+        } else {
+            userDefaults.set(stateDimensionDisplayNames, forKey: key)
+        }
+    }
+
+    private func loadStateValueDisplayNames(for url: URL) {
+        let key = BeadazzlePreferenceKeys.stateValueDisplayNames(projectURL: url)
+        let rawNames = userDefaults.dictionary(forKey: key) ?? [:]
+        let storedNames = rawNames.reduce(into: [String: [String: String]]()) { result, entry in
+            guard let names = entry.value as? [String: String] else { return }
+            result[entry.key] = names
+        }
+        stateValueDisplayNames = Self.normalizedStateValueDisplayNames(storedNames)
+    }
+
+    internal func persistStateValueDisplayNames() {
+        guard let projectURL else { return }
+        let key = BeadazzlePreferenceKeys.stateValueDisplayNames(projectURL: projectURL)
+        if stateValueDisplayNames.isEmpty {
+            userDefaults.removeObject(forKey: key)
+        } else {
+            userDefaults.set(stateValueDisplayNames, forKey: key)
+        }
+    }
+
+    private func loadArchivedStateValues(for url: URL) {
+        let key = BeadazzlePreferenceKeys.archivedStateValues(projectURL: url)
+        let rawValues = userDefaults.dictionary(forKey: key) ?? [:]
+        let storedValues = rawValues.reduce(into: [String: Set<String>]()) { result, entry in
+            guard let values = entry.value as? [String] else { return }
+            result[entry.key] = Set(values)
+        }
+        archivedStateValuesByDimension = Self.normalizedArchivedStateValues(storedValues)
+    }
+
+    internal func persistArchivedStateValues() {
+        guard let projectURL else { return }
+        let key = BeadazzlePreferenceKeys.archivedStateValues(projectURL: projectURL)
+        if archivedStateValuesByDimension.isEmpty {
+            userDefaults.removeObject(forKey: key)
+            return
+        }
+        let storedValues = archivedStateValuesByDimension.mapValues { values in
+            values.sorted(by: BeadStateLabel.isOrderedBefore)
+        }
+        userDefaults.set(storedValues, forKey: key)
+    }
+
+    /// Drops entries that are not valid dimension names and de-duplicates while
+    /// preserving the user's pin order.
+    internal static func normalizedPinnedStateDimensions(_ dimensions: [String]) -> [String] {
+        var seen: Set<String> = []
+        return dimensions.compactMap { raw in
+            guard let dimension = BeadStateLabel.normalizedDimensionInput(raw),
+                  seen.insert(dimension).inserted else {
+                return nil
+            }
+            return dimension
+        }
+    }
+
+    /// Sanitizes persisted presentation names and omits names that match the
+    /// derived default so preferences only store meaningful overrides.
+    internal static func normalizedStateDimensionDisplayNames(
+        _ displayNames: [String: String]
+    ) -> [String: String] {
+        var normalizedNames: [String: String] = [:]
+        for rawDimension in displayNames.keys.sorted() {
+            guard let dimension = BeadStateLabel.normalizedDimensionInput(rawDimension),
+                  let rawDisplayName = displayNames[rawDimension] else { continue }
+            let displayName = rawDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !displayName.isEmpty,
+                  !displayName.contains(where: \Character.isNewline),
+                  displayName != BeadStateLabel.displayName(for: dimension) else { continue }
+            normalizedNames[dimension] = displayName
+        }
+        return normalizedNames
+    }
+
+    /// Sanitizes sparse value-name overrides. Raw values remain exact because
+    /// they are part of the persisted `dimension:value` label contract.
+    internal static func normalizedStateValueDisplayNames(
+        _ displayNames: [String: [String: String]]
+    ) -> [String: [String: String]] {
+        var normalizedNames: [String: [String: String]] = [:]
+        for rawDimension in displayNames.keys.sorted() {
+            guard BeadStateLabel.normalizedDimensionInput(rawDimension) == rawDimension,
+                  let rawNames = displayNames[rawDimension] else { continue }
+            var dimensionNames: [String: String] = [:]
+            for rawValue in rawNames.keys.sorted() {
+                guard BeadStateLabel.normalizedValueInput(rawValue) == rawValue,
+                      let rawDisplayName = rawNames[rawValue] else { continue }
+                let displayName = rawDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !displayName.isEmpty,
+                      !displayName.contains(where: \Character.isNewline),
+                      displayName != rawValue else { continue }
+                dimensionNames[rawValue] = displayName
+            }
+            if !dimensionNames.isEmpty {
+                normalizedNames[rawDimension] = dimensionNames
+            }
+        }
+        return normalizedNames
+    }
+
+    internal static func normalizedArchivedStateValues(
+        _ archivedValues: [String: Set<String>]
+    ) -> [String: Set<String>] {
+        var normalizedValues: [String: Set<String>] = [:]
+        for rawDimension in archivedValues.keys.sorted() {
+            guard BeadStateLabel.normalizedDimensionInput(rawDimension) == rawDimension,
+                  let rawValues = archivedValues[rawDimension] else { continue }
+            let values = Set(rawValues.filter {
+                BeadStateLabel.normalizedValueInput($0) == $0
+            })
+            if !values.isEmpty {
+                normalizedValues[rawDimension] = values
+            }
+        }
+        return normalizedValues
     }
 
     private func loadSavedViews(for url: URL) {

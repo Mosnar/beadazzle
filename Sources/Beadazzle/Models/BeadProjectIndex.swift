@@ -66,6 +66,10 @@ struct BeadProjectIndex: Sendable {
     let childProgressByParentID: [String: IssueChildProgress]
     let dependencyTypeNames: [String]
     let labelNames: [String]
+    /// State dimensions with explicit provenance from `bd set-state` event beads.
+    /// Ordinary colon labels are intentionally absent.
+    let stateDimensionNames: [String]
+    let stateValuesByDimension: [String: [String]]
     let ownerNames: [String]
     let assigneeNames: [String]
     /// Per-issue searchable text, pre-folded once at build time (case-, diacritic-, and
@@ -108,10 +112,26 @@ struct BeadProjectIndex: Sendable {
         var childIDsByParentID: [String: [String]] = [:]
         var ownerNames: Set<String> = []
         var assigneeNames: Set<String> = []
+        var recordedStateValuesByDimension: [String: Set<String>] = [:]
+        var ambiguousStateEventIndices: [Int] = []
         issueByID.reserveCapacity(issues.count)
         foldedSearchBytesByID.reserveCapacity(issues.count)
 
-        for issue in issues {
+        for (issueIndex, issue) in issues.enumerated() {
+            if BeadStateLabel.isRecordedChangeEvent(
+                issueType: issue.issueType,
+                title: issue.title
+            ) {
+                if BeadStateLabel.recordedChangeRequiresDisambiguation(title: issue.title) {
+                    ambiguousStateEventIndices.append(issueIndex)
+                } else if let stateChange = BeadStateLabel.recordedChange(
+                    issueType: issue.issueType,
+                    title: issue.title
+                ) {
+                    recordedStateValuesByDimension[stateChange.dimension, default: []]
+                        .insert(stateChange.value)
+                }
+            }
             issueByID[issue.id] = issue
             issueIDsByStatus[issue.status, default: []].insert(issue.id)
             issueIDsByStatusCategory[semantics.category(forStatus: issue.status), default: []].insert(issue.id)
@@ -141,6 +161,40 @@ struct BeadProjectIndex: Sendable {
         self.issueIDsByLabel = issueIDsByLabel
         labelNames = issueIDsByLabel.keys.sorted { lhs, rhs in
             lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+        if !ambiguousStateEventIndices.isEmpty {
+            let knownLabels = Set(labelNames)
+            var knownDimensions: Set<String> = []
+            knownDimensions.reserveCapacity(labelNames.count)
+            for label in labelNames {
+                if let dimension = BeadStateLabel.dimension(of: label) {
+                    knownDimensions.insert(dimension)
+                }
+            }
+            for issueIndex in ambiguousStateEventIndices {
+                let issue = issues[issueIndex]
+                guard let stateChange = BeadStateLabel.recordedChange(
+                    issueType: issue.issueType,
+                    title: issue.title,
+                    knownLabels: knownLabels,
+                    knownDimensions: knownDimensions
+                ) else { continue }
+                recordedStateValuesByDimension[stateChange.dimension, default: []]
+                    .insert(stateChange.value)
+            }
+        }
+        if !recordedStateValuesByDimension.isEmpty {
+            for label in labelNames {
+                guard let parsed = BeadStateLabel.parse(label),
+                      recordedStateValuesByDimension[parsed.dimension] != nil else {
+                    continue
+                }
+                recordedStateValuesByDimension[parsed.dimension, default: []].insert(parsed.value)
+            }
+        }
+        stateDimensionNames = recordedStateValuesByDimension.keys.sorted(by: BeadStateLabel.isOrderedBefore)
+        stateValuesByDimension = recordedStateValuesByDimension.mapValues { values in
+            values.sorted(by: BeadStateLabel.isOrderedBefore)
         }
         self.foldedSearchBytesByID = foldedSearchBytesByID
         let allIssueIDs = Set(issueByID.keys)
@@ -338,6 +392,10 @@ struct BeadProjectIndex: Sendable {
 
     func count(for bookmark: BeadBookmark) -> Int {
         issueIDsByBookmark[bookmark]?.count ?? 0
+    }
+
+    func count(forLabel label: String) -> Int {
+        issueIDsByLabel[label]?.count ?? 0
     }
 
     func issueIDs(for bookmark: BeadBookmark) -> Set<String> {

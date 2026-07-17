@@ -3,12 +3,14 @@ import SwiftUI
 struct InspectorLabelsRow: View {
     @Binding var draft: IssueDraft
     let availableLabels: [String]
+    var managedStateDimensions: [String] = []
 
     var body: some View {
         IssueMetadataLabelsControl(
             draft: $draft,
             availableLabels: availableLabels,
-            presentation: .inspectorRow
+            presentation: .inspectorRow,
+            managedStateDimensions: managedStateDimensions
         )
     }
 }
@@ -22,38 +24,14 @@ struct LabelEditorPopover: View {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var candidateLabels: [String] {
-        uniqueSortedLabels(availableLabels + labels)
-    }
-
-    private var visibleLabels: [String] {
-        guard !trimmedQuery.isEmpty else { return candidateLabels }
-        return candidateLabels.filter { $0.localizedStandardContains(trimmedQuery) }
-    }
-
-    private var canCreateQuery: Bool {
-        guard !trimmedQuery.isEmpty else { return false }
-        return !candidateLabels.contains { $0.caseInsensitiveCompare(trimmedQuery) == .orderedSame }
-    }
-
-    private var suggestionRowCount: Int {
-        if visibleLabels.isEmpty && !canCreateQuery {
-            return 1
-        }
-        return visibleLabels.count + (canCreateQuery ? 1 : 0)
-    }
-
-    private var suggestionListHeight: CGFloat {
-        let visibleRows = min(max(suggestionRowCount, 1), 5)
-        return CGFloat(visibleRows * 34 + max(visibleRows - 1, 0) * 2)
-    }
-
     private var selectedLabelsHeight: CGFloat {
         let rows = min(max((labels.count + 1) / 2, 1), 3)
         return CGFloat(rows * 24 + max(rows - 1, 0) * 6)
     }
 
     var body: some View {
+        let suggestions = suggestions(for: trimmedQuery)
+
         VStack(alignment: .leading, spacing: 12) {
             Text("Labels")
                 .font(.headline)
@@ -78,7 +56,7 @@ struct LabelEditorPopover: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    if visibleLabels.isEmpty && !canCreateQuery {
+                    if suggestions.visibleLabels.isEmpty && !suggestions.canCreateQuery {
                         Text("No labels")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -86,7 +64,7 @@ struct LabelEditorPopover: View {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 7)
                     } else {
-                        ForEach(visibleLabels, id: \.self) { label in
+                        ForEach(suggestions.visibleLabels, id: \.self) { label in
                             LabelSuggestionRow(
                                 label: label,
                                 isSelected: labels.contains(label)
@@ -96,13 +74,13 @@ struct LabelEditorPopover: View {
                         }
                     }
 
-                    if canCreateQuery {
+                    if suggestions.canCreateQuery {
                         LabelCreateRow(query: trimmedQuery, action: addQueryLabels)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: suggestionListHeight)
+            .frame(height: suggestions.listHeight)
         }
         .padding(16)
         .frame(width: 320, alignment: .leading)
@@ -136,23 +114,57 @@ struct LabelEditorPopover: View {
         labels.removeAll { $0 == label }
     }
 
+    private func suggestions(for query: String) -> LabelEditorSuggestions {
+        let candidates = candidateLabels()
+        let visibleLabels = query.isEmpty
+            ? candidates
+            : candidates.filter { $0.localizedStandardContains(query) }
+        let canCreateQuery = !query.isEmpty
+            && !candidates.contains { $0.caseInsensitiveCompare(query) == .orderedSame }
+        let rowCount = visibleLabels.isEmpty && !canCreateQuery
+            ? 1
+            : visibleLabels.count + (canCreateQuery ? 1 : 0)
+        let visibleRowCount = min(max(rowCount, 1), 5)
+        return LabelEditorSuggestions(
+            visibleLabels: visibleLabels,
+            canCreateQuery: canCreateQuery,
+            listHeight: CGFloat(visibleRowCount * 34 + max(visibleRowCount - 1, 0) * 2)
+        )
+    }
+
+    /// Project label names arrive unique and naturally sorted from the index.
+    /// Reuse that storage in the common case; only sort when the draft contains
+    /// a newly created label that is not in the project catalog yet.
+    private func candidateLabels() -> [String] {
+        var candidates = availableLabels
+        var appendedNewLabel = false
+        for label in labels where !candidates.contains(label) {
+            candidates.append(label)
+            appendedNewLabel = true
+        }
+        if appendedNewLabel {
+            candidates.sort { lhs, rhs in
+                lhs.localizedStandardCompare(rhs) == .orderedAscending
+            }
+        }
+        return candidates
+    }
+
     private func uniqueLabels(_ labels: [String]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
-        for label in labels {
-            guard !seen.contains(label) else { continue }
-            seen.insert(label)
+        result.reserveCapacity(labels.count)
+        for label in labels where seen.insert(label).inserted {
             result.append(label)
         }
         return result
     }
+}
 
-    private func uniqueSortedLabels(_ labels: [String]) -> [String] {
-        uniqueLabels(labels)
-            .sorted { lhs, rhs in
-                lhs.localizedStandardCompare(rhs) == .orderedAscending
-            }
-    }
+private struct LabelEditorSuggestions {
+    let visibleLabels: [String]
+    let canCreateQuery: Bool
+    let listHeight: CGFloat
 }
 
 struct LabelChipFlow: Layout {

@@ -268,7 +268,7 @@ struct IssueDraft: Codable, Equatable, Identifiable, Sendable {
             Self.normalizedLabels(labelsText)
         }
         set {
-            labelsText = Self.normalizedLabelText(newValue)
+            labelsText = Self.losslessLabelText(newValue)
         }
     }
 
@@ -300,7 +300,7 @@ struct IssueDraft: Codable, Equatable, Identifiable, Sendable {
         priority = issue.priority
         issueType = issue.issueType
         assignee = issue.assignee ?? ""
-        labelsText = issue.labels.joined(separator: ", ")
+        labelsText = Self.losslessLabelText(issue.labels)
         parentID = issue.parentID
         dueAt = issue.dueAt
         deferUntil = issue.deferUntil
@@ -339,16 +339,69 @@ struct IssueDraft: Codable, Equatable, Identifiable, Sendable {
     }
 
     static func normalizedLabels(_ labelsText: String) -> [String] {
-        labelsText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        var labels: [String] = []
+        var current = ""
+        var isQuoted = false
+        var currentWasQuoted = false
+        var index = labelsText.startIndex
+
+        func appendCurrent() {
+            let label = currentWasQuoted
+                ? current
+                : current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !label.isEmpty {
+                labels.append(label)
+            }
+            current = ""
+            currentWasQuoted = false
+        }
+
+        while index < labelsText.endIndex {
+            let character = labelsText[index]
+            if character == "\"" {
+                let nextIndex = labelsText.index(after: index)
+                if isQuoted, nextIndex < labelsText.endIndex, labelsText[nextIndex] == "\"" {
+                    current.append("\"")
+                    index = labelsText.index(after: nextIndex)
+                    continue
+                }
+                if !isQuoted,
+                   current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    current = ""
+                }
+                isQuoted.toggle()
+                currentWasQuoted = true
+            } else if character == ",", !isQuoted {
+                appendCurrent()
+            } else {
+                current.append(character)
+            }
+            index = labelsText.index(after: index)
+        }
+        appendCurrent()
+        return labels
     }
 
     static func normalizedLabelText(_ labels: [String]) -> String {
-        labels
+        losslessLabelText(
+            labels
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        )
+    }
+
+    /// CSV-style serialization keeps state labels such as `phase:a,b` lossless
+    /// while retaining the existing human-readable comma-separated draft field.
+    static func losslessLabelText(_ labels: [String]) -> String {
+        labels
+            .filter { !$0.isEmpty }
+            .map { label in
+                let requiresQuotes = label.contains(",")
+                    || label.contains("\"")
+                    || label != label.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard requiresQuotes else { return label }
+                return "\"\(label.replacingOccurrences(of: "\"", with: "\"\""))\""
+            }
             .joined(separator: ", ")
     }
 }

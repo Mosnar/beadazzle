@@ -25,6 +25,7 @@ protocol BeadsCommanding: Sendable {
         deferUntil: IssueMetadataDateUpdate
     ) async throws
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
+    func setState(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?) async throws
     func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws
     func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws
     func loadComments(projectURL: URL, issueID: String) async throws -> [BeadComment]
@@ -95,6 +96,13 @@ extension BeadsCommanding {
         throw BeadError.commandFailed(
             command: "bd update --parent",
             output: "Parent updates are not supported by this command service."
+        )
+    }
+
+    func setState(projectURL _: URL, issueID _: String, dimension _: String, value _: String, reason _: String?) async throws {
+        throw BeadError.commandFailed(
+            command: "bd set-state",
+            output: "State changes are not supported by this command service."
         )
     }
 
@@ -213,6 +221,13 @@ struct BeadsCommandService {
         try await run(
             projectURL: projectURL,
             arguments: BeadsCommandArguments.setParent(issueID: issueID, parentID: parentID)
+        )
+    }
+
+    func setState(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.setState(issueID: issueID, dimension: dimension, value: value, reason: reason)
         )
     }
 
@@ -919,7 +934,7 @@ enum BeadsCommandArguments {
         ]
         arguments += ["--due", dateUpdateArgument(draft.dueAt)]
         arguments += ["--defer", dateUpdateArgument(draft.deferUntil)]
-        appendLabelUpdate(&arguments, draftLabelsText: draft.labelsText, originalLabels: originalLabels)
+        appendLabelUpdate(&arguments, labels: draft.labels, originalLabels: originalLabels)
         return arguments
     }
 
@@ -959,7 +974,7 @@ enum BeadsCommandArguments {
             let countBeforeLabels = arguments.count
             appendLabelUpdate(
                 &arguments,
-                draftLabelsText: IssueDraft.normalizedLabelText(labels),
+                labels: labels,
                 originalLabels: originalLabels
             )
             didAppendUpdate = didAppendUpdate || arguments.count > countBeforeLabels
@@ -996,6 +1011,14 @@ enum BeadsCommandArguments {
 
     static func setParent(issueID: String, parentID: String?) -> [String] {
         ["update", issueID, "--parent", parentID?.nilIfBlank ?? ""]
+    }
+
+    /// `set-state` atomically records an event bead and swaps the `dimension:value`
+    /// label, so state changes must never be rewritten as plain label updates.
+    static func setState(issueID: String, dimension: String, value: String, reason: String?) -> [String] {
+        var arguments = ["set-state", issueID, "\(dimension)=\(value)"]
+        appendNonEmpty(&arguments, flag: "--reason", value: reason)
+        return arguments
     }
 
     static func saveCustomStatuses(_ statuses: [BeadStatusDefinition]) -> [String] {
@@ -1064,18 +1087,43 @@ enum BeadsCommandArguments {
 
     private static func normalizedLabelArgument(_ labelsText: String) -> String? {
         let labels = IssueDraft.normalizedLabels(labelsText)
-        return labels.isEmpty ? nil : labels.joined(separator: ",")
+        return normalizedLabelArgument(labels)
     }
 
-    private static func appendLabelUpdate(_ arguments: inout [String], draftLabelsText: String, originalLabels: [String]?) {
-        if let labels = normalizedLabelArgument(draftLabelsText) {
-            arguments += ["--set-labels", labels]
+    private static func normalizedLabelArgument(_ labels: [String]) -> String? {
+        guard !labels.isEmpty else { return nil }
+        return labels
+            .map { IssueDraft.normalizedLabelText([$0]) }
+            .joined(separator: ",")
+    }
+
+    private static func appendLabelUpdate(
+        _ arguments: inout [String],
+        labels: [String],
+        originalLabels: [String]?
+    ) {
+        let normalizedLabels = IssueDraft.normalizedLabels(IssueDraft.normalizedLabelText(labels))
+        guard let originalLabels else {
+            if let labelArgument = normalizedLabelArgument(normalizedLabels) {
+                arguments += ["--set-labels", labelArgument]
+            }
             return
         }
 
-        guard let originalLabels else { return }
-        for label in IssueDraft.normalizedLabels(originalLabels.joined(separator: ",")) {
-            arguments += ["--remove-label", label]
+        let normalizedOriginalLabels = IssueDraft.normalizedLabels(
+            IssueDraft.losslessLabelText(originalLabels)
+        )
+        let targetSet = Set(normalizedLabels)
+        let originalSet = Set(normalizedOriginalLabels)
+
+        // Incremental label writes do not retransmit unrelated labels. In
+        // particular, a concurrent `bd set-state` label remains owned by that
+        // command and cannot be replaced by a stale full-label snapshot.
+        for label in normalizedLabels where !originalSet.contains(label) {
+            arguments += ["--add-label", IssueDraft.normalizedLabelText([label])]
+        }
+        for label in normalizedOriginalLabels where !targetSet.contains(label) {
+            arguments += ["--remove-label", IssueDraft.normalizedLabelText([label])]
         }
     }
 }

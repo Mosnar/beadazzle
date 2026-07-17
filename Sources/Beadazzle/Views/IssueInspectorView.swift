@@ -21,10 +21,19 @@ struct IssueInspector: View {
                 InspectorRowDivider()
                 InspectorValueRow(title: "Owner", systemImage: "person.text.rectangle", value: issue.owner ?? "None")
                 InspectorRowDivider()
+                let pinnedStateDimensions = store.pinnedStateDimensions
                 InspectorLabelsRow(
                     draft: $draft,
-                    availableLabels: store.availableLabels
+                    availableLabels: store.availableLabels,
+                    managedStateDimensions: pinnedStateDimensions
                 )
+                if !pinnedStateDimensions.isEmpty {
+                    InspectorRowDivider()
+                    InspectorStatePropertyRows(
+                        issue: issue,
+                        dimensions: pinnedStateDimensions
+                    )
+                }
 
                 let resolvedGates = store.resolvedGatesForStaleBlockedIssue(issueID: issue.id)
                 if !resolvedGates.isEmpty {

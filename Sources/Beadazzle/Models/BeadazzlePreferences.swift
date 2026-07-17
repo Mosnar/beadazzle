@@ -45,6 +45,22 @@ enum BeadazzlePreferenceKeys {
         "AutomaticallyRefreshExternalChanges.\(projectURL.standardizedFileURL.path)"
     }
 
+    static func pinnedStateDimensions(projectURL: URL) -> String {
+        "PinnedStateDimensions.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func stateDimensionDisplayNames(projectURL: URL) -> String {
+        "StateDimensionDisplayNames.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func stateValueDisplayNames(projectURL: URL) -> String {
+        "StateValueDisplayNames.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func archivedStateValues(projectURL: URL) -> String {
+        "ArchivedStateValues.\(projectURL.standardizedFileURL.path)"
+    }
+
     static func savedViews(projectURL: URL) -> String {
         "SavedViews.\(projectURL.standardizedFileURL.path)"
     }
@@ -188,6 +204,42 @@ enum BeadazzleOptionInventory {
             defaultValue: "On",
             uiLocation: "Issue List > View Options",
             behavior: "Shows comment counts in issue rows for the active project."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "pinnedStateDimensions",
+            title: "Pinned state properties",
+            scope: .projectViewOption,
+            persistence: "PinnedStateDimensions.<project path>",
+            defaultValue: "None",
+            uiLocation: "Project Settings > Properties",
+            behavior: "Shows chosen bd state dimensions as ordered editable property rows in the inspector."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "stateDimensionDisplayNames",
+            title: "State property display names",
+            scope: .projectViewOption,
+            persistence: "StateDimensionDisplayNames.<project path>",
+            defaultValue: "Derived from the state identifier",
+            uiLocation: "Project Settings > Properties",
+            behavior: "Customizes how state dimensions appear without renaming their event-backed bd identifiers."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "stateValueDisplayNames",
+            title: "State value display names",
+            scope: .projectViewOption,
+            persistence: "StateValueDisplayNames.<project path>",
+            defaultValue: "The recorded state value",
+            uiLocation: "Project Settings > Properties",
+            behavior: "Customizes how state values appear without changing their labels or Activity history."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "archivedStateValues",
+            title: "Archived state values",
+            scope: .projectViewOption,
+            persistence: "ArchivedStateValues.<project path>",
+            defaultValue: "None",
+            uiLocation: "Project Settings > Properties",
+            behavior: "Keeps retired values out of new choices while preserving existing labels and Activity history."
         ),
         BeadazzleOptionInventoryEntry(
             id: "savedViews",

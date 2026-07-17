@@ -50,7 +50,7 @@ extension BeadStore {
 
     var selectedIssue: BeadIssue? {
         guard let id = selectedIDs.first, selectedIDs.count == 1 else { return nil }
-        return index.issue(with: id)
+        return issue(with: id)
     }
 
     func parentIssue(for issueID: String) -> BeadIssue? {
@@ -273,6 +273,55 @@ extension BeadStore {
         }
         applyFilters()
         recordWorkspaceSnapshotIfNeeded()
+    }
+
+    /// Opens an exact, reversible workspace view for one state value. The
+    /// existing label index performs the match; this does not scan issues or
+    /// mutate Beads data.
+    @discardableResult
+    func showBeads(withStateValue value: String, in dimension: String) -> Bool {
+        let label = BeadStateLabel.label(dimension: dimension, value: value)
+        guard index.count(forLabel: label) > 0 else { return false }
+
+        let targetLabels: Set<String> = [label]
+        let isAlreadyShowingTarget = selectedBookmark == .all
+            && activeSavedViewID == nil
+            && sourceSavedViewID == nil
+            && activeAdvancedPredicate == nil
+            && statusFilters.isEmpty
+            && typeFilters.isEmpty
+            && priorityFilters.isEmpty
+            && labelFilters == targetLabels
+            && searchText.isEmpty
+            && selectedIDs.isEmpty
+            && fullPageDetailIssueID == nil
+            && creationDraft == nil
+        guard !isAlreadyShowingTarget else { return true }
+
+        suppressesHistoryRecording = true
+        suppressesFilterUpdates = true
+        _selectedBookmark = .all
+        _activeSavedViewID = nil
+        _sourceSavedViewID = nil
+        _activeAdvancedPredicate = nil
+        statusFilters = []
+        typeFilters = []
+        priorityFilters = []
+        labelFilters = targetLabels
+        searchText = ""
+        suppressesFilterUpdates = false
+
+        let hadSelection = !selectedIDs.isEmpty || fullPageDetailIssueID != nil
+        _selectedIDs = []
+        _fullPageDetailIssueID = nil
+        creationDraft = nil
+        suppressesHistoryRecording = false
+        if hadSelection {
+            scheduleSelectionSideDataRefresh()
+        }
+        applyFilters()
+        recordWorkspaceSnapshotIfNeeded()
+        return true
     }
 
     func saveCurrentViewAsBookmark(name: String, symbolName: String) {

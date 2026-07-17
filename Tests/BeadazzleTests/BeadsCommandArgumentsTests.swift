@@ -2,6 +2,24 @@ import XCTest
 @testable import Beadazzle
 
 final class BeadsCommandArgumentsTests: XCTestCase {
+    func testSetStateArgumentsUseDimensionValueSyntaxWithReason() {
+        XCTAssertEqual(
+            BeadsCommandArguments.setState(issueID: "bd-1", dimension: "phase", value: "implementation", reason: "Design proven"),
+            ["set-state", "bd-1", "phase=implementation", "--reason", "Design proven"]
+        )
+    }
+
+    func testSetStateArgumentsOmitEmptyReason() {
+        XCTAssertEqual(
+            BeadsCommandArguments.setState(issueID: "bd-1", dimension: "phase", value: "implementation", reason: nil),
+            ["set-state", "bd-1", "phase=implementation"]
+        )
+        XCTAssertEqual(
+            BeadsCommandArguments.setState(issueID: "bd-1", dimension: "phase", value: "implementation", reason: "  "),
+            ["set-state", "bd-1", "phase=implementation"]
+        )
+    }
+
     func testCreateArgumentsOmitStatusBecauseCreateDoesNotAcceptStatus() {
         let draft = draft(id: nil, status: "custom-status")
 
@@ -167,6 +185,33 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(value(after: "--set-labels", in: arguments), "area:ui,source:user-report")
     }
 
+    func testUpdateArgumentsDiffLabelsWithoutRetransmittingUnchangedState() throws {
+        var updatedDraft = draft(id: "bd-1", status: "open", labelsText: "ordinary")
+        updatedDraft.labels = ["ordinary", "phase:a,b"]
+
+        let arguments = try XCTUnwrap(BeadsCommandArguments.update(
+            draft: updatedDraft,
+            originalLabels: ["old", "phase:a,b"]
+        ))
+
+        XCTAssertEqual(values(after: "--add-label", in: arguments), ["ordinary"])
+        XCTAssertEqual(values(after: "--remove-label", in: arguments), ["old"])
+        XCTAssertFalse(arguments.contains("phase:a,b"))
+        XCTAssertNil(value(after: "--set-labels", in: arguments))
+    }
+
+    func testUpdateArgumentsCSVQuoteAnIndividualCommaLabel() throws {
+        var updatedDraft = draft(id: "bd-1", status: "open", labelsText: "")
+        updatedDraft.labels = ["release:ready,verified"]
+
+        let arguments = try XCTUnwrap(BeadsCommandArguments.update(
+            draft: updatedDraft,
+            originalLabels: []
+        ))
+
+        XCTAssertEqual(values(after: "--add-label", in: arguments), ["\"release:ready,verified\""])
+    }
+
     func testFullUpdateOmitsBlankAssigneeSoUnrelatedSaveDoesNotClearIt() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.update(
             draft: draft(id: "bd-1", status: "open", assignee: " ")
@@ -195,7 +240,9 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--type"))
         XCTAssertFalse(arguments.contains("--priority"))
         XCTAssertEqual(value(after: "--assignee", in: arguments), "Sasha")
-        XCTAssertEqual(value(after: "--set-labels", in: arguments), "area:ui,source:user-report")
+        XCTAssertEqual(values(after: "--add-label", in: arguments), ["area:ui", "source:user-report"])
+        XCTAssertEqual(values(after: "--remove-label", in: arguments), ["old"])
+        XCTAssertNil(value(after: "--set-labels", in: arguments))
         XCTAssertEqual(value(after: "--due", in: arguments), "2026-07-15")
         XCTAssertEqual(value(after: "--defer", in: arguments), "")
     }
@@ -285,6 +332,17 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(draft.dueAt, dueAt)
         XCTAssertEqual(draft.deferUntil, deferUntil)
         XCTAssertEqual(draft.labels, ["area:ui", "source:user-report"])
+    }
+
+    func testIssueDraftRoundTripsLabelsContainingCommasQuotesAndEquals() {
+        var draft = draft(id: "bd-1", status: "open", labelsText: "ordinary")
+        let labels = ["phase:in,review=ready", "quoted:\"value\"", "ordinary"]
+
+        draft.labels = labels
+
+        XCTAssertEqual(draft.labels, labels)
+        XCTAssertTrue(draft.labelsText.contains("\"phase:in,review=ready\""))
+        XCTAssertTrue(draft.labelsText.contains("\"quoted:\"\"value\"\"\""))
     }
 
     func testIssueDraftPreservesParentFromIssue() {

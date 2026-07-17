@@ -85,6 +85,54 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(index.labelNames, ["area:api", "area:ui", "source:user-report"])
     }
 
+    func testStateCatalogRequiresRecordedEventProvenance() {
+        let issues = [
+            issue(
+                "bd-1",
+                status: "open",
+                type: "task",
+                labels: ["area:ui", "phase:implementation"]
+            ),
+            issue(
+                "bd-state-event",
+                title: "State change: phase → design",
+                status: "closed",
+                type: "event"
+            )
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.stateDimensionNames, ["phase"])
+        XCTAssertEqual(index.stateValuesByDimension["phase"], ["design", "implementation"])
+        XCTAssertNil(index.stateValuesByDimension["area"])
+        XCTAssertEqual(index.count(forLabel: "phase:implementation"), 1)
+        XCTAssertEqual(index.count(forLabel: "phase:design"), 0)
+    }
+
+    func testStateCatalogDisambiguatesRecordedDimensionContainingArrow() {
+        let issues = [
+            issue(
+                "bd-1",
+                status: "open",
+                type: "task",
+                labels: ["release → phase:ready", "release:ordinary"]
+            ),
+            issue(
+                "bd-state-event",
+                title: "State change: release → phase → ready",
+                status: "closed",
+                type: "event"
+            )
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.stateDimensionNames, ["release → phase"])
+        XCTAssertEqual(index.stateValuesByDimension["release → phase"], ["ready"])
+        XCTAssertNil(index.stateValuesByDimension["release"])
+    }
+
     func testStaleBookmarkIncludesCliDefaultAndCustomNonDoneIssuesOlderThanTwoWeeks() {
         let old = Date().addingTimeInterval(-15 * 24 * 60 * 60)
         let recent = Date().addingTimeInterval(-7 * 24 * 60 * 60)

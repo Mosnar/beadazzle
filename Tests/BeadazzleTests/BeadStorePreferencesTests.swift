@@ -12,6 +12,9 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertFalse(store.showsDueDateInBeadList)
         XCTAssertTrue(store.showsCommentsInBeadList)
         XCTAssertTrue(store.automaticallyRefreshesExternalChanges)
+        XCTAssertTrue(store.stateDimensionDisplayNames.isEmpty)
+        XCTAssertTrue(store.stateValueDisplayNames.isEmpty)
+        XCTAssertTrue(store.archivedStateValuesByDimension.isEmpty)
         XCTAssertEqual(store.beadListDisplayOptions, .compact)
     }
 
@@ -26,6 +29,149 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(reloadedStore.bdCLIPath, "/tmp/custom-bd")
         XCTAssertEqual(reloadedStore.staleCutoffDays, 14)
         XCTAssertEqual(reloadedStore.beadListDisplayOptions, .compact)
+    }
+
+    func testPinnedStateDimensionsPersistOrderPerProjectAndDropInvalidEntries() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let otherProjectURL = try makeProject(issueLine(id: "bd-2", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertTrue(store.pinnedStateDimensions.isEmpty)
+        XCTAssertTrue(store.pinStateDimension("Phase"))
+        XCTAssertTrue(store.pinStateDimension("health"))
+        XCTAssertTrue(store.pinStateDimension("phase"))
+        XCTAssertFalse(store.pinStateDimension("bad:dimension"))
+        XCTAssertEqual(store.pinnedStateDimensions, ["Phase", "health", "phase"])
+        XCTAssertTrue(store.pinStateDimension("track", at: 1))
+        XCTAssertEqual(store.pinnedStateDimensions, ["Phase", "track", "health", "phase"])
+        XCTAssertTrue(store.pinStateDimension("track", at: 0))
+        XCTAssertEqual(store.pinnedStateDimensions, ["Phase", "track", "health", "phase"])
+        store.unpinStateDimension("track")
+        XCTAssertEqual(store.pinnedStateDimensions, ["Phase", "health", "phase"])
+        XCTAssertEqual(store.stateDimensionDisplayName(for: "phase"), "Phase")
+        XCTAssertTrue(store.setStateDimensionDisplayName("Delivery Phase", for: "phase"))
+        XCTAssertFalse(store.setStateDimensionDisplayName("   ", for: "health"))
+        XCTAssertEqual(store.stateDimensionDisplayName(for: "phase"), "Delivery Phase")
+        XCTAssertTrue(store.setStateDimensionDisplayName("Phase", for: "phase"))
+        XCTAssertNil(store.stateDimensionDisplayNames["phase"])
+        XCTAssertTrue(store.setStateDimensionDisplayName("Delivery Phase", for: "phase"))
+
+        store.movePinnedStateDimensions(fromOffsets: IndexSet(integer: 2), toOffset: 0)
+        XCTAssertEqual(store.pinnedStateDimensions, ["phase", "Phase", "health"])
+        XCTAssertFalse(store.canMovePinnedStateDimensionUp("phase"))
+        XCTAssertTrue(store.canMovePinnedStateDimensionDown("phase"))
+
+        store.movePinnedStateDimensionDown("phase")
+        store.movePinnedStateDimensionUp("health")
+        XCTAssertEqual(store.pinnedStateDimensions, ["Phase", "health", "phase"])
+
+        store.unpinStateDimension("health")
+        XCTAssertEqual(store.pinnedStateDimensions, ["Phase", "phase"])
+
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+        XCTAssertEqual(reloadedStore.pinnedStateDimensions, ["Phase", "phase"])
+        XCTAssertEqual(reloadedStore.stateDimensionDisplayName(for: "phase"), "Delivery Phase")
+
+        let otherStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "bd-2") != nil }
+        XCTAssertTrue(otherStore.pinnedStateDimensions.isEmpty)
+        XCTAssertEqual(otherStore.stateDimensionDisplayName(for: "phase"), "Phase")
+    }
+
+    func testStateDimensionDisplayNameNormalizationDropsInvalidAndDefaultOverrides() {
+        XCTAssertEqual(
+            BeadStore.normalizedStateDimensionDisplayNames([
+                "phase": " Delivery Phase ",
+                "health": "Health",
+                "track": "Track\nName",
+                "bad:dimension": "Invalid"
+            ]),
+            ["phase": "Delivery Phase"]
+        )
+    }
+
+    func testStateValuePresentationPreferencesPersistPerProjectAndRemainSparse() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"Example","status":"open","priority":1,"issue_type":"task","labels":["phase:awaiting_deploy"]}
+            {"_type":"issue","id":"bd-state-event","title":"State change: phase → awaiting_deploy","status":"closed","priority":1,"issue_type":"event"}
+            """
+        )
+        let otherProjectURL = try makeProject(issueLine(id: "bd-2", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(store.stateValueDisplayName(for: "awaiting_deploy", in: "phase"), "awaiting_deploy")
+        XCTAssertFalse(store.isStateValueArchived("awaiting_deploy", in: "phase"))
+        XCTAssertEqual(store.stateValueUsageCount(for: "awaiting_deploy", in: "phase"), 1)
+
+        XCTAssertTrue(store.setStateValueDisplayName("Awaiting Deploy", for: "awaiting_deploy", in: "phase"))
+        XCTAssertTrue(store.setStateValue("awaiting_deploy", in: "phase", isArchived: true))
+        XCTAssertFalse(store.setStateValueDisplayName("   ", for: "awaiting_deploy", in: "phase"))
+        XCTAssertFalse(store.setStateValue("   ", in: "phase", isArchived: true))
+
+        XCTAssertEqual(store.stateValueDisplayNames, ["phase": ["awaiting_deploy": "Awaiting Deploy"]])
+        XCTAssertEqual(store.archivedStateValuesByDimension, ["phase": ["awaiting_deploy"]])
+        XCTAssertEqual(
+            store.stateValueCatalog(for: "phase"),
+            BeadStateValueCatalog(
+                active: [],
+                archived: [
+                    BeadStateValuePresentation(
+                        value: "awaiting_deploy",
+                        displayName: "Awaiting Deploy",
+                        isArchived: true
+                    )
+                ]
+            )
+        )
+
+        XCTAssertTrue(store.setStateValueDisplayName("awaiting_deploy", for: "awaiting_deploy", in: "phase"))
+        XCTAssertNil(store.stateValueDisplayNames["phase"])
+        XCTAssertTrue(store.setStateValueDisplayName("Awaiting Deploy", for: "awaiting_deploy", in: "phase"))
+
+        let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+        XCTAssertEqual(reloadedStore.stateValueDisplayName(for: "awaiting_deploy", in: "phase"), "Awaiting Deploy")
+        XCTAssertTrue(reloadedStore.isStateValueArchived("awaiting_deploy", in: "phase"))
+
+        let otherStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        otherStore.openProject(otherProjectURL)
+        try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "bd-2") != nil }
+        XCTAssertEqual(otherStore.stateValueDisplayName(for: "awaiting_deploy", in: "phase"), "awaiting_deploy")
+        XCTAssertFalse(otherStore.isStateValueArchived("awaiting_deploy", in: "phase"))
+    }
+
+    func testStateValuePreferenceNormalizationDropsInvalidDefaultAndEmptyEntries() {
+        XCTAssertEqual(
+            BeadStore.normalizedStateValueDisplayNames([
+                "phase": [
+                    "awaiting_deploy": " Awaiting Deploy ",
+                    "active": "active",
+                    "invalid": "Two\nLines",
+                    "   ": "Missing Value"
+                ],
+                "bad:dimension": ["active": "Active"]
+            ]),
+            ["phase": ["awaiting_deploy": "Awaiting Deploy"]]
+        )
+        XCTAssertEqual(
+            BeadStore.normalizedArchivedStateValues([
+                "phase": ["awaiting_deploy", "   "],
+                "bad:dimension": ["active"],
+                "health": []
+            ]),
+            ["phase": ["awaiting_deploy"]]
+        )
     }
 
     func testProjectListDisplayOptionsPersistPerProject() async throws {
@@ -436,6 +582,10 @@ final class BeadStorePreferencesTests: XCTestCase {
             "showsAssigneeInBeadList",
             "showsDueDateInBeadList",
             "showsCommentsInBeadList",
+            "pinnedStateDimensions",
+            "stateDimensionDisplayNames",
+            "stateValueDisplayNames",
+            "archivedStateValues",
             "savedViews",
             "workspaceState"
         ]
@@ -448,7 +598,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
         XCTAssertEqual(
             Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
-            Set(["Issue List > View Options", "Sidebar > Bookmarks", "Project Settings > Storage"])
+            Set(["Issue List > View Options", "Sidebar > Bookmarks", "Project Settings > Storage", "Project Settings > Properties"])
         )
     }
 

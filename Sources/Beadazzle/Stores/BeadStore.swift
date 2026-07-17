@@ -39,6 +39,10 @@ final class BeadProjectStore {
     fileprivate(set) var hiddenTypeNames: Set<String> = []
     fileprivate(set) var hiddenStatusNames: Set<String> = []
     fileprivate(set) var issueReferenceLookup = IssueReferenceLookup.empty
+    /// Tiny per-issue overlays make state rows update in O(1) without rebuilding
+    /// the project-wide index on the main actor. Authoritative reloads retire
+    /// entries once the exported snapshot contains the same value.
+    fileprivate(set) var stateLabelOverridesByIssueID: [String: [String: String]] = [:]
 
     @ObservationIgnored fileprivate(set) var refreshTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var initializationTask: Task<Void, Never>?
@@ -230,17 +234,54 @@ final class BeadDetailStore {
 
 /// Runtime-only mutation coordination. Keeping these values outside observable project
 /// and workspace state prevents task bookkeeping from participating in view tracking.
+enum BeadLabelMutation: Sendable {
+    case replace([String])
+    case replaceOrdinary([String], preservingDimensions: [String])
+    case setState(dimension: String, value: String)
+
+    /// Only a complete replacement can prove that every previously attempted
+    /// label is absent or present. Granular ordinary/state writes must leave any
+    /// older ambiguity in place until an authoritative project refresh.
+    var confirmsCompleteLabelSetOnSuccess: Bool {
+        if case .replace = self { return true }
+        return false
+    }
+
+    func applying(to labels: [String]) -> [String] {
+        switch self {
+        case .replace(let replacement):
+            replacement
+        case .replaceOrdinary(let ordinaryLabels, let dimensions):
+            BeadStateLabel.replacingOrdinaryLabels(
+                in: labels,
+                with: ordinaryLabels,
+                preserving: dimensions
+            )
+        case .setState(let dimension, let value):
+            BeadStateLabel.applying(dimension: dimension, value: value, to: labels)
+        }
+    }
+}
+
 struct BeadMetadataMutationPatch {
     let updatesAssignee: Bool
     let assignee: String?
-    let labels: [String]?
+    let labelMutation: BeadLabelMutation?
     let dueAt: IssueMetadataDateUpdate
     let deferUntil: IssueMetadataDateUpdate
+
+    var updatesLabels: Bool {
+        labelMutation != nil
+    }
+
+    var confirmsCompleteLabelSetOnSuccess: Bool {
+        labelMutation?.confirmsCompleteLabelSetOnSuccess == true
+    }
 
     var fields: BeadMetadataMutationFields {
         var fields: BeadMetadataMutationFields = []
         if updatesAssignee { fields.insert(.assignee) }
-        if labels != nil { fields.insert(.labels) }
+        if updatesLabels { fields.insert(.labels) }
         if case .set = dueAt { fields.insert(.dueAt) }
         if case .set = deferUntil { fields.insert(.deferUntil) }
         return fields
@@ -249,21 +290,46 @@ struct BeadMetadataMutationPatch {
     init(
         assignee: String?,
         labels: [String]?,
+        preservingStateDimensions: [String] = [],
         dueAt: IssueMetadataDateUpdate,
         deferUntil: IssueMetadataDateUpdate
     ) {
         updatesAssignee = assignee != nil
         self.assignee = assignee?.nilIfBlank
-        self.labels = labels.map { IssueDraft.normalizedLabels(IssueDraft.normalizedLabelText($0)) }
+        self.labelMutation = labels.map { labels in
+            let normalizedLabels = IssueDraft.normalizedLabels(IssueDraft.normalizedLabelText(labels))
+            if preservingStateDimensions.isEmpty {
+                return .replace(normalizedLabels)
+            }
+            return .replaceOrdinary(
+                BeadStateLabel.excluding(
+                    dimensions: preservingStateDimensions,
+                    from: normalizedLabels
+                ),
+                preservingDimensions: preservingStateDimensions
+            )
+        }
         self.dueAt = dueAt
         self.deferUntil = deferUntil
+    }
+
+    init(stateDimension: String, value: String) {
+        updatesAssignee = false
+        assignee = nil
+        labelMutation = .setState(dimension: stateDimension, value: value)
+        dueAt = .unchanged
+        deferUntil = .unchanged
+    }
+
+    func proposedLabels(for issue: BeadIssue) -> [String]? {
+        labelMutation?.applying(to: issue.labels)
     }
 
     func changes(_ issue: BeadIssue) -> Bool {
         if updatesAssignee, issue.assignee != assignee {
             return true
         }
-        if let labels, issue.labels != labels {
+        if let proposedLabels = proposedLabels(for: issue), issue.labels != proposedLabels {
             return true
         }
         if case .set(let date) = dueAt, issue.dueAt != date {
@@ -280,8 +346,8 @@ struct BeadMetadataMutationPatch {
         if updatesAssignee, copy.assignee != assignee {
             copy.assignee = assignee
         }
-        if let labels, copy.labels != labels {
-            copy.labels = labels
+        if let proposedLabels = proposedLabels(for: copy), copy.labels != proposedLabels {
+            copy.labels = proposedLabels
         }
         if case .set(let date) = dueAt, copy.dueAt != date {
             copy.dueAt = date
@@ -358,6 +424,7 @@ struct BeadPendingMetadataMutation {
     let id: UUID
     let patch: BeadMetadataMutationPatch
     let possiblePersistedLabels: [String]
+    let proposedLabels: [String]?
     let fieldWriteVersions: BeadMetadataFieldVersions
     var succeeded: Bool?
 
@@ -365,12 +432,14 @@ struct BeadPendingMetadataMutation {
         id: UUID,
         patch: BeadMetadataMutationPatch,
         possiblePersistedLabels: [String] = [],
+        proposedLabels: [String]? = nil,
         fieldWriteVersions: BeadMetadataFieldVersions = .init(),
         succeeded: Bool? = nil
     ) {
         self.id = id
         self.patch = patch
         self.possiblePersistedLabels = possiblePersistedLabels
+        self.proposedLabels = proposedLabels
         self.fieldWriteVersions = fieldWriteVersions
         self.succeeded = succeeded
     }
@@ -769,6 +838,43 @@ final class BeadStore {
             persistProjectListDisplayOptions()
         }
     }
+    /// State dimensions (`bd set-state` label prefixes, e.g. `phase`) the user
+    /// pinned as editable property rows in the inspector for this project.
+    var pinnedStateDimensions: [String] = [] {
+        didSet {
+            guard oldValue != pinnedStateDimensions else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistPinnedStateDimensions()
+        }
+    }
+    /// Project-local presentation names for state dimensions. The dictionary is
+    /// intentionally tiny and separate from issue data, so rendering a pinned
+    /// property is a constant-time lookup and never scans the tracker.
+    var stateDimensionDisplayNames: [String: String] = [:] {
+        didSet {
+            guard oldValue != stateDimensionDisplayNames else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistStateDimensionDisplayNames()
+        }
+    }
+    /// Sparse project-local presentation overrides keyed first by state
+    /// dimension, then by the event-backed raw value.
+    var stateValueDisplayNames: [String: [String: String]] = [:] {
+        didSet {
+            guard oldValue != stateValueDisplayNames else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistStateValueDisplayNames()
+        }
+    }
+    /// Sparse project-local retirement catalog. Archived values remain in the
+    /// index and on existing beads, but are not offered as new choices.
+    var archivedStateValuesByDimension: [String: Set<String>] = [:] {
+        didSet {
+            guard oldValue != archivedStateValuesByDimension else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistArchivedStateValues()
+        }
+    }
     var isLoading: Bool { project.isLoading }
     internal var _isLoading: Bool { get { project.isLoading } set { project.isLoading = newValue } }
     var isInitializingBeads: Bool { project.isInitializingBeads }
@@ -873,6 +979,10 @@ final class BeadStore {
     internal var isLoadingProjectPreferences: Bool { get { project.isLoadingProjectPreferences } set { project.isLoadingProjectPreferences = newValue } }
     internal var suppressesHistoryRecording: Bool { get { workspace.suppressesHistoryRecording } set { workspace.suppressesHistoryRecording = newValue } }
     internal var suppressesFilterUpdates: Bool { get { workspace.suppressesFilterUpdates } set { workspace.suppressesFilterUpdates = newValue } }
+    internal var stateLabelOverridesByIssueID: [String: [String: String]] {
+        get { project.stateLabelOverridesByIssueID }
+        set { project.stateLabelOverridesByIssueID = newValue }
+    }
     @ObservationIgnored internal let userDefaults: UserDefaults
 
     internal var index: BeadProjectIndex { get { project.index } set { project.index = newValue } }
