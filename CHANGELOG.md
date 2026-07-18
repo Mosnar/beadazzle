@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-17
+
 - Added support for `bd context` across embedded, server, shared-server, redirected, and worktree projects, with backend details in Project Settings and behavior tailored to each mode.
 - Added bulk label and property changes for selected beads, with progress, cancellation, targeted retries, and useful error details.
 - State-change events now appear in Activity instead of as sub-issues, and Activity entries are grouped by date.
