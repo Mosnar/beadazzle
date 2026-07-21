@@ -85,6 +85,10 @@ jobs:
         shell: bash
         run: ./script/test_release_common.sh
 
+      - name: Verify appcast validation
+        shell: bash
+        run: python3 -m unittest script/test_validate_appcast.py
+
   publish:
     needs: validate
     runs-on: macos-26
@@ -278,6 +282,7 @@ jobs:
         id: appcast
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          BUILD_NUMBER: ${{ needs.validate.outputs.build_number }}
           DMG_PATH: ${{ steps.create_dmg.outputs.dmg_path }}
           NOTES_HTML: ${{ steps.notes.outputs.notes_html }}
           GENERATE_APPCAST: ${{ steps.sparkle_tools.outputs.generate_appcast }}
@@ -289,6 +294,7 @@ jobs:
           ./script/build_appcast.sh \
             --dmg-path "$DMG_PATH" \
             --release-tag "$RELEASE_TAG" \
+            --build-number "$BUILD_NUMBER" \
             --notes-html "$NOTES_HTML" \
             --generate-appcast "$GENERATE_APPCAST" \
             --output-dir "$site_dir"

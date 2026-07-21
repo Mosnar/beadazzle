@@ -2,10 +2,12 @@
 
 Beadazzle ships automatic updates via [Sparkle 2](https://sparkle-project.org).
 On first launch Sparkle asks whether to enable automatic update checks (its
-standard opt-in). Once enabled, it checks an appcast feed in the background and
-presents a changelog with **Install** / **Skip**. A **Check for Updates…** item
-lives in the app menu, and the **Updates** settings pane exposes automatic-check
-and beta-channel toggles.
+standard opt-in). Once enabled, Beadazzle checks the appcast on every launch and
+Sparkle continues its scheduled background checks. Available updates present a
+changelog with **Install** / **Skip**. A **Check for Updates…** item lives in the
+app menu, and the **Updates** settings pane exposes automatic-check and
+beta-channel toggles. Changing the beta-channel preference also resets Sparkle's
+update cycle so the newly selected channel is checked promptly.
 
 - **Feed:** `https://mosnar.github.io/beadazzle/appcast.xml` (GitHub Pages)
 - **Downloads:** the notarized DMGs already attached to each GitHub Release
@@ -74,7 +76,10 @@ The workflow then:
   and the in-app update dialog (**the release fails if that section is
   missing** — this keeps notes honest),
 - regenerates and re-signs the appcast (preserving prior entries) and deploys it
-  to Pages.
+  to Pages,
+- validates that the new appcast contains exactly one item for the release tag,
+  that its version and channel match the tag, and that its build number is newer
+  than every retained entry.
 
 ## Notes & gotchas
 
@@ -90,3 +95,8 @@ The workflow then:
 - Release notes are embedded into the appcast from the rendered changelog HTML.
   After the first release, open the appcast and confirm the `<description>`
   renders the way you expect in the update dialog.
+- Before shipping updater changes, smoke-test the oldest supported
+  Sparkle-enabled Beadazzle release from a writable temporary copy. Run
+  Sparkle's `sparkle <path-to-Beadazzle.app> --check-immediately --verbose` and
+  confirm it reports the latest compatible release directly, even when several
+  intervening versions exist.

@@ -2,6 +2,15 @@ import Combine
 import Foundation
 import Sparkle
 
+@MainActor
+protocol SparkleUpdating: AnyObject {
+    var automaticallyChecksForUpdates: Bool { get set }
+    func checkForUpdatesInBackground()
+    func resetUpdateCycleAfterShortDelay()
+}
+
+extension SPUUpdater: SparkleUpdating {}
+
 /// Owns the Sparkle updater for the app.
 ///
 /// Beadazzle ships outside the App Store and is not sandboxed, so the updater
@@ -16,37 +25,57 @@ import Sparkle
 final class UpdaterController: ObservableObject {
     let standardUpdaterController: SPUStandardUpdaterController?
     private let channelDelegate: UpdaterChannelDelegate?
+    private let updaterClient: (any SparkleUpdating)?
     private let userDefaults: UserDefaults
 
-    init(userDefaults: UserDefaults = .standard, infoDictionary: [String: Any]? = Bundle.main.infoDictionary) {
+    init(
+        userDefaults: UserDefaults = .standard,
+        infoDictionary: [String: Any]? = Bundle.main.infoDictionary,
+        updaterOverride: (any SparkleUpdating)? = nil
+    ) {
         self.userDefaults = userDefaults
 
         if SparkleUpdateConfiguration(infoDictionary: infoDictionary) != nil {
-            let channelDelegate = UpdaterChannelDelegate(userDefaults: userDefaults)
-            self.channelDelegate = channelDelegate
-            // startingUpdater: true begins scheduled background checks immediately.
-            self.standardUpdaterController = SPUStandardUpdaterController(
-                startingUpdater: true,
-                updaterDelegate: channelDelegate,
-                userDriverDelegate: nil
-            )
+            if let updaterOverride {
+                self.channelDelegate = nil
+                self.standardUpdaterController = nil
+                self.updaterClient = updaterOverride
+            } else {
+                let channelDelegate = UpdaterChannelDelegate(userDefaults: userDefaults)
+                let standardUpdaterController = SPUStandardUpdaterController(
+                    startingUpdater: true,
+                    updaterDelegate: channelDelegate,
+                    userDriverDelegate: nil
+                )
+                self.channelDelegate = channelDelegate
+                self.standardUpdaterController = standardUpdaterController
+                self.updaterClient = standardUpdaterController.updater
+            }
         } else {
             self.channelDelegate = nil
             self.standardUpdaterController = nil
+            self.updaterClient = nil
+        }
+
+        // Sparkle's scheduler does not guarantee a check on every launch. Its
+        // documented launch-check path is an immediate background check after
+        // startup, gated by the user's automatic-check preference.
+        if updaterClient?.automaticallyChecksForUpdates == true {
+            updaterClient?.checkForUpdatesInBackground()
         }
     }
 
     var updater: SPUUpdater? { standardUpdaterController?.updater }
 
-    var isUpdateCheckingAvailable: Bool { updater != nil }
+    var isUpdateCheckingAvailable: Bool { updaterClient != nil }
 
     /// Bound by the Updates settings pane. Sparkle persists this itself.
     var automaticallyChecksForUpdates: Bool {
-        get { updater?.automaticallyChecksForUpdates ?? false }
+        get { updaterClient?.automaticallyChecksForUpdates ?? false }
         set {
-            guard let updater else { return }
+            guard let updaterClient else { return }
             objectWillChange.send()
-            updater.automaticallyChecksForUpdates = newValue
+            updaterClient.automaticallyChecksForUpdates = newValue
         }
     }
 
@@ -54,8 +83,10 @@ final class UpdaterController: ObservableObject {
     var receivesBetaUpdates: Bool {
         get { userDefaults.bool(forKey: BeadazzlePreferenceKeys.receivesBetaUpdates) }
         set {
+            guard newValue != receivesBetaUpdates else { return }
             objectWillChange.send()
             userDefaults.set(newValue, forKey: BeadazzlePreferenceKeys.receivesBetaUpdates)
+            updaterClient?.resetUpdateCycleAfterShortDelay()
         }
     }
 }

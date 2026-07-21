@@ -6,7 +6,7 @@ source "$SCRIPT_DIR/release_common.sh"
 
 usage() {
   cat <<EOF
-usage: $0 --dmg-path <path> --release-tag <tag> --notes-html <path> \\
+usage: $0 --dmg-path <path> --release-tag <tag> --build-number <number> --notes-html <path> \\
           --generate-appcast <path> --output-dir <dir>
 
 Builds/updates the Sparkle appcast for a release and writes appcast.xml into
@@ -24,6 +24,7 @@ EOF
 
 dmg_path=""
 release_tag=""
+build_number=""
 notes_html=""
 generate_appcast=""
 output_dir=""
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --release-tag)
       release_tag="${2:?missing value for --release-tag}"
+      shift 2
+      ;;
+    --build-number)
+      build_number="${2:?missing value for --build-number}"
       shift 2
       ;;
     --notes-html)
@@ -63,6 +68,7 @@ done
 
 [[ -n "$dmg_path" ]] || { usage >&2; beadazzle_release_die "missing --dmg-path"; }
 [[ -n "$release_tag" ]] || { usage >&2; beadazzle_release_die "missing --release-tag"; }
+[[ -n "$build_number" ]] || { usage >&2; beadazzle_release_die "missing --build-number"; }
 [[ -n "$generate_appcast" ]] || { usage >&2; beadazzle_release_die "missing --generate-appcast"; }
 [[ -n "$output_dir" ]] || { usage >&2; beadazzle_release_die "missing --output-dir"; }
 [[ -f "$dmg_path" ]] || beadazzle_release_die "DMG not found: $dmg_path"
@@ -70,6 +76,7 @@ done
 [[ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]] || beadazzle_release_die "missing SPARKLE_ED_PRIVATE_KEY environment value"
 
 beadazzle_release_require_command curl
+beadazzle_release_require_command python3
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/beadazzle-appcast.XXXXXX")"
 key_file="$(mktemp "${TMPDIR:-/tmp}/beadazzle-ed-key.XXXXXX")"
@@ -116,6 +123,11 @@ fi
 "$generate_appcast" "${generate_args[@]}" >&2
 
 [[ -f "$work_dir/appcast.xml" ]] || beadazzle_release_die "generate_appcast did not produce appcast.xml"
+
+python3 "$SCRIPT_DIR/validate_appcast.py" \
+  --appcast "$work_dir/appcast.xml" \
+  --release-tag "$release_tag" \
+  --build-number "$build_number"
 
 mkdir -p "$output_dir"
 cp "$work_dir/appcast.xml" "$output_dir/appcast.xml"
