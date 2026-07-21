@@ -14,6 +14,8 @@ for users, not for the commit log.
 ## [Unreleased]
 
 - Project Storage now shows configured Dolt remotes, automatic-push status, and real backup destinations, with explicit Pull and Push actions, serialized sync alongside issue edits, clear partial-refresh errors, and better separation between remote sync, readable snapshots, optional Git hooks, and backups.
+- Closed beads no longer offer or accept new sub-issues.
+- Fixed removing a parent from child beads whose hierarchy was stored as a dependency.
 - Fixed newly created sub-issues so Save Changes and Command-S become available immediately without closing and reopening the detail view.
 - Fixed list bullets appearing too high in Description, Design, Acceptance Criteria, and Notes.
 - When automatic update checks are enabled, Beadazzle now checks at every launch and refreshes promptly after switching the beta-update preference.

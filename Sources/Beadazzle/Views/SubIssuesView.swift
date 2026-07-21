@@ -7,6 +7,7 @@ struct SubIssuesView: View {
 
     var body: some View {
         let rows = store.subIssueRows(parentID: issue.id)
+        let canAddSubIssue = store.canAddSubIssue(parentID: issue.id)
         let items = rows.compactMap { row -> SubIssueListItem? in
             guard let child = store.issue(with: row.issueID) else { return nil }
             return SubIssueListItem(issue: child, row: row)
@@ -23,26 +24,27 @@ struct SubIssuesView: View {
 
                 Spacer()
 
-                Button {
-                    showingChildPicker = true
-                } label: {
-                    Label("New Sub-issue", systemImage: "plus")
-                        .labelStyle(.iconOnly)
-                        .frame(width: 24, height: 24)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .disabled(!store.canCreateChildBead(parentID: issue.id))
-                .help("Create sub-issue")
-                .accessibilityLabel("Create sub-issue")
-                .popover(isPresented: $showingChildPicker, arrowEdge: .bottom) {
-                    BeadPickerPopover(
-                        configuration: .child(parent: issue),
-                        onApplied: { _ in },
-                        onDismiss: {
-                            showingChildPicker = false
-                        }
-                    )
+                if canAddSubIssue {
+                    Button {
+                        showingChildPicker = true
+                    } label: {
+                        Label("New Sub-issue", systemImage: "plus")
+                            .labelStyle(.iconOnly)
+                            .frame(width: 24, height: 24)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Create sub-issue")
+                    .accessibilityLabel("Create sub-issue")
+                    .popover(isPresented: $showingChildPicker, arrowEdge: .bottom) {
+                        BeadPickerPopover(
+                            configuration: .child(parent: issue),
+                            onApplied: { _ in },
+                            onDismiss: {
+                                showingChildPicker = false
+                            }
+                        )
+                    }
                 }
             }
 
@@ -60,6 +62,11 @@ struct SubIssuesView: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
+        .onChange(of: canAddSubIssue) { _, canAddSubIssue in
+            if !canAddSubIssue {
+                showingChildPicker = false
+            }
+        }
     }
 
     private var progressText: String {

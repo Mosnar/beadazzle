@@ -2053,6 +2053,46 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.issue(with: "bd-child")?.parentID, "bd-parent")
     }
 
+    func testChildCreationEligibilityExcludesClosedParentsAndGates() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-open", title: "Open parent"))
+            \(closedIssueLine(id: "bd-closed", title: "Closed parent"))
+            \(issueLine(id: "bd-gate", title: "Gate", issueType: "gate"))
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-gate") != nil }
+
+        XCTAssertTrue(store.canAddSubIssue(parentID: "bd-open"))
+        XCTAssertFalse(store.canAddSubIssue(parentID: "bd-closed"))
+        XCTAssertFalse(store.canAddSubIssue(parentID: "bd-gate"))
+
+        store.select(["bd-closed"])
+        store.beginCreatingChildBead(parentID: "bd-closed")
+
+        XCTAssertNil(store.creationDraft)
+        XCTAssertEqual(store.selectedIDs, Set(["bd-closed"]))
+    }
+
+    func testCreateBeadRejectsClosedParentBeforeInvokingCommand() async throws {
+        let projectURL = try makeProject(closedIssueLine(id: "bd-parent", title: "Closed parent"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-parent") != nil }
+
+        var draft = store.blankDraft(parentID: "bd-parent")
+        draft.title = "New child"
+        let createdIssueID = await store.createBead(draft, revealCreated: false)
+
+        XCTAssertNil(createdIssueID)
+        XCTAssertEqual(store.lastError, "Reopen bd-parent before adding a sub-issue.")
+        let calls = await commands.createCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
     func testCreateReturnsFalseAndSetsLastErrorOnCommandFailure() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -3580,6 +3620,28 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.first?.parentID, nil)
     }
 
+    func testSetParentClearsDependencyBackedParentWhenParentIDFieldIsMissing() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-parent", title: "Parent"))
+            {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","dependencies":[{"issue_id":"bd-child","depends_on_id":"bd-parent","type":"parent-child"}]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.parentIssue(for: "bd-child") != nil }
+        XCTAssertNil(store.issue(with: "bd-child")?.parentID)
+
+        let didClear = await store.setParent(issueID: "bd-child", parentID: nil)
+
+        XCTAssertTrue(didClear)
+        XCTAssertNil(store.parentIssue(for: "bd-child"))
+        let calls = await commands.setParentCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-child"])
+        XCTAssertEqual(calls.first?.parentID, nil)
+    }
+
     func testSetParentRejectsOpenChildUnderDoneParent() async throws {
         let projectURL = try makeProject(
             """
@@ -3599,6 +3661,26 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             store.lastError,
             "Reopen bd-parent or resolve child beads before adding bd-child as a child: bd-child."
         )
+        let calls = await commands.setParentCalls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testSetParentTreatsExistingRelationshipAsNoOpWhenParentIsDone() async throws {
+        let projectURL = try makeProject(
+            """
+            \(closedIssueLine(id: "bd-parent", title: "Parent"))
+            \(issueLine(id: "bd-child", title: "Child", parentID: "bd-parent"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.parentIssue(for: "bd-child") != nil }
+
+        let didSet = await store.setParent(issueID: "bd-child", parentID: "bd-parent")
+
+        XCTAssertTrue(didSet)
+        XCTAssertNil(store.lastError)
         let calls = await commands.setParentCalls
         XCTAssertTrue(calls.isEmpty)
     }

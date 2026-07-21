@@ -119,7 +119,12 @@ enum BeadPickerAction: Hashable, Sendable {
     }
 
     var needsPostCreateRelationship: Bool {
-        true
+        switch self {
+        case .addChild:
+            false
+        case .setParent, .addBlockedBy, .addBlocks:
+            true
+        }
     }
 }
 

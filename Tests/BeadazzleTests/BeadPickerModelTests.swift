@@ -58,6 +58,13 @@ final class BeadPickerModelTests: XCTestCase {
         XCTAssertEqual(model.quickCreateTitle, "Custom child")
     }
 
+    func testOnlyChildQuickCreateAlreadyHasItsRelationship() {
+        XCTAssertFalse(BeadPickerAction.addChild(parentID: "bd-parent").needsPostCreateRelationship)
+        XCTAssertTrue(BeadPickerAction.setParent(issueID: "bd-child").needsPostCreateRelationship)
+        XCTAssertTrue(BeadPickerAction.addBlockedBy(issueID: "bd-child").needsPostCreateRelationship)
+        XCTAssertTrue(BeadPickerAction.addBlocks(issueID: "bd-child").needsPostCreateRelationship)
+    }
+
     private func pickerRow(
         id: String,
         title: String,
