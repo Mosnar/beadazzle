@@ -11,16 +11,28 @@ extension BeadStore {
         recordWorkspaceSnapshotIfNeeded()
     }
 
-    func canCreateChildBead(parentID: String) -> Bool {
-        guard hasReadableProject,
-              let parent = index.issue(with: parentID) else {
-            return false
+    func addSubIssueUnavailableMessage(parentID: String) -> String? {
+        guard hasReadableProject else {
+            return "Open a readable Beads project before adding a sub-issue."
         }
-        return !parent.isGate
+        guard let parent = index.issue(with: parentID) else {
+            return "Bead \(parentID) was not found."
+        }
+        if parent.isGate {
+            return "Gate beads cannot have sub-issues."
+        }
+        if isDone(parent) {
+            return "Reopen \(parentID) before adding a sub-issue."
+        }
+        return nil
+    }
+
+    func canAddSubIssue(parentID: String) -> Bool {
+        addSubIssueUnavailableMessage(parentID: parentID) == nil
     }
 
     func beginCreatingChildBead(parentID: String) {
-        guard canCreateChildBead(parentID: parentID), creationDraft == nil else { return }
+        guard canAddSubIssue(parentID: parentID), creationDraft == nil else { return }
         suppressesHistoryRecording = true
         _selectedIDs.removeAll()
         _fullPageDetailIssueID = nil

@@ -340,7 +340,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
 
         XCTAssertEqual(store.projectEnvironment?.role, .contributor)
         XCTAssertTrue(store.canCreateBead)
-        XCTAssertTrue(store.canCreateChildBead(parentID: "bd-parent"))
+        XCTAssertTrue(store.canAddSubIssue(parentID: "bd-parent"))
         XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-parent"))))
 
         let createdIssueID = await store.createBead(

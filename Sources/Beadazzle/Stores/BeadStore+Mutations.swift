@@ -708,6 +708,11 @@ extension BeadStore {
         guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
             return nil
         }
+        if let parentID = draft.parentID?.nilIfBlank,
+           let unavailableMessage = addSubIssueUnavailableMessage(parentID: parentID) {
+            lastError = unavailableMessage
+            return nil
+        }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
 

@@ -26,13 +26,16 @@ extension BeadStore {
                 lastError = "A bead cannot be moved under one of its child beads."
                 return false
             }
+        }
+        let currentParentID = index.parentID(for: issueID) ?? originalIssue.parentID?.nilIfBlank
+        guard currentParentID != normalizedParentID else { return true }
+        if let normalizedParentID {
             guard guardHierarchyAllowsParentChildDependency(
                 issueID: issueID,
                 dependsOnID: normalizedParentID,
                 type: "parent-child"
             ) else { return false }
         }
-        guard originalIssue.parentID != normalizedParentID else { return true }
 
         let snapshot = currentMutationSnapshot()
         let now = Date()
