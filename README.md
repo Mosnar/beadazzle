@@ -40,7 +40,7 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 - Dedicated gate queue with approve/reject workflows, gate-aware blockers, and guarded close/reopen actions.
 - Parent and sub-issue workflows with breadcrumbs, inline child creation, child-close confirmation, and hierarchy safety checks.
 - Fast relationship pickers with search, filters, outline mode, and quick-create flows.
-- Project settings for storage, snapshot freshness, readable export health, hooks, backups, and Ready workflow preferences.
+- Project settings for storage, Dolt remote health and manual sync, snapshot freshness, readable export health, optional hooks, backups, and Ready workflow preferences.
 - CRUD, bulk actions, comments, dependencies, gates, and workflow mutations routed through the `bd` CLI.
 - Context-aware JSONL snapshot reads, including redirected and worktree tracker directories.
 - Live reload for local Beads source changes without polling idle projects.
@@ -64,15 +64,16 @@ Beadazzle asks `bd context` for the effective tracker directory before it reads 
 - `beads.jsonl`
 - `beads.base.jsonl`
 
-Write support goes through `bd`, not direct file or database writes. Beadazzle currently covers create, edit, close, reopen, delete, bulk status/type/priority updates, labels, assignee, due/defer dates, comments, dependencies, parent/child relationships, custom status/type definitions, hooks install, backup sync, and common gate workflows.
+Write support goes through `bd`, not direct file or database writes. Beadazzle currently covers create, edit, close, reopen, delete, bulk status/type/priority updates, labels, assignee, due/defer dates, comments, dependencies, parent/child relationships, custom status/type definitions, explicit Dolt pull/push, optional hooks install, backup sync, and common gate workflows.
 
 Beadazzle asks `bd` to export a fresh readable JSONL snapshot after mutations and manual refreshes. Server-backed projects also export when opened and refresh when the app becomes active, without background polling. The app then reloads that snapshot so Beads remains the source of truth for validation, hooks, history, and storage semantics.
 
-Project Storage settings show the resolved storage mode, tracker directory, Git integration, and Beads role. Stealth projects hide Git-hook actions that do not apply. Contributor routing is shown for clarity while creation and gate commands remain delegated to `bd`, which chooses the configured planning repository.
+Project Storage settings show the resolved storage mode, tracker directory, configured Dolt remotes, automatic-push policy, readable snapshot, Git integration, backup destination, and Beads role. Pull and Push are explicit actions; Beadazzle does not synchronize in the background. Git hooks are presented as optional integration, and stealth projects hide hook actions that do not apply. Contributor routing is shown for clarity while creation and gate commands remain delegated to `bd`, which chooses the configured planning repository.
 
 Generally not implemented in v1:
 
 - Full Beads administration for every `bd config`, storage, migration, import, export, federation, or recovery command.
+- Creating, editing, or removing Dolt remotes and changing automatic-push policy.
 - Direct editing of `.beads` internals, Dolt tables, Beads history, or generated JSONL snapshots.
 - Built-in `bd` distribution, remote workers, agent orchestration, or hosted/team/cloud Beads service features.
 - Git, GitHub, pull request, or CI management beyond displaying and acting on Beads data that already exists locally.
@@ -127,6 +128,7 @@ Beadazzle is designed around local repository data.
 
 - Reads come from the JSONL snapshot in the tracker directory reported by `bd context`.
 - When the app needs a readable snapshot after a mutation, it asks `bd` to export one and then reloads that snapshot.
+- Remote issue synchronization is user-initiated and routes through `bd dolt pull` and `bd dolt push`; source-code Git operations remain separate.
 - Create, update, close, delete, dependency, comment, gate, and workflow-definition changes go through the `bd` CLI. Beadazzle does not write directly to Dolt tables or Beads JSONL records.
 - Beadazzle does not ship with `bd`; you must install it separately for write actions.
 - The app does not enable remote telemetry, analytics, or crash reporting by default.

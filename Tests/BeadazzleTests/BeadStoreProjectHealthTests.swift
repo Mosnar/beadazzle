@@ -19,6 +19,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(health.storageConfig.value?.exportAuto, true)
         XCTAssertEqual(health.storageConfig.value?.importAuto, false)
         XCTAssertNil(health.storageConfig.value?.federationRemote)
+        XCTAssertEqual(health.doltRemotes.value?.primaryRemote?.name, "origin")
         XCTAssertTrue(health.hooks.value?.hasMissingHooks == true)
         XCTAssertTrue(health.backup.value?.isConfigured == true)
         XCTAssertTrue(health.snapshotFile.exists)
@@ -39,6 +40,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertNotNil(health.context.value)
         XCTAssertNil(health.storageConfig.value)
         XCTAssertNotNil(health.storageConfig.errorMessage)
+        XCTAssertEqual(health.doltRemotes.value?.primaryRemote?.name, "origin")
         XCTAssertTrue(health.hooks.value?.hasMissingHooks == true)
         XCTAssertTrue(health.backup.value?.isConfigured == true)
     }
@@ -79,6 +81,162 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(installHooksCallCount, 1)
         XCTAssertNil(store.projectHealthAction)
         XCTAssertNil(store.projectHealthActionError)
+    }
+
+    func testPullIssuesRunsDoltPullThenExportsAndReloadsProject() async throws {
+        let projectURL = try makeProject(named: "PullHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didPull = await store.pullProjectIssues()
+        try await waitUntil { !store.isLoading }
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertTrue(didPull)
+        let pullCallCount = await commands.pullCallCount
+        let exportCallCount = await commands.exportCallCount
+        let commandEvents = await commands.commandEvents
+        XCTAssertEqual(pullCallCount, 1)
+        XCTAssertEqual(exportCallCount, 1)
+        XCTAssertEqual(Array(commandEvents.suffix(2)), ["pull", "export"])
+        XCTAssertNil(store.projectHealthAction)
+        XCTAssertNil(store.projectHealthActionError)
+    }
+
+    func testPullSnapshotExportFailureMarksSnapshotStaleAndReportsPartialSuccess() async throws {
+        let projectURL = try makeProject(named: "PartialPullHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(exportError: ProjectHealthTestError.failedExport)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didPull = await store.pullProjectIssues()
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertFalse(didPull)
+        let commandEvents = await commands.commandEvents
+        XCTAssertEqual(Array(commandEvents.suffix(2)), ["pull", "export"])
+        XCTAssertEqual(store.snapshotFreshness.state, .possiblyStale)
+        XCTAssertEqual(store.projectHealthActionError?.title, "Pull completed, but refresh failed")
+        XCTAssertTrue(store.projectHealthActionError?.message.contains("Dolt database was updated") == true)
+    }
+
+    func testPushWaitsForEarlierSerializedWrite() async throws {
+        let projectURL = try makeProject(named: "QueuedPushHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let blockingWrite = Task {
+            try await store.enqueueMutationWrite {
+                await commands.runSyntheticWrite(delay: .milliseconds(150))
+            }
+        }
+        while await commands.syntheticWriteStarted == false {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        let push = Task { await store.pushProjectIssues() }
+        try await Task.sleep(for: .milliseconds(30))
+        let pushCallCountWhileBlocked = await commands.pushCallCount
+        XCTAssertEqual(pushCallCountWhileBlocked, 0)
+
+        try await blockingWrite.value
+        let didPush = await push.value
+        let commandEvents = await commands.commandEvents
+        XCTAssertTrue(didPush)
+        XCTAssertEqual(Array(commandEvents.suffix(3)), ["write-start", "write-end", "push"])
+    }
+
+    func testPushIssuesRunsDoltPushWithoutReloadingSnapshot() async throws {
+        let projectURL = try makeProject(named: "PushHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didPush = await store.pushProjectIssues()
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertTrue(didPush)
+        let pushCallCount = await commands.pushCallCount
+        let exportCallCount = await commands.exportCallCount
+        XCTAssertEqual(pushCallCount, 1)
+        XCTAssertEqual(exportCallCount, 0)
+        XCTAssertNil(store.projectHealthAction)
+        XCTAssertNil(store.projectHealthActionError)
+    }
+
+    func testPushFailureSurfacesActionError() async throws {
+        let projectURL = try makeProject(named: "FailedPushHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(pushError: ProjectHealthTestError.failedPush)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didPush = await store.pushProjectIssues()
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertFalse(didPush)
+        let pushCallCount = await commands.pushCallCount
+        XCTAssertEqual(pushCallCount, 1)
+        XCTAssertNotNil(store.projectHealthActionError)
+    }
+
+    func testPullFailurePreservesCurrentSnapshotAndSurfacesActionError() async throws {
+        let projectURL = try makeProject(named: "FailedPullHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(pullError: ProjectHealthTestError.failedPull)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let didPull = await store.pullProjectIssues()
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertFalse(didPull)
+        let pullCallCount = await commands.pullCallCount
+        let exportCallCount = await commands.exportCallCount
+        XCTAssertEqual(pullCallCount, 1)
+        XCTAssertEqual(exportCallCount, 0)
+        XCTAssertNotNil(store.issue(with: "bd-1"))
+        XCTAssertNotNil(store.projectHealthActionError)
+    }
+
+    func testPullResultIsIgnoredAfterProjectSwitch() async throws {
+        let firstProjectURL = try makeProject(named: "SlowPullHealthProject", issueID: "bd-1")
+        let secondProjectURL = try makeProject(named: "NextPullHealthProject", issueID: "bd-2")
+        let commands = ProjectHealthTestCommands(pullDelay: .milliseconds(150))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let pullTask = Task { await store.pullProjectIssues() }
+        try await Task.sleep(for: .milliseconds(30))
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let pullResult = await pullTask.value
+        XCTAssertFalse(pullResult)
+        XCTAssertEqual(store.projectURL, secondProjectURL)
+        XCTAssertNotNil(store.issue(with: "bd-2"))
+        XCTAssertNil(store.issue(with: "bd-1"))
     }
 
     func testInstallHooksActionDoesNotRunInStealthMode() async throws {
@@ -173,6 +331,25 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(store.projectHealthSnapshot?.context.value?.database, "SecondHealthProject")
     }
 
+    func testProjectHealthRefreshReloadsContextInsteadOfReusingOpenProjectContext() async throws {
+        let projectURL = try makeProject(named: "FreshContextHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        await commands.setContextSyncRemote("git+ssh://git@github.com/example/project.git")
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertEqual(
+            store.projectHealthSnapshot?.context.value?.syncRemote,
+            "git+ssh://git@github.com/example/project.git"
+        )
+        let contextCallCount = await commands.contextCallCount
+        XCTAssertGreaterThanOrEqual(contextCallCount, 2)
+    }
+
     private func makeUserDefaults() -> UserDefaults {
         let suiteName = "BeadStoreProjectHealthTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -218,29 +395,51 @@ final class BeadStoreProjectHealthTests: XCTestCase {
 
 private actor ProjectHealthTestCommands: BeadsCommanding {
     private let storageError: Error?
+    private let exportError: Error?
     private let contextDelay: Duration?
     private let backupConfigured: Bool
     private let noGitOperations: Bool
+    private let pullDelay: Duration?
+    private let pullError: Error?
+    private let pushError: Error?
+    private var contextSyncRemote: String?
     private(set) var exportCallCount = 0
+    private(set) var contextCallCount = 0
     private(set) var installHooksCallCount = 0
+    private(set) var pullCallCount = 0
+    private(set) var pushCallCount = 0
     private(set) var syncBackupCallCount = 0
+    private(set) var commandEvents: [String] = []
+    private(set) var syntheticWriteStarted = false
 
     init(
         storageError: Error? = nil,
+        exportError: Error? = nil,
         contextDelay: Duration? = nil,
         backupConfigured: Bool = true,
-        noGitOperations: Bool = false
+        noGitOperations: Bool = false,
+        pullDelay: Duration? = nil,
+        pullError: Error? = nil,
+        pushError: Error? = nil
     ) {
         self.storageError = storageError
+        self.exportError = exportError
         self.contextDelay = contextDelay
         self.backupConfigured = backupConfigured
         self.noGitOperations = noGitOperations
+        self.pullDelay = pullDelay
+        self.pullError = pullError
+        self.pushError = pushError
     }
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
     func exportReadableSnapshot(projectURL: URL) async throws {
         exportCallCount += 1
+        commandEvents.append("export")
+        if let exportError {
+            throw exportError
+        }
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
@@ -297,6 +496,7 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws {}
 
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        contextCallCount += 1
         if let contextDelay {
             try await Task.sleep(for: contextDelay)
         }
@@ -312,8 +512,13 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
             projectID: "project-id",
             repoRoot: projectURL.path,
             role: "maintainer",
-            schemaVersion: 1
+            schemaVersion: 1,
+            syncRemote: contextSyncRemote
         )
+    }
+
+    func setContextSyncRemote(_ value: String?) {
+        contextSyncRemote = value
     }
 
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig {
@@ -339,6 +544,17 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         """)
     }
 
+    func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes {
+        BeadsDoltRemotes(remotes: [
+            BeadsDoltRemote(
+                name: "origin",
+                url: "git+ssh://git@github.com/example/project.git",
+                sqlURL: "git+ssh://git@github.com/example/project.git",
+                status: "ok"
+            )
+        ])
+    }
+
     func loadBackupStatus(projectURL: URL) async throws -> BeadsBackupStatus {
         try BeadsBackupStatus.decode(from: """
         {
@@ -361,11 +577,40 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         installHooksCallCount += 1
     }
 
+    func pullDoltRemote(projectURL: URL) async throws {
+        pullCallCount += 1
+        commandEvents.append("pull")
+        if let pullDelay {
+            try await Task.sleep(for: pullDelay)
+        }
+        if let pullError {
+            throw pullError
+        }
+    }
+
+    func pushDoltRemote(projectURL: URL) async throws {
+        pushCallCount += 1
+        commandEvents.append("push")
+        if let pushError {
+            throw pushError
+        }
+    }
+
     func syncBackup(projectURL: URL) async throws {
         syncBackupCallCount += 1
+    }
+
+    func runSyntheticWrite(delay: Duration) async {
+        syntheticWriteStarted = true
+        commandEvents.append("write-start")
+        try? await Task.sleep(for: delay)
+        commandEvents.append("write-end")
     }
 }
 
 private enum ProjectHealthTestError: Error {
     case failedStorage
+    case failedExport
+    case failedPull
+    case failedPush
 }

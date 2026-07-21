@@ -29,6 +29,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
         XCTAssertEqual(preflight.check(.bdCLI)?.status, .ready)
         XCTAssertEqual(preflight.check(.readableData)?.status, .ready)
         XCTAssertEqual(preflight.check(.snapshotFreshness)?.status, .ready)
+        XCTAssertEqual(preflight.check(.doltSync)?.status, .info)
         XCTAssertEqual(preflight.check(.exportConfiguration)?.status, .ready)
         XCTAssertEqual(preflight.check(.gitHooks)?.status, .ready)
         XCTAssertEqual(preflight.check(.backup)?.status, .info)
@@ -54,7 +55,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
         XCTAssertEqual(preflight.check(.bdCLI)?.actionHint, "Choose a bd executable in Settings.")
     }
 
-    func testStaleSnapshotAndMissingHooksWarnWithoutBlocking() {
+    func testStaleSnapshotWarnsWhileMissingHooksRemainOptional() {
         let fixture = PreflightFixture()
         let freshness = ProjectSnapshotFreshness(
             state: .possiblyStale,
@@ -83,8 +84,63 @@ final class ProjectPreflightHealthTests: XCTestCase {
         XCTAssertEqual(preflight.status, .warning)
         XCTAssertEqual(preflight.check(.snapshotFreshness)?.status, .warning)
         XCTAssertEqual(preflight.check(.snapshotFreshness)?.actionHint, "Export Snapshot")
-        XCTAssertEqual(preflight.check(.gitHooks)?.status, .warning)
+        XCTAssertEqual(preflight.check(.gitHooks)?.status, .info)
         XCTAssertEqual(preflight.check(.gitHooks)?.actionHint, "Install Hooks")
+    }
+
+    func testConfiguredDoltRemoteIsReady() {
+        let fixture = PreflightFixture()
+        let health = fixture.health(
+            remotes: .available(BeadsDoltRemotes(remotes: [
+                BeadsDoltRemote(
+                    name: "origin",
+                    url: "git+ssh://git@github.com/example/project.git",
+                    sqlURL: "git+ssh://git@github.com/example/project.git",
+                    status: "ok"
+                )
+            ]))
+        )
+
+        let preflight = ProjectPreflightHealth.evaluate(
+            projectURL: fixture.projectURL,
+            missingDataSourceURL: nil,
+            activeDataSource: fixture.jsonlSource,
+            snapshotFreshness: fixture.freshness,
+            health: health,
+            automaticallyRefreshesExternalChanges: true,
+            isLoading: false
+        )
+
+        XCTAssertEqual(preflight.check(.doltSync)?.status, .ready)
+        XCTAssertEqual(preflight.check(.doltSync)?.summary, "origin configured")
+    }
+
+    func testDoltRemoteProblemWarnsWithoutBlockingProjectReads() {
+        let fixture = PreflightFixture()
+        let health = fixture.health(
+            remotes: .available(BeadsDoltRemotes(remotes: [
+                BeadsDoltRemote(
+                    name: "origin",
+                    url: "git+ssh://git@github.com/example/project.git",
+                    sqlURL: nil,
+                    status: "unavailable"
+                )
+            ]))
+        )
+
+        let preflight = ProjectPreflightHealth.evaluate(
+            projectURL: fixture.projectURL,
+            missingDataSourceURL: nil,
+            activeDataSource: fixture.jsonlSource,
+            snapshotFreshness: fixture.freshness,
+            health: health,
+            automaticallyRefreshesExternalChanges: true,
+            isLoading: false
+        )
+
+        XCTAssertEqual(preflight.status, .warning)
+        XCTAssertEqual(preflight.check(.readableData)?.status, .ready)
+        XCTAssertEqual(preflight.check(.doltSync)?.status, .warning)
     }
 
     func testMissingBeadsDataBlocksReadiness() {
@@ -187,7 +243,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
             isLoading: false
         )
 
-        XCTAssertEqual(preflight.check(.gitHooks)?.status, .warning)
+        XCTAssertEqual(preflight.check(.gitHooks)?.status, .info)
         XCTAssertEqual(preflight.check(.gitHooks)?.summary, "Git integration status unavailable")
         XCTAssertEqual(preflight.check(.gitHooks)?.actionHint, "Refresh Status")
     }
@@ -221,6 +277,7 @@ private struct PreflightFixture {
         exportAuto: Bool = true,
         noGitOperations: Bool = false,
         hooks: BeadsHooksStatus = BeadsHooksStatus(hooks: []),
+        remotes: ProjectHealthValue<BeadsDoltRemotes> = .available(BeadsDoltRemotes(remotes: [])),
         backup: BeadsBackupStatus = BeadsBackupStatus(
             backup: BeadsBackupStatus.Backup(lastDoltCommit: "commit", timestamp: "2026-07-08T13:35:44.99568Z"),
             databaseSize: BeadsBackupStatus.DatabaseSize(bytes: 10, human: "10 B"),
@@ -252,6 +309,7 @@ private struct PreflightFixture {
                 federationRemote: nil,
                 noGitOperations: noGitOperations
             )),
+            doltRemotes: remotes,
             hooks: .available(hooks),
             backup: .available(backup),
             snapshotFile: ProjectSnapshotFileStatus(

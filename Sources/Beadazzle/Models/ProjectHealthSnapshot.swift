@@ -3,6 +3,8 @@ import Foundation
 enum ProjectHealthAction: Equatable, Sendable {
     case exportingSnapshot
     case installingHooks
+    case pullingIssues
+    case pushingIssues
     case syncingBackup
 
     var title: String {
@@ -11,9 +13,32 @@ enum ProjectHealthAction: Equatable, Sendable {
             "Exporting snapshot"
         case .installingHooks:
             "Installing hooks"
+        case .pullingIssues:
+            "Pulling issues"
+        case .pushingIssues:
+            "Pushing issues"
         case .syncingBackup:
             "Syncing backup"
         }
+    }
+}
+
+struct ProjectHealthActionFailure: Equatable, Sendable {
+    var title: String
+    var message: String
+
+    static func failed(_ error: Error) -> ProjectHealthActionFailure {
+        ProjectHealthActionFailure(
+            title: "Last action failed",
+            message: error.localizedDescription
+        )
+    }
+
+    static func pullCompletedButSnapshotRefreshFailed(_ message: String) -> ProjectHealthActionFailure {
+        ProjectHealthActionFailure(
+            title: "Pull completed, but refresh failed",
+            message: "The Dolt database was updated, but Beadazzle could not export its readable snapshot. The issue list may be stale. \(message)"
+        )
     }
 }
 
@@ -21,6 +46,7 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
     var loadedAt: Date
     var context: ProjectHealthValue<BeadsProjectContext>
     var storageConfig: ProjectHealthValue<ProjectStorageConfig>
+    var doltRemotes: ProjectHealthValue<BeadsDoltRemotes> = .available(BeadsDoltRemotes(remotes: []))
     var hooks: ProjectHealthValue<BeadsHooksStatus>
     var backup: ProjectHealthValue<BeadsBackupStatus>
     var snapshotFile: ProjectSnapshotFileStatus
@@ -40,6 +66,9 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
         async let storageConfig = ProjectHealthValue.capture {
             try await commands.loadProjectStorageConfig(projectURL: projectURL)
         }
+        async let doltRemotes = ProjectHealthValue.capture {
+            try await commands.loadDoltRemotes(projectURL: projectURL)
+        }
         async let hooks = ProjectHealthValue.capture {
             try await commands.loadHooksStatus(projectURL: projectURL)
         }
@@ -47,19 +76,15 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
             try await commands.loadBackupStatus(projectURL: projectURL)
         }
 
-        let context: ProjectHealthValue<BeadsProjectContext>
-        if let environment {
-            context = .available(environment.context)
-        } else {
-            context = await ProjectHealthValue.capture {
-                try await commands.loadProjectContext(projectURL: projectURL)
-            }
+        async let context = ProjectHealthValue.capture {
+            try await commands.loadProjectContext(projectURL: projectURL)
         }
 
         return ProjectHealthSnapshot(
             loadedAt: Date(),
-            context: context,
+            context: await context,
             storageConfig: await storageConfig,
+            doltRemotes: await doltRemotes,
             hooks: await hooks,
             backup: await backup,
             snapshotFile: snapshotFile
@@ -80,6 +105,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
         case bdCLI
         case readableData
         case snapshotFreshness
+        case doltSync
         case exportConfiguration
         case gitHooks
         case backup
@@ -112,6 +138,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             bdCLICheck(health: health, isLoading: isLoading),
             readableDataCheck(projectURL: projectURL, missingDataSourceURL: missingDataSourceURL, activeDataSource: activeDataSource, isLoading: isLoading),
             snapshotFreshnessCheck(missingDataSourceURL: missingDataSourceURL, activeDataSource: activeDataSource, freshness: snapshotFreshness, health: health, isLoading: isLoading),
+            doltSyncCheck(health: health, isLoading: isLoading),
             exportConfigurationCheck(
                 health: health,
                 activeDataSource: activeDataSource,
@@ -165,7 +192,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
         case .blocked:
             "Beadazzle needs setup before this project can be used safely."
         case .checking:
-            "Beadazzle is checking bd, data, snapshots, hooks, and backup state."
+            "Beadazzle is checking bd, data, snapshots, remotes, hooks, and backup state."
         }
     }
 
@@ -383,12 +410,71 @@ struct ProjectPreflightHealth: Equatable, Sendable {
         )
     }
 
+    private static func doltSyncCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
+        if let remotes = health?.doltRemotes.value {
+            if remotes.remotes.isEmpty {
+                if let configuredRemote = health?.context.value?.syncRemote?.nilIfBlank {
+                    return Check(
+                        id: .doltSync,
+                        title: "Dolt Sync",
+                        status: .warning,
+                        summary: "Configured remote is not registered",
+                        detail: configuredRemote,
+                        actionHint: "Re-register the remote with bd."
+                    )
+                }
+                return Check(
+                    id: .doltSync,
+                    title: "Dolt Sync",
+                    status: .info,
+                    summary: "Local only",
+                    detail: "No Dolt remote is configured. This project remains usable on this Mac.",
+                    actionHint: nil
+                )
+            }
+            if let problem = remotes.firstReportedProblem {
+                return Check(
+                    id: .doltSync,
+                    title: "Dolt Sync",
+                    status: .warning,
+                    summary: "Remote needs attention",
+                    detail: "\(problem.name): \(problem.status ?? "unknown status")",
+                    actionHint: "Refresh Status or retry synchronization."
+                )
+            }
+            return Check(
+                id: .doltSync,
+                title: "Dolt Sync",
+                status: .ready,
+                summary: remotes.summary,
+                detail: remotes.primaryRemote?.url,
+                actionHint: nil
+            )
+        }
+        if let errorMessage = health?.doltRemotes.errorMessage {
+            return Check(
+                id: .doltSync,
+                title: "Dolt Sync",
+                status: .warning,
+                summary: "Remote status unavailable",
+                detail: errorMessage,
+                actionHint: "Refresh Status"
+            )
+        }
+        return pendingCheck(
+            id: .doltSync,
+            title: "Dolt Sync",
+            isLoading: isLoading,
+            unloadedSummary: "Remote status has not loaded"
+        )
+    }
+
     private static func gitHooksCheck(health: ProjectHealthSnapshot?, isLoading: Bool) -> Check {
         if let storageError = health?.storageConfig.errorMessage {
             return Check(
                 id: .gitHooks,
                 title: "Git Integration",
-                status: .warning,
+                status: .info,
                 summary: "Git integration status unavailable",
                 detail: storageError,
                 actionHint: "Refresh Status"
@@ -398,7 +484,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             return Check(
                 id: .gitHooks,
                 title: "Git Integration",
-                status: .warning,
+                status: .info,
                 summary: "Git integration status unavailable",
                 detail: noGitOperationsError,
                 actionHint: "Refresh Status"
@@ -419,19 +505,19 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                 return Check(
                     id: .gitHooks,
                     title: "Git Hooks",
-                    status: .warning,
-                    summary: "Hook status unavailable",
-                    detail: nil,
-                    actionHint: "Refresh Status"
+                    status: .info,
+                    summary: "Not installed",
+                    detail: "Git hooks are optional; core Beads reads, writes, and Dolt sync work without them.",
+                    actionHint: nil
                 )
             }
             if hooks.hasMissingHooks {
                 return Check(
                     id: .gitHooks,
                     title: "Git Hooks",
-                    status: .warning,
+                    status: .info,
                     summary: hooks.summary,
-                    detail: hooks.missingHooks.map(\.name).joined(separator: ", "),
+                    detail: "Optional hooks not installed: \(hooks.missingHooks.map(\.name).joined(separator: ", ")).",
                     actionHint: "Install Hooks"
                 )
             }
@@ -448,7 +534,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             return Check(
                 id: .gitHooks,
                 title: "Git Hooks",
-                status: .warning,
+                status: .info,
                 summary: "Hook status unavailable",
                 detail: errorMessage,
                 actionHint: "Refresh Status"
@@ -570,6 +656,8 @@ struct BeadsProjectContext: Codable, Equatable, Sendable {
     var repoRoot: String?
     var role: String?
     var schemaVersion: Int?
+    var syncGitRemote: String? = nil
+    var syncRemote: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case backend
@@ -584,6 +672,8 @@ struct BeadsProjectContext: Codable, Equatable, Sendable {
         case repoRoot = "repo_root"
         case role
         case schemaVersion = "schema_version"
+        case syncGitRemote = "sync_git_remote"
+        case syncRemote = "sync_remote"
     }
 
     var storageSummary: String {
@@ -641,6 +731,9 @@ struct ProjectStorageConfig: Equatable, Sendable {
     var importAutoStatus: ProjectStorageConfigValue<Bool>
     var federationRemoteStatus: ProjectStorageConfigValue<String>
     var noGitOperationsStatus: ProjectStorageConfigValue<Bool>
+    var doltAutoPushStatus: ProjectStorageConfigValue<Bool>
+    var doltAutoPushIntervalStatus: ProjectStorageConfigValue<String>
+    var doltAutoPushTimeoutStatus: ProjectStorageConfigValue<String>
 
     init(
         exportAuto: Bool?,
@@ -649,7 +742,10 @@ struct ProjectStorageConfig: Equatable, Sendable {
         exportGitAdd: Bool?,
         importAuto: Bool?,
         federationRemote: String?,
-        noGitOperations: Bool? = nil
+        noGitOperations: Bool? = nil,
+        doltAutoPush: Bool? = nil,
+        doltAutoPushInterval: String? = nil,
+        doltAutoPushTimeout: String? = nil
     ) {
         self.init(
             exportAutoStatus: .available(exportAuto),
@@ -658,7 +754,10 @@ struct ProjectStorageConfig: Equatable, Sendable {
             exportGitAddStatus: .available(exportGitAdd),
             importAutoStatus: .available(importAuto),
             federationRemoteStatus: .available(federationRemote),
-            noGitOperationsStatus: .available(noGitOperations)
+            noGitOperationsStatus: .available(noGitOperations),
+            doltAutoPushStatus: .available(doltAutoPush),
+            doltAutoPushIntervalStatus: .available(doltAutoPushInterval),
+            doltAutoPushTimeoutStatus: .available(doltAutoPushTimeout)
         )
     }
 
@@ -669,7 +768,10 @@ struct ProjectStorageConfig: Equatable, Sendable {
         exportGitAddStatus: ProjectStorageConfigValue<Bool>,
         importAutoStatus: ProjectStorageConfigValue<Bool>,
         federationRemoteStatus: ProjectStorageConfigValue<String>,
-        noGitOperationsStatus: ProjectStorageConfigValue<Bool> = .available(nil)
+        noGitOperationsStatus: ProjectStorageConfigValue<Bool> = .available(nil),
+        doltAutoPushStatus: ProjectStorageConfigValue<Bool> = .available(nil),
+        doltAutoPushIntervalStatus: ProjectStorageConfigValue<String> = .available(nil),
+        doltAutoPushTimeoutStatus: ProjectStorageConfigValue<String> = .available(nil)
     ) {
         self.exportAutoStatus = exportAutoStatus
         self.exportPathStatus = exportPathStatus
@@ -678,6 +780,9 @@ struct ProjectStorageConfig: Equatable, Sendable {
         self.importAutoStatus = importAutoStatus
         self.federationRemoteStatus = federationRemoteStatus
         self.noGitOperationsStatus = noGitOperationsStatus
+        self.doltAutoPushStatus = doltAutoPushStatus
+        self.doltAutoPushIntervalStatus = doltAutoPushIntervalStatus
+        self.doltAutoPushTimeoutStatus = doltAutoPushTimeoutStatus
     }
 
     var exportAuto: Bool? {
@@ -708,6 +813,18 @@ struct ProjectStorageConfig: Equatable, Sendable {
         noGitOperationsStatus.value
     }
 
+    var doltAutoPush: Bool? {
+        doltAutoPushStatus.value
+    }
+
+    var doltAutoPushInterval: String? {
+        doltAutoPushIntervalStatus.value
+    }
+
+    var doltAutoPushTimeout: String? {
+        doltAutoPushTimeoutStatus.value
+    }
+
     var usesStealthMode: Bool {
         noGitOperations == true
     }
@@ -726,6 +843,12 @@ struct ProjectStorageConfig: Equatable, Sendable {
     var federationSummary: String {
         guard !federationRemoteStatus.isUnavailable else { return "Unavailable" }
         return federationRemote?.nilIfBlank ?? "Not configured"
+    }
+
+    var doltAutoPushSummary: String {
+        guard !doltAutoPushStatus.isUnavailable else { return "Unavailable" }
+        if doltAutoPush == true { return "Enabled" }
+        return doltAutoPush == false ? "Disabled" : "Disabled (default)"
     }
 
     static func bool(from value: String?) -> Bool? {
@@ -748,6 +871,50 @@ struct ProjectStorageConfig: Equatable, Sendable {
         guard !trimmed.isEmpty else { return nil }
         guard !trimmed.hasPrefix("\(key) (not set") else { return nil }
         return trimmed
+    }
+}
+
+struct BeadsDoltRemote: Codable, Identifiable, Equatable, Sendable {
+    var id: String { name }
+
+    var name: String
+    var url: String
+    var sqlURL: String?
+    var status: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case url
+        case sqlURL = "sql_url"
+        case status
+    }
+
+    var hasReportedProblem: Bool {
+        guard let status = status?.nilIfBlank?.lowercased() else { return false }
+        return status != "ok"
+    }
+}
+
+struct BeadsDoltRemotes: Equatable, Sendable {
+    var remotes: [BeadsDoltRemote]
+
+    var primaryRemote: BeadsDoltRemote? {
+        remotes.first(where: { $0.name == "origin" }) ?? remotes.first
+    }
+
+    var firstReportedProblem: BeadsDoltRemote? {
+        remotes.first(where: \.hasReportedProblem)
+    }
+
+    var summary: String {
+        guard let primaryRemote else { return "Local only" }
+        if remotes.count == 1 { return "\(primaryRemote.name) configured" }
+        return "\(remotes.count) remotes configured"
+    }
+
+    static func decode(from text: String) throws -> BeadsDoltRemotes {
+        let data = Data(text.utf8)
+        return BeadsDoltRemotes(remotes: try JSONDecoder().decode([BeadsDoltRemote].self, from: data))
     }
 }
 
@@ -840,6 +1007,47 @@ struct BeadsBackupStatus: Codable, Equatable, Sendable {
 
     struct DoltDestination: Codable, Equatable, Sendable {
         var configured: Bool?
+        var backupName: String? = nil
+        var backupURL: String? = nil
+        var createdAt: String? = nil
+        var lastSync: String? = nil
+        var syncDuration: String? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case configured
+            case backupName = "backup_name"
+            case backupURL = "backup_url"
+            case createdAt = "created_at"
+            case lastSync = "last_sync"
+            case syncDuration = "sync_duration"
+        }
+
+        var destinationSummary: String {
+            guard configured == true else { return "Not configured" }
+            guard let backupURL = backupURL?.nilIfBlank,
+                  let url = URL(string: backupURL),
+                  let scheme = url.scheme?.lowercased() else {
+                return "Configured"
+            }
+            switch scheme {
+            case "file":
+                return "Local folder"
+            case "dolthub":
+                return "DoltHub"
+            case "http", "https":
+                if url.host?.localizedCaseInsensitiveContains("dolthub") == true {
+                    return "DoltHub"
+                }
+                return "\(scheme.uppercased()) remote"
+            default:
+                return "\(scheme.uppercased()) remote"
+            }
+        }
+
+        var lastSyncDate: Date? {
+            guard let lastSync else { return nil }
+            return BeadsBackupStatus.date(from: lastSync)
+        }
     }
 
     var backup: Backup?
@@ -870,7 +1078,7 @@ struct BeadsBackupStatus: Codable, Equatable, Sendable {
         return try JSONDecoder().decode(BeadsBackupStatus.self, from: data)
     }
 
-    private static func date(from string: String) -> Date? {
+    fileprivate static func date(from string: String) -> Date? {
         let fractionalFormatter = ISO8601DateFormatter()
         fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractionalFormatter.date(from: string) {

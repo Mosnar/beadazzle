@@ -47,8 +47,10 @@ struct ProjectStorageSettingsPane: View {
 
 private enum ProjectStorageDetail: Hashable {
     case database
+    case doltSync
     case snapshot
-    case syncAndBackup
+    case backup
+    case gitIntegration
 }
 
 private struct ProjectStoragePreflightSection: View {
@@ -122,6 +124,24 @@ private struct ProjectStorageActionsSection: View {
                             Task { await store.exportProjectSnapshotNow() }
                         }
 
+                        if project.projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false {
+                            ProjectHealthActionButton(
+                                title: "Pull from Remote",
+                                systemImage: "arrow.down.circle",
+                                isDisabled: isBusy
+                            ) {
+                                Task { await store.pullProjectIssues() }
+                            }
+
+                            ProjectHealthActionButton(
+                                title: "Push to Remote",
+                                systemImage: "arrow.up.circle",
+                                isDisabled: isBusy
+                            ) {
+                                Task { await store.pushProjectIssues() }
+                            }
+                        }
+
                         if project.projectHealthSnapshot?.hooks.value?.hasMissingHooks == true,
                            project.projectEnvironment?.gitIntegration == .enabled {
                             ProjectHealthActionButton(
@@ -147,8 +167,8 @@ private struct ProjectStorageActionsSection: View {
 
                 if let actionError = project.projectHealthActionError {
                     ProjectHealthMessageRow(
-                        title: "Last action failed",
-                        message: actionError,
+                        title: actionError.title,
+                        message: actionError.message,
                         systemImage: "exclamationmark.triangle"
                     )
                     .padding(.top, 2)
@@ -217,6 +237,24 @@ private struct ProjectStorageOverviewSection: View {
                 ProjectHealthValueText(project.projectEnvironment?.gitIntegration.displayName)
             }
 
+            LabeledContent("Dolt sync") {
+                if let remotes = project.projectHealthSnapshot?.doltRemotes.value {
+                    HStack(spacing: 8) {
+                        ProjectHealthValueText(remotes.summary)
+                        if remotes.firstReportedProblem != nil {
+                            ProjectHealthBadge(title: "Check", style: .warning)
+                        } else if remotes.remotes.isEmpty {
+                            ProjectHealthBadge(title: "Local", style: .info)
+                        }
+                    }
+                } else {
+                    ProjectHealthConfigValueText(
+                        nil,
+                        errorMessage: project.projectHealthSnapshot?.doltRemotes.errorMessage
+                    )
+                }
+            }
+
             LabeledContent("Role") {
                 if let environment = project.projectEnvironment {
                     HStack(spacing: 8) {
@@ -258,7 +296,7 @@ private struct ProjectStorageOverviewSection: View {
                     HStack(spacing: 8) {
                         ProjectHealthValueText(hooks.summary)
                         if hooks.hasMissingHooks {
-                            ProjectHealthBadge(title: "Action", style: .warning)
+                            ProjectHealthBadge(title: "Optional", style: .info)
                         }
                     }
                 } else {
@@ -333,6 +371,17 @@ private struct ProjectStorageDetailsSection: View {
             }
 
             SettingsDisclosure(
+                title: "Dolt Sync Details",
+                isExpanded: expansionBinding(for: .doltSync)
+            ) {
+                ProjectStorageDoltSyncDetails(
+                    context: project.projectHealthSnapshot?.context.value,
+                    remotes: project.projectHealthSnapshot?.doltRemotes,
+                    storageConfig: project.projectHealthSnapshot?.storageConfig
+                )
+            }
+
+            SettingsDisclosure(
                 title: "Snapshot & Export Details",
                 isExpanded: expansionBinding(for: .snapshot)
             ) {
@@ -340,10 +389,20 @@ private struct ProjectStorageDetailsSection: View {
             }
 
             SettingsDisclosure(
-                title: "Sync & Backup Details",
-                isExpanded: expansionBinding(for: .syncAndBackup)
+                title: "Backup Details",
+                isExpanded: expansionBinding(for: .backup)
             ) {
-                syncAndBackupDetails
+                ProjectStorageBackupDetails(backup: project.projectHealthSnapshot?.backup)
+            }
+
+            SettingsDisclosure(
+                title: "Git Integration Details",
+                isExpanded: expansionBinding(for: .gitIntegration)
+            ) {
+                ProjectStorageGitIntegrationDetails(
+                    storageConfig: project.projectHealthSnapshot?.storageConfig,
+                    hooks: project.projectHealthSnapshot?.hooks
+                )
             }
         }
     }
@@ -432,62 +491,14 @@ private struct ProjectStorageDetailsSection: View {
                     )
                 }
             }
-        } else {
-            ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
-        }
-    }
-
-    @ViewBuilder
-    private var syncAndBackupDetails: some View {
-        if let config = project.projectHealthSnapshot?.storageConfig.value {
-            SettingsDetailRow("JSONL Import") {
+            SettingsDetailRow("Legacy JSONL Fallback") {
                 ProjectHealthConfigValueText(
                     config.importAutoStatus.display { _ in config.importSummary },
                     errorMessage: config.importAutoStatus.errorMessage
                 )
             }
-            SettingsDetailRow("Federation Remote") {
-                ProjectHealthConfigValueText(
-                    config.federationRemoteStatus.display { _ in config.federationSummary },
-                    errorMessage: config.federationRemoteStatus.errorMessage
-                )
-            }
         } else {
             ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
-        }
-
-        if project.projectHealthSnapshot?.storageConfig.value?.usesStealthMode == true {
-            SettingsDetailRow("Git Integration") {
-                ProjectHealthValueText("Disabled by stealth mode")
-            }
-        } else if let hooks = project.projectHealthSnapshot?.hooks.value {
-            if hooks.hasMissingHooks {
-                SettingsDetailRow("Missing Hooks") {
-                    ProjectHealthPathText(
-                        hooks.missingHooks.map(\.name).joined(separator: ", "),
-                        lineLimit: 3
-                    )
-                }
-            }
-        } else {
-            ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.hooks.errorMessage)
-        }
-
-        if let backup = project.projectHealthSnapshot?.backup.value {
-            SettingsDetailRow("Last Backup") {
-                ProjectHealthValueText(
-                    backup.lastBackupDate.map(ProjectHealthFormatting.formattedDate) ?? backup.backup?.timestamp
-                )
-            }
-            SettingsDetailRow("Last Dolt Commit") { ProjectHealthPathText(backup.backup?.lastDoltCommit) }
-            SettingsDetailRow("Destination") {
-                ProjectHealthValueText(backup.isConfigured ? "Dolt remote" : "Not configured")
-            }
-            SettingsDetailRow("Database Size") {
-                ProjectHealthValueText(backup.databaseSize?.displayValue, placeholder: "Not reported")
-            }
-        } else {
-            ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.backup.errorMessage)
         }
     }
 
@@ -505,7 +516,7 @@ private struct ProjectStorageDetailsSection: View {
     }
 }
 
-private enum ProjectHealthFormatting {
+enum ProjectHealthFormatting {
     static func formattedBytes(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }

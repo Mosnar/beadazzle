@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Project Storage now shows configured Dolt remotes, automatic-push status, and real backup destinations, with explicit Pull and Push actions, serialized sync alongside issue edits, clear partial-refresh errors, and better separation between remote sync, readable snapshots, optional Git hooks, and backups.
+
 ## [1.3.0] - 2026-07-17
 
 - Added support for `bd context` across embedded, server, shared-server, redirected, and worktree projects, with backend details in Project Settings and behavior tailored to each mode.

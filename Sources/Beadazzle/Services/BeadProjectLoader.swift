@@ -189,9 +189,8 @@ struct BeadProjectLoader: Sendable {
 
     /// Re-exports the readable JSONL snapshot before reading, then loads.
     ///
-    /// Dolt-backed (embedded) projects only back up `issues.jsonl` on a periodic
-    /// timer (default: every 15 minutes), so `bd` writes are not reflected in the
-    /// snapshot Beadazzle reads until we force an export. Callers that must observe
+    /// Automatic JSONL export is optional and may be throttled, so `bd` writes are
+    /// not guaranteed to appear immediately in the readable snapshot. Callers that must observe
     /// recent writes — post-mutation reloads and explicit user refreshes — go
     /// through here so the read reflects current state.
     ///

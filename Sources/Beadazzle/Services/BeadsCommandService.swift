@@ -51,9 +51,12 @@ protocol BeadsCommanding: Sendable {
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig
+    func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes
     func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus
     func loadBackupStatus(projectURL: URL) async throws -> BeadsBackupStatus
     func installHooks(projectURL: URL) async throws
+    func pullDoltRemote(projectURL: URL) async throws
+    func pushDoltRemote(projectURL: URL) async throws
     func syncBackup(projectURL: URL) async throws
 
     func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate?
@@ -86,6 +89,10 @@ extension BeadsCommanding {
         throw BeadError.commandFailed(command: "bd config get", output: "Project storage config is not supported by this command service.")
     }
 
+    func loadDoltRemotes(projectURL _: URL) async throws -> BeadsDoltRemotes {
+        throw BeadError.commandFailed(command: "bd dolt remote list --json", output: "Dolt remote status is not supported by this command service.")
+    }
+
     func loadHooksStatus(projectURL _: URL) async throws -> BeadsHooksStatus {
         throw BeadError.commandFailed(command: "bd hooks list", output: "Hook status is not supported by this command service.")
     }
@@ -96,6 +103,14 @@ extension BeadsCommanding {
 
     func installHooks(projectURL _: URL) async throws {
         throw BeadError.commandFailed(command: "bd hooks install", output: "Hook installation is not supported by this command service.")
+    }
+
+    func pullDoltRemote(projectURL _: URL) async throws {
+        throw BeadError.commandFailed(command: "bd dolt pull", output: "Dolt pull is not supported by this command service.")
+    }
+
+    func pushDoltRemote(projectURL _: URL) async throws {
+        throw BeadError.commandFailed(command: "bd dolt push", output: "Dolt push is not supported by this command service.")
     }
 
     func syncBackup(projectURL _: URL) async throws {
@@ -162,17 +177,20 @@ struct BeadsCommandService {
     private let readOnlyCommandTimeout: Duration
     private let snapshotExportTimeout: Duration
     private let writeCommandTimeout: Duration
+    private let remoteSyncCommandTimeout: Duration
     private let executable: @Sendable () -> CommandExecutable
 
     init(
         readOnlyCommandTimeout: Duration = .seconds(10),
         snapshotExportTimeout: Duration = .seconds(60),
         writeCommandTimeout: Duration = .seconds(120),
+        remoteSyncCommandTimeout: Duration = .seconds(300),
         executable: @escaping @Sendable () -> CommandExecutable = { BeadsCLI.executable() }
     ) {
         self.readOnlyCommandTimeout = readOnlyCommandTimeout
         self.snapshotExportTimeout = snapshotExportTimeout
         self.writeCommandTimeout = writeCommandTimeout
+        self.remoteSyncCommandTimeout = remoteSyncCommandTimeout
         self.executable = executable
     }
 
@@ -438,6 +456,9 @@ struct BeadsCommandService {
         async let importAuto = configBoolSetting(projectURL: projectURL, key: "import.auto")
         async let federationRemote = configSetting(projectURL: projectURL, key: "federation.remote")
         async let noGitOperations = configBoolSetting(projectURL: projectURL, key: "no-git-ops")
+        async let doltAutoPush = configBoolSetting(projectURL: projectURL, key: "dolt.auto-push")
+        async let doltAutoPushInterval = configSetting(projectURL: projectURL, key: "dolt.auto-push-interval")
+        async let doltAutoPushTimeout = configSetting(projectURL: projectURL, key: "dolt.auto-push-timeout")
 
         return ProjectStorageConfig(
             exportAutoStatus: await exportAuto,
@@ -446,8 +467,21 @@ struct BeadsCommandService {
             exportGitAddStatus: await exportGitAdd,
             importAutoStatus: await importAuto,
             federationRemoteStatus: await federationRemote,
-            noGitOperationsStatus: await noGitOperations
+            noGitOperationsStatus: await noGitOperations,
+            doltAutoPushStatus: await doltAutoPush,
+            doltAutoPushIntervalStatus: await doltAutoPushInterval,
+            doltAutoPushTimeoutStatus: await doltAutoPushTimeout
         )
+    }
+
+    func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes {
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "dolt", "remote", "list", "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
+        return try BeadsDoltRemotes.decode(from: text)
     }
 
     func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus {
@@ -474,16 +508,37 @@ struct BeadsCommandService {
         try await run(projectURL: projectURL, arguments: ["hooks", "install"])
     }
 
+    func pullDoltRemote(projectURL: URL) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: ["dolt", "pull"],
+            timeout: remoteSyncCommandTimeout
+        )
+    }
+
+    func pushDoltRemote(projectURL: URL) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: ["dolt", "push"],
+            timeout: remoteSyncCommandTimeout
+        )
+    }
+
     func syncBackup(projectURL: URL) async throws {
         try await run(projectURL: projectURL, arguments: ["backup", "sync"])
     }
 
-    private func run(projectURL: URL, arguments: [String], standardInput: String? = nil) async throws {
+    private func run(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String? = nil,
+        timeout: Duration? = nil
+    ) async throws {
         _ = try await runOutput(
             projectURL: projectURL,
             arguments: arguments,
             standardInput: standardInput,
-            timeout: writeCommandTimeout
+            timeout: timeout ?? writeCommandTimeout
         )
     }
 

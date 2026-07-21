@@ -262,8 +262,8 @@ extension BeadStore {
         let hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
 
         // Mutations and explicit user refreshes must re-export the readable JSONL
-        // snapshot first: Dolt-backed (embedded) projects only back it up on a
-        // periodic timer, so `bd` writes would otherwise not appear for minutes.
+        // snapshot first: automatic export is optional and may be throttled, so
+        // recent `bd` writes may not appear immediately.
         let forcesSnapshotExport = reason == .reconcile || reason == .manual
 
         // Status/type definitions rarely change, and reading them costs two `bd`

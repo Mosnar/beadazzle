@@ -236,6 +236,62 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertEqual(context.databasePath(projectURL: URL(fileURLWithPath: "/tmp/project")), "/tmp/project/.beads/embeddeddolt")
     }
 
+    func testDoltRemoteListDecodesOperationalRemotes() throws {
+        let remotes = try BeadsDoltRemotes.decode(from: """
+        [
+          {
+            "name": "origin",
+            "url": "git+ssh://git@github.com/example/project.git",
+            "sql_url": "git+ssh://git@github.com/example/project.git",
+            "status": "ok"
+          }
+        ]
+        """)
+
+        XCTAssertEqual(remotes.summary, "origin configured")
+        XCTAssertEqual(remotes.primaryRemote?.name, "origin")
+        XCTAssertEqual(remotes.primaryRemote?.url, "git+ssh://git@github.com/example/project.git")
+        XCTAssertNil(remotes.firstReportedProblem)
+    }
+
+    func testDoltPullAndPushUseExplicitBDCommands() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let logURL = projectURL.appendingPathComponent("commands.log")
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        printf '%s\n' "$*" >> "$PWD/commands.log"
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        try await service.pullDoltRemote(projectURL: projectURL)
+        try await service.pushDoltRemote(projectURL: projectURL)
+
+        let commands = try String(contentsOf: logURL, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        XCTAssertEqual(commands, ["dolt pull", "dolt push"])
+    }
+
+    func testDoltSyncUsesDedicatedNetworkTimeout() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        exec /bin/sleep 10
+        """)
+        let service = BeadsCommandService(
+            writeCommandTimeout: .seconds(5),
+            remoteSyncCommandTimeout: .milliseconds(50),
+            executable: { (stubURL, []) }
+        )
+
+        do {
+            try await service.pushDoltRemote(projectURL: projectURL)
+            XCTFail("Expected Dolt push to use the remote-sync timeout.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Timed out waiting for `bd` to finish."))
+        }
+    }
+
     func testHooksStatusParsesMissingHooksAsActionable() {
         let hooks = BeadsHooksStatus.parse(from: """
         Git hooks status:
@@ -250,7 +306,7 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertEqual(hooks.summary, "2 missing")
     }
 
-    func testBackupStatusDecodesLastBackupAndLocalOnlyDestination() throws {
+    func testBackupStatusDecodesLastBackupAndLocalDestination() throws {
         let backup = try BeadsBackupStatus.decode(from: """
         {
           "backup": {
@@ -262,18 +318,26 @@ final class BeadsCommandServiceTests: XCTestCase {
             "human": "0 B"
           },
           "dolt": {
-            "configured": false
+            "backup_name": "default",
+            "backup_url": "file:///tmp/project/.beads/backup",
+            "configured": true,
+            "created_at": "2026-07-08T13:30:00Z",
+            "last_sync": "2026-07-08T13:35:44Z",
+            "sync_duration": "110ms"
           }
         }
         """)
 
-        XCTAssertFalse(backup.isConfigured)
+        XCTAssertTrue(backup.isConfigured)
         XCTAssertTrue(backup.hasBackupHistory)
         XCTAssertEqual(backup.backup?.lastDoltCommit, "ilalaudvusuhf22fghtkv04g7g5ekpqo")
         XCTAssertNotNil(backup.lastBackupDate)
         XCTAssertEqual(backup.databaseSize?.human, "0 B")
         XCTAssertNil(backup.databaseSize?.displayValue)
-        XCTAssertEqual(backup.dolt?.configured, false)
+        XCTAssertEqual(backup.dolt?.configured, true)
+        XCTAssertEqual(backup.dolt?.backupName, "default")
+        XCTAssertEqual(backup.dolt?.destinationSummary, "Local folder")
+        XCTAssertNotNil(backup.dolt?.lastSyncDate)
     }
 
     func testProjectStorageConfigKeepsPerKeyFailures() async throws {
@@ -307,6 +371,15 @@ final class BeadsCommandServiceTests: XCTestCase {
           no-git-ops)
             printf 'true\\n'
             ;;
+          dolt.auto-push)
+            printf 'false\\n'
+            ;;
+          dolt.auto-push-interval)
+            printf '5m\\n'
+            ;;
+          dolt.auto-push-timeout)
+            printf '30s\\n'
+            ;;
           *)
             printf 'unexpected key: %s\\n' "$key" >&2
             exit 3
@@ -326,6 +399,9 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertNil(config.federationRemote)
         XCTAssertNil(config.federationRemoteStatus.errorMessage)
         XCTAssertTrue(config.usesStealthMode)
+        XCTAssertEqual(config.doltAutoPush, false)
+        XCTAssertEqual(config.doltAutoPushInterval, "5m")
+        XCTAssertEqual(config.doltAutoPushTimeout, "30s")
     }
 
     func testUnsetConfigOutputParsesAsNil() {

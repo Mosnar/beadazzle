@@ -84,6 +84,70 @@ extension BeadStore {
         }
     }
 
+    @discardableResult
+    func pullProjectIssues() async -> Bool {
+        guard projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false else { return false }
+        guard let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else { return false }
+        guard let projectURL = beginProjectHealthAction(.pullingIssues) else { return false }
+        defer { finishProjectHealthAction(for: projectURL) }
+        let mutationLifetimeGeneration = beginMutation()
+        var mutationLifetimeEnded = false
+        defer {
+            if !mutationLifetimeEnded {
+                endMutation(generation: mutationLifetimeGeneration)
+            }
+        }
+
+        do {
+            let commands = commands
+            try await enqueueMutationWrite {
+                try await commands.pullDoltRemote(projectURL: projectURL)
+                do {
+                    try await commands.exportReadableSnapshot(
+                        projectURL: projectURL,
+                        beadsDirectoryURL: beadsDirectoryURL
+                    )
+                } catch {
+                    throw ProjectIssuePullError.snapshotExportFailed(error.localizedDescription)
+                }
+            }
+            guard self.projectURL == projectURL else { return false }
+            endMutation(generation: mutationLifetimeGeneration)
+            mutationLifetimeEnded = true
+            cachedDefinitions = nil
+            refresh(reason: .dataSourceChanged, showsLoadingIndicator: true)
+            return true
+        } catch ProjectIssuePullError.snapshotExportFailed(let message) {
+            guard self.projectURL == projectURL else { return false }
+            _snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: message)
+            _projectHealthActionError = .pullCompletedButSnapshotRefreshFailed(message)
+            return false
+        } catch {
+            setProjectHealthActionError(error, projectURL: projectURL)
+            return false
+        }
+    }
+
+    @discardableResult
+    func pushProjectIssues() async -> Bool {
+        guard projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false else { return false }
+        guard let projectURL = beginProjectHealthAction(.pushingIssues) else { return false }
+        defer { finishProjectHealthAction(for: projectURL) }
+        let mutationLifetimeGeneration = beginMutation()
+        defer { endMutation(generation: mutationLifetimeGeneration) }
+
+        do {
+            let commands = commands
+            try await enqueueMutationWrite {
+                try await commands.pushDoltRemote(projectURL: projectURL)
+            }
+            return self.projectURL == projectURL
+        } catch {
+            setProjectHealthActionError(error, projectURL: projectURL)
+            return false
+        }
+    }
+
     internal func refreshAfterDataSourceChange() {
         refresh(reason: .dataSourceChanged, showsLoadingIndicator: false)
     }
@@ -106,13 +170,19 @@ extension BeadStore {
 
     private func finishProjectHealthAction(for actionProjectURL: URL) {
         guard projectURL == actionProjectURL else { return }
+        let actionError = projectHealthActionError
         _projectHealthAction = nil
         loadProjectHealthStatus()
+        _projectHealthActionError = actionError
     }
 
     private func setProjectHealthActionError(_ error: Error, projectURL actionProjectURL: URL) {
         guard projectURL == actionProjectURL else { return }
-        _projectHealthActionError = error.localizedDescription
+        _projectHealthActionError = .failed(error)
     }
 
+}
+
+private enum ProjectIssuePullError: Error, Sendable {
+    case snapshotExportFailed(String)
 }

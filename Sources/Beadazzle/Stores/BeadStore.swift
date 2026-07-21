@@ -50,7 +50,7 @@ final class BeadProjectStore {
     fileprivate(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     fileprivate(set) var isLoadingProjectHealth = false
     fileprivate(set) var projectHealthAction: ProjectHealthAction?
-    fileprivate(set) var projectHealthActionError: String?
+    fileprivate(set) var projectHealthActionError: ProjectHealthActionFailure?
     fileprivate(set) var isLoading = false
     fileprivate(set) var isInitializingBeads = false
     fileprivate(set) var hiddenTypeNames: Set<String> = []
@@ -809,8 +809,8 @@ final class BeadStore {
     internal var _isLoadingProjectHealth: Bool { get { project.isLoadingProjectHealth } set { project.isLoadingProjectHealth = newValue } }
     var projectHealthAction: ProjectHealthAction? { project.projectHealthAction }
     internal var _projectHealthAction: ProjectHealthAction? { get { project.projectHealthAction } set { project.projectHealthAction = newValue } }
-    var projectHealthActionError: String? { project.projectHealthActionError }
-    internal var _projectHealthActionError: String? { get { project.projectHealthActionError } set { project.projectHealthActionError = newValue } }
+    var projectHealthActionError: ProjectHealthActionFailure? { project.projectHealthActionError }
+    internal var _projectHealthActionError: ProjectHealthActionFailure? { get { project.projectHealthActionError } set { project.projectHealthActionError = newValue } }
     /// Gate detail cache keyed by gate bead id. The issue snapshot is the source of truth
     /// for display fields; `bd gate show` only enriches the selected gate with waiters.
     var gatesByID: [String: BeadGate] { detail.gatesByID }
