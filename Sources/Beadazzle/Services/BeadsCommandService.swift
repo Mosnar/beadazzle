@@ -596,7 +596,7 @@ struct BeadsCommandService {
     func compactDoltDatabase(projectURL: URL, retainingDays: Int = 30) async throws {
         try await run(
             projectURL: projectURL,
-            arguments: ["compact", "--days", String(max(1, retainingDays)), "--force", "--json"],
+            arguments: ["--sandbox", "compact", "--days", String(max(1, retainingDays)), "--force", "--json"],
             timeout: remoteSyncCommandTimeout
         )
     }
@@ -604,7 +604,7 @@ struct BeadsCommandService {
     func flattenDoltDatabase(projectURL: URL) async throws {
         try await run(
             projectURL: projectURL,
-            arguments: ["flatten", "--force", "--json"],
+            arguments: ["--sandbox", "flatten", "--force", "--json"],
             timeout: remoteSyncCommandTimeout
         )
     }

@@ -125,10 +125,10 @@ extension BeadStore {
                 }
                 switch kind {
                 case .compact:
-                    guard let compact = preview.compact.value, compact.oldCommits > 0 else {
+                    guard let compact = preview.compact.value, compact.oldCommits > 1 else {
                         throw BeadError.commandFailed(
                             command: "bd compact --dry-run",
-                            output: "There are no commits older than the retention window to compact."
+                            output: "There are fewer than two commits older than the retention window, so compaction would not reduce history."
                         )
                     }
                 case .flatten:

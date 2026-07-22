@@ -1,8 +1,20 @@
 import SwiftUI
 
+struct SettingsPaneGroup<Pane>: Identifiable where Pane: Identifiable & Hashable {
+    let id: String
+    let title: String?
+    let panes: [Pane]
+
+    init(id: String, title: String? = nil, panes: [Pane]) {
+        self.id = id
+        self.title = title
+        self.panes = panes
+    }
+}
+
 struct SettingsPaneContainer<Pane, SidebarLabel, Detail>: View
 where Pane: Identifiable & Hashable, SidebarLabel: View, Detail: View {
-    let panes: [Pane]
+    let groups: [SettingsPaneGroup<Pane>]
     @Binding var selection: Pane
     let title: (Pane) -> String
     let minDetailWidth: CGFloat
@@ -19,7 +31,25 @@ where Pane: Identifiable & Hashable, SidebarLabel: View, Detail: View {
         @ViewBuilder sidebarLabel: @escaping (Pane) -> SidebarLabel,
         @ViewBuilder detail: @escaping (Pane) -> Detail
     ) {
-        self.panes = panes
+        self.groups = [SettingsPaneGroup(id: "settings", panes: panes)]
+        self._selection = selection
+        self.title = title
+        self.minDetailWidth = minDetailWidth
+        self.minHeight = minHeight
+        self.sidebarLabel = sidebarLabel
+        self.detail = detail
+    }
+
+    init(
+        groups: [SettingsPaneGroup<Pane>],
+        selection: Binding<Pane>,
+        title: @escaping (Pane) -> String,
+        minDetailWidth: CGFloat = 540,
+        minHeight: CGFloat = 460,
+        @ViewBuilder sidebarLabel: @escaping (Pane) -> SidebarLabel,
+        @ViewBuilder detail: @escaping (Pane) -> Detail
+    ) {
+        self.groups = groups
         self._selection = selection
         self.title = title
         self.minDetailWidth = minDetailWidth
@@ -31,9 +61,14 @@ where Pane: Identifiable & Hashable, SidebarLabel: View, Detail: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(panes) { pane in
-                    sidebarLabel(pane)
-                        .tag(pane)
+                ForEach(groups) { group in
+                    if let title = group.title {
+                        Section(title) {
+                            sidebarRows(group.panes)
+                        }
+                    } else {
+                        sidebarRows(group.panes)
+                    }
                 }
             }
             .listStyle(.sidebar)
@@ -55,6 +90,14 @@ where Pane: Identifiable & Hashable, SidebarLabel: View, Detail: View {
             minWidth: SettingsWindowLayout.minimumWidth(minDetailWidth: minDetailWidth),
             minHeight: minHeight
         )
+    }
+
+    @ViewBuilder
+    private func sidebarRows(_ panes: [Pane]) -> some View {
+        ForEach(panes) { pane in
+            sidebarLabel(pane)
+                .tag(pane)
+        }
     }
 }
 

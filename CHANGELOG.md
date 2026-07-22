@@ -13,8 +13,9 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Project Settings is now organized into Project, Issue Model, and Storage groups, with a focused Overview and separate Sync & Backup, Maintenance, and Diagnostics panes instead of one long Storage page.
 - Bead saves, closes, creates, metadata edits, relationship changes, and deletes now update immediately without rebuilding the full project on the main thread or waiting for a post-create snapshot export.
-- Project Settings now shows Dolt database size and commit history, with backup-first tools to compact older commits or flatten excessive history when database growth begins slowing writes.
+- Project Settings now shows Beads database size and history, with backup-first tools to compact or flatten Beads' internal Dolt history when database growth begins slowing writes, without rewriting project Git history. Maintenance warns about shared-history coordination and tagged history, and never auto-pushes a rewrite.
 - Project Storage now shows configured Dolt remotes, automatic-push status, and real backup destinations, with explicit Pull and Push actions, serialized sync alongside issue edits, clear partial-refresh errors, and better separation between remote sync, readable snapshots, optional Git hooks, and backups.
 - Closed beads no longer offer or accept new sub-issues.
 - Fixed removing a parent from child beads whose hierarchy was stored as a dependency.

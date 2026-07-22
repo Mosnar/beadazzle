@@ -458,8 +458,8 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         let projectURL = try makeProject(named: "NoOpMaintenanceProject", issueID: "bd-1")
         let commands = ProjectHealthTestCommands(
             compactPreview: BeadsDoltCompactPreview(
-                totalCommits: 1,
-                oldCommits: 0,
+                totalCommits: 2,
+                oldCommits: 1,
                 recentCommits: 1,
                 cutoffDays: 30
             ),
@@ -477,7 +477,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         )
         await store.waitForPendingProjectHealthLoad()
         XCTAssertFalse(compacted)
-        XCTAssertTrue(store.projectHealthActionError?.message.contains("no commits") == true)
+        XCTAssertTrue(store.projectHealthActionError?.message.contains("fewer than two commits") == true)
 
         let flattened = await store.performDoltMaintenance(
             .flatten,
