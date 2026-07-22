@@ -284,7 +284,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             """
         )
         let commands = RecordingBeadsCommands()
-        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let commandGate = AsyncTestGate()
+        await commands.setBulkUpdateGate(commandGate)
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-low") != nil }
@@ -300,6 +301,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let callsBeforeCommandCompletes = await commands.bulkUpdateCalls
         XCTAssertTrue(callsBeforeCommandCompletes.isEmpty)
+        await commandGate.open()
         let succeeded = await task.value
         XCTAssertTrue(succeeded)
     }
@@ -3548,7 +3550,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             #"{"_type":"issue","id":"bd-1","title":"Task","status":"open","priority":1,"issue_type":"task","labels":["phase:design","old"],"updated_at":"2026-07-03T20:58:35Z"}"#
         )
         let commands = RecordingBeadsCommands()
-        await commands.setSetStateDelays([.milliseconds(250)])
+        let commandGate = AsyncTestGate()
+        await commands.setSetStateGate(commandGate)
         await commands.setSetStateErrors([StoreMutationTestError.commandFailed])
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
@@ -3564,6 +3567,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let labelsTask = Task { @MainActor in
             await store.updateMetadata(issueID: "bd-1", labels: ["phase:design", "new"])
         }
+        try await waitUntil { store.issue(with: "bd-1")?.labels.contains("new") == true }
+        await commandGate.open()
 
         let stateSucceeded = await stateTask.value
         let labelsSucceeded = await labelsTask.value
@@ -3975,6 +3980,26 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
     }
 }
 
+private actor AsyncTestGate {
+    private var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pendingContinuations = continuations
+        continuations.removeAll()
+        pendingContinuations.forEach { $0.resume() }
+    }
+}
+
 private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var initializeCalls: [URL] = []
     private(set) var initializeWasCancelled = false
@@ -4032,12 +4057,14 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var bulkUpdateError: Error?
     private var bulkUpdateDelay: Duration?
     private var bulkUpdateDelays: [Duration?] = []
+    private var bulkUpdateGate: AsyncTestGate?
     private var deleteError: Error?
     private var deleteDelay: Duration?
     private var setParentDelays: [Duration?] = []
     private var setParentErrors: [Error?] = []
     private var setStateDelays: [Duration?] = []
     private var setStateErrors: [Error?] = []
+    private var setStateGate: AsyncTestGate?
     private var clearStateDelays: [Duration?] = []
     private var clearStateErrors: [Error?] = []
     private var addLabelsDelays: [Duration?] = []
@@ -4113,6 +4140,10 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         bulkUpdateDelays = delays
     }
 
+    func setBulkUpdateGate(_ gate: AsyncTestGate?) {
+        bulkUpdateGate = gate
+    }
+
     func setDeleteError(_ error: Error?) {
         deleteError = error
     }
@@ -4131,6 +4162,10 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setSetStateDelays(_ delays: [Duration?]) {
         setStateDelays = delays
+    }
+
+    func setSetStateGate(_ gate: AsyncTestGate?) {
+        setStateGate = gate
     }
 
     func setClearStateErrors(_ errors: [Error?]) {
@@ -4301,6 +4336,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         priority: Int?,
         deferUntil: IssueMetadataDateUpdate
     ) async throws {
+        if let bulkUpdateGate {
+            await bulkUpdateGate.wait()
+        }
         let delay = bulkUpdateDelays.isEmpty ? bulkUpdateDelay : bulkUpdateDelays.removeFirst()
         if let delay {
             try await Task.sleep(for: delay)
@@ -4332,6 +4370,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setState(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?) async throws {
         setStateCalls.append((projectURL: projectURL, issueID: issueID, dimension: dimension, value: value, reason: reason))
+        if let setStateGate {
+            await setStateGate.wait()
+        }
         if !setStateDelays.isEmpty, let delay = setStateDelays.removeFirst() {
             try await Task.sleep(for: delay)
         }
