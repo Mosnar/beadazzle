@@ -18,7 +18,7 @@ for users, not for the commit log.
 - Added one-key shortcuts for status, type, and priority menus.
 - Reorganized Project Settings with clearer sync, backup, database health, and maintenance controls.
 - Bead edits and creation now appear immediately without a full project reload.
-- Fixed sub-issue and parent relationship issues, including preventing new sub-issues on closed beads.
+- Fixed sub-issue relationships and overlapping property and label edits, and blocked new sub-issues on closed beads.
 - Fixed list bullet alignment in text fields.
 - Improved automatic update checks at launch and after changing the beta preference.
 

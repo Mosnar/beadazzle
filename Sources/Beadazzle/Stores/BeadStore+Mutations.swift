@@ -1534,12 +1534,15 @@ extension BeadStore {
             patch: patch
         )
         let projectedIssue = patch.applying(to: originalIssue)
+        let projectedLabels = mutations.projection
+            .issue(with: issueID, in: authoritativeIndex)
+            .flatMap(patch.proposedLabels)
         var issuePatch = BeadIssueMutationPatch()
         if patch.updatesAssignee {
             issuePatch.assignee = .set(projectedIssue.assignee)
         }
         if patch.updatesLabels {
-            issuePatch.labels = .set(projectedIssue.labels)
+            issuePatch.labels = .set(projectedLabels ?? projectedIssue.labels)
         }
         if case .set = dueAt {
             issuePatch.dueAt = .set(projectedIssue.dueAt)

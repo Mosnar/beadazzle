@@ -295,6 +295,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let task = Task { @MainActor in await store.bulkSet(issueIDs: ["bd-low"], priority: 0) }
 
         try await waitUntil { store.issue(with: "bd-low")?.priority == 0 }
+        await store.waitForPendingProjectionMaterialization()
         await store.waitForPendingQueryRecompute()
         XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-low", "bd-high"])
         XCTAssertFalse(store.isLoading)
