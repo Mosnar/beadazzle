@@ -168,6 +168,38 @@ final class BeadMutationWriteQueueTests: XCTestCase {
         let values = await recorder.values
         XCTAssertEqual(values, [2])
     }
+
+    func testInvalidationPreventsAWaitingWriteFromStarting() async throws {
+        let queue = BeadMutationWriteQueue()
+        let recorder = WriteRecorder()
+        let gate = WriteGate()
+
+        let first = Task {
+            try await queue.enqueue {
+                await gate.pause()
+                await recorder.append(1)
+            }
+        }
+        await gate.waitUntilPaused()
+        let second = Task {
+            try await queue.enqueue {
+                await recorder.append(2)
+            }
+        }
+        await Task.yield()
+        queue.invalidatePending()
+        await gate.release()
+
+        try await first.value
+        do {
+            try await second.value
+            XCTFail("Expected the queued write to be invalidated")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let values = await recorder.values
+        XCTAssertEqual(values, [1])
+    }
 }
 
 private actor WriteRecorder {

@@ -11,23 +11,36 @@ extension BeadStore {
         guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
             return false
         }
-        guard let originalIssue = index.issue(with: issueID) else { return false }
+        guard let originalIssue = issue(with: issueID) else { return false }
         let normalizedParentID = parentID?.nilIfBlank
         guard normalizedParentID != issueID else {
             lastError = "A bead cannot be its own parent."
             return false
         }
         if let normalizedParentID {
-            guard index.issue(with: normalizedParentID) != nil else {
+            guard issue(with: normalizedParentID) != nil else {
                 lastError = "Bead \(normalizedParentID) was not found."
                 return false
             }
-            guard !index.descendantIDs(for: issueID).contains(normalizedParentID) else {
+            var ancestorID: String? = normalizedParentID
+            var visited: Set<String> = []
+            while let currentID = ancestorID, visited.insert(currentID).inserted {
+                if currentID == issueID {
+                    lastError = "A bead cannot be moved under one of its child beads."
+                    return false
+                }
+                ancestorID = parentIssue(for: currentID)?.id
+            }
+            guard ancestorID == nil else {
                 lastError = "A bead cannot be moved under one of its child beads."
                 return false
             }
         }
-        let currentParentID = index.parentID(for: issueID) ?? originalIssue.parentID?.nilIfBlank
+        let currentParentID = originalIssue.parentID?.nilIfBlank
+            ?? mutations.projection
+                .dependencies(for: issueID, in: authoritativeIndex)
+                .first { $0.type == "parent-child" }?
+                .dependsOnID
         guard currentParentID != normalizedParentID else { return true }
         if let normalizedParentID {
             guard guardHierarchyAllowsParentChildDependency(
@@ -37,20 +50,13 @@ extension BeadStore {
             ) else { return false }
         }
 
-        let snapshot = currentMutationSnapshot()
         let now = Date()
-        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
-            guard issue.id == issueID else { return issue }
-            var copy = issue
-            copy.parentID = normalizedParentID
-            copy.updatedAt = now
-            return copy
-        }
-        var optimisticDependencies = snapshot.dependencies.filter {
-            !($0.issueID == issueID && $0.type == "parent-child")
-        }
+        let existingParentDependencies = mutations.projection
+            .dependencies(for: issueID, in: authoritativeIndex)
+            .filter { $0.type == "parent-child" }
+        var addedDependencies: [BeadDependency] = []
         if let normalizedParentID {
-            optimisticDependencies.append(
+            addedDependencies.append(
                 BeadDependency(
                     issueID: issueID,
                     dependsOnID: normalizedParentID,
@@ -64,7 +70,20 @@ extension BeadStore {
         defer { endMutation(generation: mutationLifetimeGeneration) }
         let perceptibleBusyToken = beginPerceptibleBusy(issueIDs: [issueID])
         defer { endPerceptibleBusy(perceptibleBusyToken) }
-        applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(
+                issueChanges: [
+                    issueID: .update(
+                        BeadIssueMutationPatch(
+                            updatedAt: .set(now),
+                            parentID: .set(normalizedParentID)
+                        )
+                    )
+                ],
+                addedDependencies: addedDependencies,
+                removedDependencies: existingParentDependencies
+            )
+        )
 
         let commands = commands
         var attemptedWrite = false
@@ -80,6 +99,7 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
+            settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
             announceCompletion(
                 normalizedParentID == nil
@@ -91,7 +111,7 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
-            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: optimisticIssues)
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }

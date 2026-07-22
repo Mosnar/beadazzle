@@ -203,13 +203,13 @@ struct DetailView: View {
     private func createDraft() {
         guard !isCreatingDraft, let creationDraft = store.creationDraft else { return }
         isCreatingDraft = true
-        Task {
-            defer {
-                isCreatingDraft = false
-            }
-            if await store.save(creationDraft) {
-                store.creationDraft = nil
-            }
+        defer { isCreatingDraft = false }
+        guard let submission = store.submitCreateBead(creationDraft, revealCreated: true) else {
+            return
+        }
+        store.creationDraft = nil
+        Task { @MainActor in
+            _ = await submission.value
         }
     }
 

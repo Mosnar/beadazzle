@@ -22,6 +22,9 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(health.doltRemotes.value?.primaryRemote?.name, "origin")
         XCTAssertTrue(health.hooks.value?.hasMissingHooks == true)
         XCTAssertTrue(health.backup.value?.isConfigured == true)
+        XCTAssertEqual(health.maintenance.compact.value?.totalCommits, 160)
+        XCTAssertEqual(health.maintenance.flatten.value?.commitCount, 160)
+        XCTAssertEqual(health.maintenance.embeddedDatabaseSize, 0)
         XCTAssertTrue(health.snapshotFile.exists)
         XCTAssertEqual(health.snapshotFile.activeDataSource?.kind, .jsonl)
     }
@@ -350,6 +353,182 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contextCallCount, 2)
     }
 
+    func testCompactMaintenanceSyncsBackupThenCompactsAndExports() async throws {
+        let projectURL = try makeProject(named: "CompactHealthProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let succeeded = await store.performDoltMaintenance(
+            .compact,
+            allowsProceedingWithoutBackup: false
+        )
+        try await waitUntil { !store.isLoading }
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertTrue(succeeded)
+        let syncBackupCallCount = await commands.syncBackupCallCount
+        let compactCallCount = await commands.compactCallCount
+        let exportCallCount = await commands.exportCallCount
+        XCTAssertEqual(syncBackupCallCount, 1)
+        XCTAssertEqual(compactCallCount, 1)
+        XCTAssertEqual(exportCallCount, 1)
+        let events = await commands.commandEvents
+        guard let backupIndex = events.firstIndex(of: "backup"),
+              let compactIndex = events.firstIndex(of: "compact"),
+              let exportIndex = events.firstIndex(of: "export") else {
+            return XCTFail("Expected backup, compact, and export events: \(events)")
+        }
+        XCTAssertLessThan(backupIndex, compactIndex)
+        XCTAssertLessThan(compactIndex, exportIndex)
+    }
+
+    func testMaintenanceRequiresExplicitOverrideWhenBackupIsNotConfigured() async throws {
+        let projectURL = try makeProject(named: "NoBackupMaintenanceProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(backupConfigured: false)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let rejected = await store.performDoltMaintenance(
+            .flatten,
+            allowsProceedingWithoutBackup: false
+        )
+        await store.waitForPendingProjectHealthLoad()
+
+        XCTAssertFalse(rejected)
+        let rejectedFlattenCallCount = await commands.flattenCallCount
+        let rejectedExportCallCount = await commands.exportCallCount
+        XCTAssertEqual(rejectedFlattenCallCount, 0)
+        XCTAssertEqual(rejectedExportCallCount, 0)
+        XCTAssertTrue(store.projectHealthActionError?.message.contains("explicitly allow") == true)
+
+        let succeeded = await store.performDoltMaintenance(
+            .flatten,
+            allowsProceedingWithoutBackup: true
+        )
+        try await waitUntil { !store.isLoading }
+
+        XCTAssertTrue(succeeded)
+        let flattenCallCount = await commands.flattenCallCount
+        let syncBackupCallCount = await commands.syncBackupCallCount
+        let exportCallCount = await commands.exportCallCount
+        XCTAssertEqual(flattenCallCount, 1)
+        XCTAssertEqual(syncBackupCallCount, 0)
+        XCTAssertEqual(exportCallCount, 1)
+    }
+
+    func testMaintenanceStopsAfterBackupFailureUntilOverrideIsExplicit() async throws {
+        let projectURL = try makeProject(named: "FailedBackupMaintenanceProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(backupError: ProjectHealthTestError.failedBackup)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let rejected = await store.performDoltMaintenance(
+            .compact,
+            allowsProceedingWithoutBackup: false
+        )
+        await store.waitForPendingProjectHealthLoad()
+        XCTAssertFalse(rejected)
+        let rejectedCounts = await commands.counts()
+        XCTAssertEqual(rejectedCounts.compact, 0)
+
+        let succeeded = await store.performDoltMaintenance(
+            .compact,
+            allowsProceedingWithoutBackup: true
+        )
+        try await waitUntil { !store.isLoading }
+
+        XCTAssertTrue(succeeded)
+        let counts = await commands.counts()
+        XCTAssertEqual(counts.backup, 2)
+        XCTAssertEqual(counts.compact, 1)
+        XCTAssertEqual(counts.export, 1)
+    }
+
+    func testFreshNoOpMaintenancePreviewStopsBeforeBackupOrWrite() async throws {
+        let projectURL = try makeProject(named: "NoOpMaintenanceProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(
+            compactPreview: BeadsDoltCompactPreview(
+                totalCommits: 1,
+                oldCommits: 0,
+                recentCommits: 1,
+                cutoffDays: 30
+            ),
+            flattenPreview: BeadsDoltFlattenPreview(commitCount: 1, wouldFlatten: false)
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let compacted = await store.performDoltMaintenance(
+            .compact,
+            allowsProceedingWithoutBackup: false
+        )
+        await store.waitForPendingProjectHealthLoad()
+        XCTAssertFalse(compacted)
+        XCTAssertTrue(store.projectHealthActionError?.message.contains("no commits") == true)
+
+        let flattened = await store.performDoltMaintenance(
+            .flatten,
+            allowsProceedingWithoutBackup: false
+        )
+        await store.waitForPendingProjectHealthLoad()
+        XCTAssertFalse(flattened)
+        XCTAssertTrue(store.projectHealthActionError?.message.contains("already flat") == true)
+
+        let counts = await commands.counts()
+        XCTAssertEqual(counts.backup, 0)
+        XCTAssertEqual(counts.compact, 0)
+        XCTAssertEqual(counts.flatten, 0)
+        XCTAssertEqual(counts.export, 0)
+    }
+
+    func testQueuedMaintenanceDoesNotStartAfterProjectSwitch() async throws {
+        let firstProjectURL = try makeProject(named: "QueuedMaintenanceProject", issueID: "bd-1")
+        let secondProjectURL = try makeProject(named: "MaintenanceNextProject", issueID: "bd-2")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.loadProjectHealthStatus()
+        await store.waitForPendingProjectHealthLoad()
+
+        let blockingWrite = Task {
+            try await store.enqueueMutationWrite {
+                await commands.runSyntheticWrite(delay: .milliseconds(250))
+            }
+        }
+        while await commands.syntheticWriteStarted == false {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let maintenance = Task {
+            await store.performDoltMaintenance(.compact, allowsProceedingWithoutBackup: false)
+        }
+        try await waitUntil { store.projectHealthAction == .compactingDatabase }
+
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        try await blockingWrite.value
+        let maintenanceSucceeded = await maintenance.value
+        XCTAssertFalse(maintenanceSucceeded)
+
+        let counts = await commands.counts()
+        XCTAssertEqual(counts.backup, 0)
+        XCTAssertEqual(counts.compact, 0)
+        XCTAssertEqual(counts.export, 0)
+    }
+
     private func makeUserDefaults() -> UserDefaults {
         let suiteName = "BeadStoreProjectHealthTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -398,10 +577,13 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     private let exportError: Error?
     private let contextDelay: Duration?
     private let backupConfigured: Bool
+    private let backupError: Error?
     private let noGitOperations: Bool
     private let pullDelay: Duration?
     private let pullError: Error?
     private let pushError: Error?
+    private let compactPreview: BeadsDoltCompactPreview
+    private let flattenPreview: BeadsDoltFlattenPreview
     private var contextSyncRemote: String?
     private(set) var exportCallCount = 0
     private(set) var contextCallCount = 0
@@ -409,6 +591,8 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     private(set) var pullCallCount = 0
     private(set) var pushCallCount = 0
     private(set) var syncBackupCallCount = 0
+    private(set) var compactCallCount = 0
+    private(set) var flattenCallCount = 0
     private(set) var commandEvents: [String] = []
     private(set) var syntheticWriteStarted = false
 
@@ -417,19 +601,33 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         exportError: Error? = nil,
         contextDelay: Duration? = nil,
         backupConfigured: Bool = true,
+        backupError: Error? = nil,
         noGitOperations: Bool = false,
         pullDelay: Duration? = nil,
         pullError: Error? = nil,
-        pushError: Error? = nil
+        pushError: Error? = nil,
+        compactPreview: BeadsDoltCompactPreview = BeadsDoltCompactPreview(
+            totalCommits: 160,
+            oldCommits: 40,
+            recentCommits: 120,
+            cutoffDays: 30
+        ),
+        flattenPreview: BeadsDoltFlattenPreview = BeadsDoltFlattenPreview(
+            commitCount: 160,
+            wouldFlatten: true
+        )
     ) {
         self.storageError = storageError
         self.exportError = exportError
         self.contextDelay = contextDelay
         self.backupConfigured = backupConfigured
+        self.backupError = backupError
         self.noGitOperations = noGitOperations
         self.pullDelay = pullDelay
         self.pullError = pullError
         self.pushError = pushError
+        self.compactPreview = compactPreview
+        self.flattenPreview = flattenPreview
     }
 
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
@@ -598,6 +796,32 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
 
     func syncBackup(projectURL: URL) async throws {
         syncBackupCallCount += 1
+        commandEvents.append("backup")
+        if let backupError {
+            throw backupError
+        }
+    }
+
+    func loadDoltMaintenancePreview(projectURL: URL) async -> BeadsDoltMaintenancePreview {
+        return BeadsDoltMaintenancePreview(
+            compact: .available(compactPreview),
+            flatten: .available(flattenPreview),
+            embeddedDatabaseSize: nil
+        )
+    }
+
+    func compactDoltDatabase(projectURL: URL, retainingDays: Int) async throws {
+        compactCallCount += 1
+        commandEvents.append("compact")
+    }
+
+    func flattenDoltDatabase(projectURL: URL) async throws {
+        flattenCallCount += 1
+        commandEvents.append("flatten")
+    }
+
+    func counts() -> (backup: Int, compact: Int, flatten: Int, export: Int) {
+        (syncBackupCallCount, compactCallCount, flattenCallCount, exportCallCount)
     }
 
     func runSyntheticWrite(delay: Duration) async {
@@ -613,4 +837,5 @@ private enum ProjectHealthTestError: Error {
     case failedExport
     case failedPull
     case failedPush
+    case failedBackup
 }

@@ -85,6 +85,112 @@ extension BeadStore {
     }
 
     @discardableResult
+    func performDoltMaintenance(
+        _ kind: BeadsDoltMaintenanceKind,
+        allowsProceedingWithoutBackup: Bool
+    ) async -> Bool {
+        guard let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else { return false }
+        let action: ProjectHealthAction = kind == .compact ? .compactingDatabase : .flatteningDatabase
+        guard let projectURL = beginProjectHealthAction(action) else { return false }
+        defer { finishProjectHealthAction(for: projectURL) }
+        let mutationLifetimeGeneration = beginMutation()
+        var mutationLifetimeEnded = false
+        defer {
+            if !mutationLifetimeEnded {
+                endMutation(generation: mutationLifetimeGeneration)
+            }
+        }
+
+        let commands = commands
+        let backupIsConfigured = projectHealthSnapshot?.backup.value?.isConfigured == true
+        do {
+            try await enqueueMutationWrite {
+                let preview = await commands.loadDoltMaintenancePreview(projectURL: projectURL)
+                let previewError: String?
+                switch kind {
+                case .compact:
+                    previewError = preview.compact.value == nil
+                        ? preview.compact.errorMessage ?? "Compaction is unavailable for this database mode."
+                        : nil
+                case .flatten:
+                    previewError = preview.flatten.value == nil
+                        ? preview.flatten.errorMessage ?? "Flattening is unavailable for this database mode."
+                        : nil
+                }
+                if let previewError {
+                    throw BeadError.commandFailed(
+                        command: kind == .compact ? "bd compact --dry-run" : "bd flatten --dry-run",
+                        output: previewError
+                    )
+                }
+                switch kind {
+                case .compact:
+                    guard let compact = preview.compact.value, compact.oldCommits > 0 else {
+                        throw BeadError.commandFailed(
+                            command: "bd compact --dry-run",
+                            output: "There are no commits older than the retention window to compact."
+                        )
+                    }
+                case .flatten:
+                    guard let flatten = preview.flatten.value,
+                          flatten.wouldFlatten,
+                          flatten.commitCount > 1 else {
+                        throw BeadError.commandFailed(
+                            command: "bd flatten --dry-run",
+                            output: "The database history is already flat."
+                        )
+                    }
+                }
+
+                if backupIsConfigured {
+                    do {
+                        try await commands.syncBackup(projectURL: projectURL)
+                    } catch {
+                        guard allowsProceedingWithoutBackup else { throw error }
+                    }
+                } else if !allowsProceedingWithoutBackup {
+                    throw BeadError.commandFailed(
+                        command: "bd backup sync",
+                        output: "Configure a backup, or explicitly allow maintenance without a current backup."
+                    )
+                }
+
+                switch kind {
+                case .compact:
+                    try await commands.compactDoltDatabase(projectURL: projectURL, retainingDays: 30)
+                case .flatten:
+                    try await commands.flattenDoltDatabase(projectURL: projectURL)
+                }
+                do {
+                    try await commands.exportReadableSnapshot(
+                        projectURL: projectURL,
+                        beadsDirectoryURL: beadsDirectoryURL
+                    )
+                } catch {
+                    throw ProjectDatabaseMaintenanceError.snapshotExportFailed(error.localizedDescription)
+                }
+            }
+            guard self.projectURL == projectURL else { return false }
+            endMutation(generation: mutationLifetimeGeneration)
+            mutationLifetimeEnded = true
+            cachedDefinitions = nil
+            refresh(reason: .dataSourceChanged, showsLoadingIndicator: true)
+            announceCompletion(kind == .compact ? "Database compacted" : "Database history flattened")
+            return true
+        } catch is CancellationError {
+            return false
+        } catch ProjectDatabaseMaintenanceError.snapshotExportFailed(let message) {
+            guard self.projectURL == projectURL else { return false }
+            _snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: message)
+            _projectHealthActionError = .maintenanceCompletedButSnapshotRefreshFailed(message)
+            return false
+        } catch {
+            setProjectHealthActionError(error, projectURL: projectURL)
+            return false
+        }
+    }
+
+    @discardableResult
     func pullProjectIssues() async -> Bool {
         guard projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false else { return false }
         guard let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else { return false }
@@ -184,5 +290,9 @@ extension BeadStore {
 }
 
 private enum ProjectIssuePullError: Error, Sendable {
+    case snapshotExportFailed(String)
+}
+
+private enum ProjectDatabaseMaintenanceError: Error, Sendable {
     case snapshotExportFailed(String)
 }

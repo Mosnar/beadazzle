@@ -129,6 +129,16 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(value(after: "--parent", in: arguments), "bd-parent")
     }
 
+    func testCreateArgumentsUseExplicitIDAndDependencyForOptimisticChild() {
+        let arguments = BeadsCommandArguments.create(
+            draft: draft(id: "bd-client-id", status: "open", parentID: "bd-parent")
+        )
+
+        XCTAssertEqual(value(after: "--id", in: arguments), "bd-client-id")
+        XCTAssertNil(value(after: "--parent", in: arguments))
+        XCTAssertEqual(value(after: "--deps", in: arguments), "parent-child:bd-parent")
+    }
+
     func testGateShowArgumentsAreReadOnlyJSON() {
         let arguments = BeadsCommandArguments.gateShow(id: "g-1")
         XCTAssertEqual(arguments, ["--readonly", "gate", "show", "g-1", "--json"])

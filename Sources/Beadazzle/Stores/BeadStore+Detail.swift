@@ -141,7 +141,9 @@ extension BeadStore {
     }
 
     func issue(with id: String) -> BeadIssue? {
-        guard let issue = index.issue(with: id) else { return nil }
+        guard let issue = mutations.projection.issue(with: id, in: authoritativeIndex) else {
+            return nil
+        }
         return applyingStateLabelOverrides(to: issue)
     }
 

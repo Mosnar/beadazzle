@@ -75,6 +75,13 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var lastServerActivationRefreshAt: Date?
     @ObservationIgnored fileprivate(set) var isLoadingProjectPreferences = false
     @ObservationIgnored fileprivate(set) var issueReferenceRevision = 0
+    @ObservationIgnored fileprivate(set) var projectionMaterializationTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var projectionGeneration = 0
+    @ObservationIgnored let projectionMaterializer = BeadProjectionMaterializer()
+
+    /// The last snapshot known to have come from disk/`bd`. `index` may additionally
+    /// include optimistic projection entries while writes are settling.
+    fileprivate(set) var authoritativeIndex = BeadProjectIndex.empty
 
     fileprivate(set) var index = BeadProjectIndex.empty {
         didSet {
@@ -97,6 +104,9 @@ final class BeadProjectStore {
         cancelReconciliationWork()
         projectHealthTask?.cancel()
         projectHealthTask = nil
+        projectionGeneration &+= 1
+        projectionMaterializationTask?.cancel()
+        projectionMaterializationTask = nil
     }
 
     func cancelReconciliationWork() {
@@ -588,6 +598,7 @@ final class BeadMutationStore {
     // Settlements retain both callback order and source ownership so equal-value
     // rollbacks cannot revive a result from an older writer.
     private var metadataSettlementsByIssue: [String: BeadMetadataSettlementState] = [:]
+    var projection = BeadMutationProjection()
 
     func possiblyPersistedLabels(for issueID: String) -> [String] {
         possiblyPersistedLabelsByIssue[issueID, default: []]
@@ -698,6 +709,7 @@ final class BeadMutationStore {
         metadataMutations = [:]
         metadataFieldWriteVersionsByIssue = [:]
         metadataSettlementsByIssue = [:]
+        projection.reset()
         clearPossiblyPersistedLabels()
     }
 
@@ -1060,6 +1072,15 @@ final class BeadStore {
     internal var activityLoadTask: Task<Void, Never>? { get { detail.activityLoadTask } set { detail.activityLoadTask = newValue } }
     internal var gateDetailTask: Task<Void, Never>? { get { detail.gateDetailTask } set { detail.gateDetailTask = newValue } }
     internal var projectHealthTask: Task<Void, Never>? { get { project.projectHealthTask } set { project.projectHealthTask = newValue } }
+    internal var projectionMaterializationTask: Task<Void, Never>? {
+        get { project.projectionMaterializationTask }
+        set { project.projectionMaterializationTask = newValue }
+    }
+    internal var projectionGeneration: Int {
+        get { project.projectionGeneration }
+        set { project.projectionGeneration = newValue }
+    }
+    internal var projectionMaterializer: BeadProjectionMaterializer { project.projectionMaterializer }
     internal var dataSourceMonitor: BeadsDataSourceMonitor? { get { project.dataSourceMonitor } set { project.dataSourceMonitor = newValue } }
     internal var monitoredSourceFingerprint: String? { get { project.monitoredSourceFingerprint } set { project.monitoredSourceFingerprint = newValue } }
     /// Cached status/type definitions, reused across reloads so routine reloads don't
@@ -1087,6 +1108,10 @@ final class BeadStore {
     @ObservationIgnored internal let userDefaults: UserDefaults
 
     internal var index: BeadProjectIndex { get { project.index } set { project.index = newValue } }
+    internal var authoritativeIndex: BeadProjectIndex {
+        get { project.authoritativeIndex }
+        set { project.authoritativeIndex = newValue }
+    }
 
     var hierarchyMutationPolicy: BeadHierarchyMutationPolicy {
         BeadHierarchyMutationPolicy(index: index)

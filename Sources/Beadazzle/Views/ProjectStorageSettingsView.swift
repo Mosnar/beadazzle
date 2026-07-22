@@ -25,6 +25,7 @@ struct ProjectStorageSettingsPane: View {
 
             if !isInitialProjectHealthLoad {
                 ProjectStorageOverviewSection()
+                ProjectStorageMaintenanceSection()
                 ProjectStorageRefreshSection()
                 ProjectStorageDetailsSection(expandedDetails: $expandedDetails)
             }
@@ -42,6 +43,165 @@ struct ProjectStorageSettingsPane: View {
         project.isLoadingProjectHealth
             && project.projectHealthSnapshot == nil
             && project.projectHealthAction == nil
+    }
+}
+
+private struct ProjectStorageMaintenanceSection: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    private var project: BeadProjectStore { store.project }
+    @State private var pendingMaintenance: BeadsDoltMaintenanceKind?
+
+    var body: some View {
+        Section {
+            LabeledContent("Database mode") {
+                ProjectHealthValueText(project.projectHealthSnapshot?.context.value?.doltMode)
+            }
+
+            if let size = maintenance?.embeddedDatabaseSize {
+                LabeledContent("Database size") {
+                    Text(ProjectHealthFormatting.formattedBytes(size))
+                        .monospacedDigit()
+                }
+            }
+
+            if let compact = maintenance?.compact.value {
+                LabeledContent("Commit history") {
+                    Text("\(compact.totalCommits.formatted()) commits")
+                        .monospacedDigit()
+                }
+                Text("Routine compaction can squash \(compact.oldCommits.formatted()) commits older than \(compact.cutoffDays.formatted()) days while preserving \(compact.recentCommits.formatted()) recent commits.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Compact Database…") {
+                    pendingMaintenance = .compact
+                }
+                .disabled(isBusy || compact.oldCommits == 0)
+            } else if let error = maintenance?.compact.errorMessage {
+                ProjectHealthMessageRow(
+                    title: "Compaction unavailable",
+                    message: error,
+                    systemImage: "info.circle"
+                )
+            }
+
+            if let flatten = maintenance?.flatten.value {
+                Divider()
+                Text("Flattening replaces all \(flatten.commitCount.formatted()) commits with one snapshot. Use it only when database growth is materially slowing writes and commit-level history is no longer needed.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Flatten Database History…", role: .destructive) {
+                    pendingMaintenance = .flatten
+                }
+                .disabled(isBusy || !flatten.wouldFlatten || flatten.commitCount <= 1)
+            } else if let error = maintenance?.flatten.errorMessage {
+                ProjectHealthMessageRow(
+                    title: "Flattening unavailable",
+                    message: error,
+                    systemImage: "info.circle"
+                )
+            }
+        } header: {
+            Text("Database Maintenance")
+        } footer: {
+            Text("Availability is checked with bd for this project's active database mode. A fresh backup is attempted before either operation.")
+        }
+        .sheet(item: $pendingMaintenance) { kind in
+            ProjectMaintenanceConfirmationSheet(kind: kind)
+        }
+    }
+
+    private var maintenance: BeadsDoltMaintenancePreview? {
+        project.projectHealthSnapshot?.maintenance
+    }
+
+    private var isBusy: Bool {
+        project.isLoadingProjectHealth || project.projectHealthAction != nil
+    }
+}
+
+private struct ProjectMaintenanceConfirmationSheet: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    @Environment(\.dismiss) private var dismiss
+    let kind: BeadsDoltMaintenanceKind
+    @State private var allowsProceedingWithoutBackup = false
+    @State private var isRunning = false
+    @State private var failureMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(title, systemImage: kind == .compact ? "shippingbox" : "exclamationmark.triangle.fill")
+                .font(.title2.weight(.semibold))
+
+            Text(explanation)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if backupIsConfigured {
+                Label("Beadazzle will sync the configured backup before changing history.", systemImage: "checkmark.shield")
+                    .foregroundStyle(.secondary)
+                Toggle("Proceed if the backup sync fails", isOn: $allowsProceedingWithoutBackup)
+            } else {
+                Label("No configured backup was detected.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Toggle("Proceed without a current backup", isOn: $allowsProceedingWithoutBackup)
+            }
+
+            if let failureMessage {
+                Text(failureMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isRunning)
+                Button(confirmTitle, role: .destructive) {
+                    isRunning = true
+                    failureMessage = nil
+                    Task {
+                        let succeeded = await store.performDoltMaintenance(
+                            kind,
+                            allowsProceedingWithoutBackup: allowsProceedingWithoutBackup
+                        )
+                        isRunning = false
+                        if succeeded {
+                            dismiss()
+                        } else {
+                            failureMessage = store.projectHealthActionError?.message
+                                ?? "Database maintenance did not complete."
+                        }
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isRunning || (!backupIsConfigured && !allowsProceedingWithoutBackup))
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+        .interactiveDismissDisabled(isRunning)
+    }
+
+    private var backupIsConfigured: Bool {
+        store.project.projectHealthSnapshot?.backup.value?.isConfigured == true
+    }
+
+    private var title: String {
+        kind == .compact ? "Compact Database?" : "Flatten Database History?"
+    }
+
+    private var confirmTitle: String {
+        kind == .compact ? "Compact" : "Flatten History"
+    }
+
+    private var explanation: String {
+        switch kind {
+        case .compact:
+            "This permanently squashes older Dolt commits while preserving the most recent 30 days of history, then reclaims storage. Current beads are preserved."
+        case .flatten:
+            "This permanently replaces the entire Dolt commit history with one snapshot and reclaims storage. Current beads are preserved, but commit-level history cannot be recovered without a backup."
+        }
     }
 }
 

@@ -15,7 +15,7 @@ extension BeadStore {
         guard hasReadableProject else {
             return "Open a readable Beads project before adding a sub-issue."
         }
-        guard let parent = index.issue(with: parentID) else {
+        guard let parent = issue(with: parentID) else {
             return "Bead \(parentID) was not found."
         }
         if parent.isGate {
@@ -66,8 +66,15 @@ extension BeadStore {
     }
 
     func parentIssue(for issueID: String) -> BeadIssue? {
-        guard let parentID = index.parentID(for: issueID) else { return nil }
-        return index.issue(with: parentID)
+        guard let child = issue(with: issueID) else { return nil }
+        if let parentID = child.parentID?.nilIfBlank {
+            return issue(with: parentID)
+        }
+        let parentID = mutations.projection
+            .dependencies(for: issueID, in: authoritativeIndex)
+            .first { $0.type == "parent-child" }?
+            .dependsOnID
+        return parentID.flatMap { issue(with: $0) }
     }
 
     func subIssueRows(parentID: String) -> [IssueListRow] {
@@ -223,26 +230,29 @@ extension BeadStore {
     }
 
     func revealIssue(id: String) {
-        guard index.isUserFacingIssueID(id) else { return }
+        guard let revealedIssue = issue(with: id), !revealedIssue.isSystemRecord else { return }
         _selectedIDs = [id]
         _fullPageDetailIssueID = nil
-        expandAncestors(of: id, rebuildRows: false)
+        if index.isUserFacingIssueID(id) {
+            expandAncestors(of: id, rebuildRows: false)
+        }
 
-        if !index.issueIDs(for: selectedBookmark).contains(id) {
+        if !index.isUserFacingIssueID(id) || !index.issueIDs(for: selectedBookmark).contains(id) {
             _selectedBookmark = .all
         }
 
         // Compute membership directly rather than reading `filteredIssueIDs`, which is
         // now updated asynchronously and may be stale at this point.
-        let matchesCurrentFilters = BeadIssueListQuery.filteredIssueIDs(
-            index: index,
-            bookmark: selectedBookmark,
-            statusFilters: statusFilters,
-            typeFilters: typeFilters,
-            priorityFilters: priorityFilters,
-            labelFilters: labelFilters,
-            searchText: searchText
-        ).contains(id)
+        let matchesCurrentFilters = index.isUserFacingIssueID(id)
+            && BeadIssueListQuery.filteredIssueIDs(
+                index: index,
+                bookmark: selectedBookmark,
+                statusFilters: statusFilters,
+                typeFilters: typeFilters,
+                priorityFilters: priorityFilters,
+                labelFilters: labelFilters,
+                searchText: searchText
+            ).contains(id)
 
         if !matchesCurrentFilters {
             clearFilters()
