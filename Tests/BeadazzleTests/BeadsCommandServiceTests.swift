@@ -321,7 +321,10 @@ final class BeadsCommandServiceTests: XCTestCase {
         {"total_commits":160,"old_commits":42,"recent_commits":118,"cutoff_days":30}
         """)
         let flatten = try BeadsDoltFlattenPreview.decode(from: """
-        {"commit_count":160,"would_flatten":true}
+        {"commit_count":160,"would_flatten":true,"remote_refs":["remotes/origin/main"],"tags":["release-1"],"size_before_bytes":2048}
+        """)
+        let flattenWithoutReferenceDetails = try BeadsDoltFlattenPreview.decode(from: """
+        {"commit_count":12,"would_flatten":true}
         """)
 
         XCTAssertEqual(compact.totalCommits, 160)
@@ -330,6 +333,12 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertEqual(compact.cutoffDays, 30)
         XCTAssertEqual(flatten.commitCount, 160)
         XCTAssertTrue(flatten.wouldFlatten)
+        XCTAssertEqual(flatten.remoteRefs, ["remotes/origin/main"])
+        XCTAssertEqual(flatten.tags, ["release-1"])
+        XCTAssertEqual(flatten.sizeBeforeBytes, 2_048)
+        XCTAssertNil(flattenWithoutReferenceDetails.remoteRefs)
+        XCTAssertNil(flattenWithoutReferenceDetails.tags)
+        XCTAssertNil(flattenWithoutReferenceDetails.sizeBeforeBytes)
     }
 
     func testDoltMaintenanceUsesDryRunProbesAndExplicitForcedWrites() async throws {
@@ -360,8 +369,8 @@ final class BeadsCommandServiceTests: XCTestCase {
             .map(String.init)
         XCTAssertTrue(commands.contains("--readonly compact --dry-run --json"))
         XCTAssertTrue(commands.contains("--readonly flatten --dry-run --json"))
-        XCTAssertTrue(commands.contains("compact --days 30 --force --json"))
-        XCTAssertTrue(commands.contains("flatten --force --json"))
+        XCTAssertTrue(commands.contains("--sandbox compact --days 30 --force --json"))
+        XCTAssertTrue(commands.contains("--sandbox flatten --force --json"))
     }
 
     func testHooksStatusParsesMissingHooksAsActionable() {

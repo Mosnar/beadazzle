@@ -57,10 +57,16 @@ struct BeadsDoltCompactPreview: Codable, Equatable, Sendable {
 struct BeadsDoltFlattenPreview: Codable, Equatable, Sendable {
     var commitCount: Int
     var wouldFlatten: Bool
+    var remoteRefs: [String]? = nil
+    var tags: [String]? = nil
+    var sizeBeforeBytes: Int64? = nil
 
     enum CodingKeys: String, CodingKey {
         case commitCount = "commit_count"
         case wouldFlatten = "would_flatten"
+        case remoteRefs = "remote_refs"
+        case tags
+        case sizeBeforeBytes = "size_before_bytes"
     }
 
     static func decode(from text: String) throws -> Self {

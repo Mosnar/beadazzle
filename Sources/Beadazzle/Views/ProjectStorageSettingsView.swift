@@ -1,42 +1,31 @@
 import SwiftUI
 
-struct ProjectStorageSettingsPane: View {
+struct ProjectOverviewSettingsPane: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var project: BeadProjectStore { store.project }
-    @State private var expandedDetails: Set<ProjectStorageDetail> = []
 
     var body: some View {
         Form {
-            ProjectStoragePreflightSection(
-                preflight: ProjectPreflightHealth.evaluate(
-                    projectURL: project.projectURL,
-                    missingDataSourceURL: store.missingDataSourceURL,
-                    activeDataSource: project.currentDataSource,
-                    snapshotFreshness: project.snapshotFreshness,
-                    health: project.projectHealthSnapshot,
-                    automaticallyRefreshesExternalChanges: store.automaticallyRefreshesExternalChanges,
-                    isLoading: project.isLoading || project.isLoadingProjectHealth || project.projectHealthSnapshot == nil
-                )
-            )
-
-            ProjectStorageActionsSection(isInitialLoad: isInitialProjectHealthLoad)
-
-            ProjectStorageWorkspaceSection()
+            ProjectOverviewPreflightSection(preflight: preflight)
 
             if !isInitialProjectHealthLoad {
-                ProjectStorageOverviewSection()
-                ProjectStorageMaintenanceSection()
-                ProjectStorageRefreshSection()
-                ProjectStorageDetailsSection(expandedDetails: $expandedDetails)
+                ProjectOverviewSummarySection()
             }
         }
         .settingsGroupedForm()
-        .task(id: project.projectURL) {
-            store.loadProjectHealthStatus()
-        }
-        .onChange(of: project.projectURL) {
-            expandedDetails.removeAll()
-        }
+        .loadsProjectHealthStatusIfNeeded()
+    }
+
+    private var preflight: ProjectPreflightHealth {
+        ProjectPreflightHealth.evaluate(
+            projectURL: project.projectURL,
+            missingDataSourceURL: store.missingDataSourceURL,
+            activeDataSource: project.currentDataSource,
+            snapshotFreshness: project.snapshotFreshness,
+            health: project.projectHealthSnapshot,
+            automaticallyRefreshesExternalChanges: store.automaticallyRefreshesExternalChanges,
+            isLoading: project.isLoading || project.isLoadingProjectHealth || project.projectHealthSnapshot == nil
+        )
     }
 
     private var isInitialProjectHealthLoad: Bool {
@@ -46,174 +35,7 @@ struct ProjectStorageSettingsPane: View {
     }
 }
 
-private struct ProjectStorageMaintenanceSection: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    private var project: BeadProjectStore { store.project }
-    @State private var pendingMaintenance: BeadsDoltMaintenanceKind?
-
-    var body: some View {
-        Section {
-            LabeledContent("Database mode") {
-                ProjectHealthValueText(project.projectHealthSnapshot?.context.value?.doltMode)
-            }
-
-            if let size = maintenance?.embeddedDatabaseSize {
-                LabeledContent("Database size") {
-                    Text(ProjectHealthFormatting.formattedBytes(size))
-                        .monospacedDigit()
-                }
-            }
-
-            if let compact = maintenance?.compact.value {
-                LabeledContent("Commit history") {
-                    Text("\(compact.totalCommits.formatted()) commits")
-                        .monospacedDigit()
-                }
-                Text("Routine compaction can squash \(compact.oldCommits.formatted()) commits older than \(compact.cutoffDays.formatted()) days while preserving \(compact.recentCommits.formatted()) recent commits.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Button("Compact Database…") {
-                    pendingMaintenance = .compact
-                }
-                .disabled(isBusy || compact.oldCommits == 0)
-            } else if let error = maintenance?.compact.errorMessage {
-                ProjectHealthMessageRow(
-                    title: "Compaction unavailable",
-                    message: error,
-                    systemImage: "info.circle"
-                )
-            }
-
-            if let flatten = maintenance?.flatten.value {
-                Divider()
-                Text("Flattening replaces all \(flatten.commitCount.formatted()) commits with one snapshot. Use it only when database growth is materially slowing writes and commit-level history is no longer needed.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Button("Flatten Database History…", role: .destructive) {
-                    pendingMaintenance = .flatten
-                }
-                .disabled(isBusy || !flatten.wouldFlatten || flatten.commitCount <= 1)
-            } else if let error = maintenance?.flatten.errorMessage {
-                ProjectHealthMessageRow(
-                    title: "Flattening unavailable",
-                    message: error,
-                    systemImage: "info.circle"
-                )
-            }
-        } header: {
-            Text("Database Maintenance")
-        } footer: {
-            Text("Availability is checked with bd for this project's active database mode. A fresh backup is attempted before either operation.")
-        }
-        .sheet(item: $pendingMaintenance) { kind in
-            ProjectMaintenanceConfirmationSheet(kind: kind)
-        }
-    }
-
-    private var maintenance: BeadsDoltMaintenancePreview? {
-        project.projectHealthSnapshot?.maintenance
-    }
-
-    private var isBusy: Bool {
-        project.isLoadingProjectHealth || project.projectHealthAction != nil
-    }
-}
-
-private struct ProjectMaintenanceConfirmationSheet: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    @Environment(\.dismiss) private var dismiss
-    let kind: BeadsDoltMaintenanceKind
-    @State private var allowsProceedingWithoutBackup = false
-    @State private var isRunning = false
-    @State private var failureMessage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label(title, systemImage: kind == .compact ? "shippingbox" : "exclamationmark.triangle.fill")
-                .font(.title2.weight(.semibold))
-
-            Text(explanation)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if backupIsConfigured {
-                Label("Beadazzle will sync the configured backup before changing history.", systemImage: "checkmark.shield")
-                    .foregroundStyle(.secondary)
-                Toggle("Proceed if the backup sync fails", isOn: $allowsProceedingWithoutBackup)
-            } else {
-                Label("No configured backup was detected.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                Toggle("Proceed without a current backup", isOn: $allowsProceedingWithoutBackup)
-            }
-
-            if let failureMessage {
-                Text(failureMessage)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(isRunning)
-                Button(confirmTitle, role: .destructive) {
-                    isRunning = true
-                    failureMessage = nil
-                    Task {
-                        let succeeded = await store.performDoltMaintenance(
-                            kind,
-                            allowsProceedingWithoutBackup: allowsProceedingWithoutBackup
-                        )
-                        isRunning = false
-                        if succeeded {
-                            dismiss()
-                        } else {
-                            failureMessage = store.projectHealthActionError?.message
-                                ?? "Database maintenance did not complete."
-                        }
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(isRunning || (!backupIsConfigured && !allowsProceedingWithoutBackup))
-            }
-        }
-        .padding(24)
-        .frame(width: 480)
-        .interactiveDismissDisabled(isRunning)
-    }
-
-    private var backupIsConfigured: Bool {
-        store.project.projectHealthSnapshot?.backup.value?.isConfigured == true
-    }
-
-    private var title: String {
-        kind == .compact ? "Compact Database?" : "Flatten Database History?"
-    }
-
-    private var confirmTitle: String {
-        kind == .compact ? "Compact" : "Flatten History"
-    }
-
-    private var explanation: String {
-        switch kind {
-        case .compact:
-            "This permanently squashes older Dolt commits while preserving the most recent 30 days of history, then reclaims storage. Current beads are preserved."
-        case .flatten:
-            "This permanently replaces the entire Dolt commit history with one snapshot and reclaims storage. Current beads are preserved, but commit-level history cannot be recovered without a backup."
-        }
-    }
-}
-
-private enum ProjectStorageDetail: Hashable {
-    case database
-    case doltSync
-    case snapshot
-    case backup
-    case gitIntegration
-}
-
-private struct ProjectStoragePreflightSection: View {
+private struct ProjectOverviewPreflightSection: View {
     let preflight: ProjectPreflightHealth
     @State private var isShowingOtherChecks = false
 
@@ -243,135 +65,12 @@ private struct ProjectStoragePreflightSection: View {
                 }
             }
         } header: {
-            Text("Pre-flight")
+            Text("Project Health")
         }
     }
 }
 
-private struct ProjectStorageActionsSection: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    private var project: BeadProjectStore { store.project }
-    let isInitialLoad: Bool
-
-    var body: some View {
-        Section("Actions") {
-            VStack(alignment: .leading, spacing: 10) {
-                ProjectHealthStatusSummary(
-                    action: project.projectHealthAction,
-                    isLoading: project.isLoadingProjectHealth,
-                    loadedAt: project.projectHealthSnapshot?.loadedAt
-                )
-
-                if !isInitialLoad {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 170), spacing: 8, alignment: .leading)],
-                        alignment: .leading,
-                        spacing: 8
-                    ) {
-                        ProjectHealthActionButton(
-                            title: "Refresh Status",
-                            systemImage: "arrow.clockwise",
-                            isDisabled: isBusy
-                        ) {
-                            store.loadProjectHealthStatus()
-                        }
-
-                        ProjectHealthActionButton(
-                            title: "Export Snapshot",
-                            systemImage: "square.and.arrow.down",
-                            isDisabled: isBusy
-                        ) {
-                            Task { await store.exportProjectSnapshotNow() }
-                        }
-
-                        if project.projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false {
-                            ProjectHealthActionButton(
-                                title: "Pull from Remote",
-                                systemImage: "arrow.down.circle",
-                                isDisabled: isBusy
-                            ) {
-                                Task { await store.pullProjectIssues() }
-                            }
-
-                            ProjectHealthActionButton(
-                                title: "Push to Remote",
-                                systemImage: "arrow.up.circle",
-                                isDisabled: isBusy
-                            ) {
-                                Task { await store.pushProjectIssues() }
-                            }
-                        }
-
-                        if project.projectHealthSnapshot?.hooks.value?.hasMissingHooks == true,
-                           project.projectEnvironment?.gitIntegration == .enabled {
-                            ProjectHealthActionButton(
-                                title: "Install Hooks",
-                                systemImage: "wrench.and.screwdriver",
-                                isDisabled: isBusy
-                            ) {
-                                Task { await store.installProjectHooks() }
-                            }
-                        }
-
-                        if project.projectHealthSnapshot?.backup.value?.isConfigured == true {
-                            ProjectHealthActionButton(
-                                title: "Backup Now",
-                                systemImage: "arrow.triangle.2.circlepath",
-                                isDisabled: isBusy
-                            ) {
-                                Task { await store.syncProjectBackup() }
-                            }
-                        }
-                    }
-                }
-
-                if let actionError = project.projectHealthActionError {
-                    ProjectHealthMessageRow(
-                        title: actionError.title,
-                        message: actionError.message,
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .padding(.top, 2)
-                }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-
-    private var isBusy: Bool {
-        project.isLoadingProjectHealth || project.projectHealthAction != nil
-    }
-}
-
-private struct ProjectStorageWorkspaceSection: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    @State private var isConfirmingReset = false
-
-    var body: some View {
-        Section {
-            Button("Reset Saved Workspace State", role: .destructive) {
-                isConfirmingReset = true
-            }
-            .disabled(store.projectURL == nil)
-        } header: {
-            Text("Saved Workspace")
-        } footer: {
-            Text("Beadazzle remembers this project's last view, filters, sort, selection, and expansion on this Mac. Resetting returns it to defaults.")
-        }
-        .confirmationDialog(
-            "Reset saved workspace state?",
-            isPresented: $isConfirmingReset
-        ) {
-            Button("Reset", role: .destructive) {
-                store.resetSavedWorkspaceState()
-            }
-        } message: {
-            Text("The remembered view, filters, sort, selection, and expansion for this project will be cleared.")
-        }
-    }
-}
-
-private struct ProjectStorageOverviewSection: View {
+private struct ProjectOverviewSummarySection: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var project: BeadProjectStore { store.project }
 
@@ -389,12 +88,19 @@ private struct ProjectStorageOverviewSection: View {
                         }
                     }
                 } else {
-                    ProjectHealthConfigValueText(nil, errorMessage: project.projectHealthSnapshot?.context.errorMessage)
+                    ProjectHealthConfigValueText(
+                        nil,
+                        errorMessage: project.projectHealthSnapshot?.context.errorMessage
+                    )
                 }
             }
 
-            LabeledContent("Git integration") {
-                ProjectHealthValueText(project.projectEnvironment?.gitIntegration.displayName)
+            LabeledContent("Freshness") {
+                HStack(spacing: 8) {
+                    ProjectHealthValueText(project.snapshotFreshness.message)
+                    freshnessBadge
+                }
+                .help(project.snapshotFreshness.detail ?? project.snapshotFreshness.message)
             }
 
             LabeledContent("Dolt sync") {
@@ -415,6 +121,17 @@ private struct ProjectStorageOverviewSection: View {
                 }
             }
 
+            LabeledContent("Backup") {
+                if let backup = project.projectHealthSnapshot?.backup.value {
+                    ProjectHealthValueText(backup.isConfigured ? "Configured" : "Not configured")
+                } else {
+                    ProjectHealthConfigValueText(
+                        nil,
+                        errorMessage: project.projectHealthSnapshot?.backup.errorMessage
+                    )
+                }
+            }
+
             LabeledContent("Role") {
                 if let environment = project.projectEnvironment {
                     HStack(spacing: 8) {
@@ -426,49 +143,6 @@ private struct ProjectStorageOverviewSection: View {
                     }
                 } else {
                     ProjectHealthValueText(nil)
-                }
-            }
-
-            LabeledContent("App reads") {
-                if let source = project.projectHealthSnapshot?.snapshotFile.activeDataSource {
-                    ProjectHealthValueText("JSONL snapshot")
-                        .help(source.displayPath)
-                } else {
-                    ProjectHealthValueText(nil)
-                }
-            }
-
-            LabeledContent("Freshness") {
-                HStack(spacing: 8) {
-                    ProjectHealthValueText(project.snapshotFreshness.message)
-                    freshnessBadge
-                }
-                .help(project.snapshotFreshness.detail ?? project.snapshotFreshness.message)
-            }
-
-            LabeledContent("Git hooks") {
-                if project.projectHealthSnapshot?.storageConfig.value?.usesStealthMode == true {
-                    HStack(spacing: 8) {
-                        ProjectHealthValueText("Disabled")
-                        ProjectHealthBadge(title: "Stealth", style: .info)
-                    }
-                } else if let hooks = project.projectHealthSnapshot?.hooks.value {
-                    HStack(spacing: 8) {
-                        ProjectHealthValueText(hooks.summary)
-                        if hooks.hasMissingHooks {
-                            ProjectHealthBadge(title: "Optional", style: .info)
-                        }
-                    }
-                } else {
-                    ProjectHealthConfigValueText(nil, errorMessage: project.projectHealthSnapshot?.hooks.errorMessage)
-                }
-            }
-
-            LabeledContent("Backup") {
-                if let backup = project.projectHealthSnapshot?.backup.value {
-                    ProjectHealthValueText(backup.isConfigured ? "Configured" : "Not configured")
-                } else {
-                    ProjectHealthConfigValueText(nil, errorMessage: project.projectHealthSnapshot?.backup.errorMessage)
                 }
             }
         }
@@ -486,193 +160,6 @@ private struct ProjectStorageOverviewSection: View {
         case .unknown:
             ProjectHealthBadge(title: "Unknown", style: .info)
         }
-    }
-}
-
-private struct ProjectStorageRefreshSection: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    private var project: BeadProjectStore { store.project }
-
-    var body: some View {
-        @Bindable var store = store
-
-        Section {
-            Toggle(
-                "Automatically refresh external changes",
-                isOn: $store.automaticallyRefreshesExternalChanges
-            )
-        } header: {
-            Text("Automatic Refresh")
-        } footer: {
-            Text(refreshExplanation)
-        }
-    }
-
-    private var refreshExplanation: String {
-        if project.projectEnvironment?.storageMode.refreshesWhenAppActivates == true {
-            return "Reload server-backed Beads when Beadazzle becomes active. Local snapshot changes are always reloaded."
-        }
-        return "When Beads changes outside Beadazzle, export and reload its readable snapshot. Direct snapshot changes are always reloaded."
-    }
-}
-
-private struct ProjectStorageDetailsSection: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-    private var project: BeadProjectStore { store.project }
-    @Binding var expandedDetails: Set<ProjectStorageDetail>
-
-    var body: some View {
-        Section("Details") {
-            SettingsDisclosure(
-                title: "Database Details",
-                isExpanded: expansionBinding(for: .database)
-            ) {
-                databaseDetails
-            }
-
-            SettingsDisclosure(
-                title: "Dolt Sync Details",
-                isExpanded: expansionBinding(for: .doltSync)
-            ) {
-                ProjectStorageDoltSyncDetails(
-                    context: project.projectHealthSnapshot?.context.value,
-                    remotes: project.projectHealthSnapshot?.doltRemotes,
-                    storageConfig: project.projectHealthSnapshot?.storageConfig
-                )
-            }
-
-            SettingsDisclosure(
-                title: "Snapshot & Export Details",
-                isExpanded: expansionBinding(for: .snapshot)
-            ) {
-                snapshotDetails
-            }
-
-            SettingsDisclosure(
-                title: "Backup Details",
-                isExpanded: expansionBinding(for: .backup)
-            ) {
-                ProjectStorageBackupDetails(backup: project.projectHealthSnapshot?.backup)
-            }
-
-            SettingsDisclosure(
-                title: "Git Integration Details",
-                isExpanded: expansionBinding(for: .gitIntegration)
-            ) {
-                ProjectStorageGitIntegrationDetails(
-                    storageConfig: project.projectHealthSnapshot?.storageConfig,
-                    hooks: project.projectHealthSnapshot?.hooks
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var databaseDetails: some View {
-        if let context = project.projectHealthSnapshot?.context.value {
-            SettingsDetailRow("bd Version") { ProjectHealthValueText(context.bdVersion) }
-            SettingsDetailRow("Backend") { ProjectHealthValueText(context.backend) }
-            SettingsDetailRow("Dolt Mode") { ProjectHealthValueText(context.doltMode) }
-            SettingsDetailRow("Database") { ProjectHealthValueText(context.database) }
-            if project.projectEnvironment?.storageMode == .embedded {
-                SettingsDetailRow("Database Path") {
-                    ProjectHealthPathText(
-                        project.projectEnvironment?.beadsDirectoryURL
-                            .appendingPathComponent("embeddeddolt", isDirectory: true)
-                            .path
-                    )
-                }
-            }
-            SettingsDetailRow("Tracker Directory") {
-                ProjectHealthPathText(project.projectEnvironment?.beadsDirectoryURL.path ?? context.beadsDirectory)
-            }
-            SettingsDetailRow("Redirected") {
-                ProjectHealthValueText(ProjectHealthFormatting.formattedBool(project.projectEnvironment?.isRedirected))
-            }
-            SettingsDetailRow("Role") { ProjectHealthValueText(context.role) }
-            SettingsDetailRow("Schema") { ProjectHealthValueText(context.schemaVersion.map(String.init)) }
-            SettingsDetailRow("Project ID") { ProjectHealthPathText(context.projectID) }
-        } else {
-            ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.context.errorMessage)
-        }
-    }
-
-    @ViewBuilder
-    private var snapshotDetails: some View {
-        let snapshotFile = project.projectHealthSnapshot?.snapshotFile
-
-        SettingsDetailRow("JSONL Snapshot") {
-            HStack(spacing: 8) {
-                ProjectHealthValueText(snapshotFile?.exists == true ? "Present" : "Missing")
-                if snapshotFile?.exists != true {
-                    ProjectHealthBadge(title: "Missing", style: .warning)
-                }
-            }
-        }
-        SettingsDetailRow("Path") { ProjectHealthPathText(snapshotFile?.url.path) }
-        SettingsDetailRow("Size") {
-            ProjectHealthValueText(snapshotFile?.size.map(ProjectHealthFormatting.formattedBytes))
-        }
-        SettingsDetailRow("Modified") {
-            ProjectHealthValueText(snapshotFile?.modifiedAt.map(ProjectHealthFormatting.formattedDate))
-        }
-
-        if let config = project.projectHealthSnapshot?.storageConfig.value {
-            SettingsDetailRow("Export") {
-                HStack(spacing: 8) {
-                    ProjectHealthConfigValueText(
-                        config.exportAutoStatus.display { _ in config.exportSummary },
-                        errorMessage: config.exportAutoStatus.errorMessage
-                    )
-                    if !config.exportAutoStatus.isUnavailable, config.exportAuto == false {
-                        ProjectHealthBadge(title: "Off", style: .warning)
-                    }
-                }
-            }
-            SettingsDetailRow("Export Path") {
-                ProjectHealthConfigValueText(
-                    config.exportPathStatus.display { $0 },
-                    errorMessage: config.exportPathStatus.errorMessage
-                )
-            }
-            SettingsDetailRow("Export Interval") {
-                ProjectHealthConfigValueText(
-                    config.exportIntervalStatus.display { $0 },
-                    errorMessage: config.exportIntervalStatus.errorMessage
-                )
-            }
-            SettingsDetailRow("Git Add Export") {
-                if config.usesStealthMode {
-                    ProjectHealthValueText("Disabled by stealth mode")
-                } else {
-                    ProjectHealthConfigValueText(
-                        config.exportGitAddStatus.display { ProjectHealthFormatting.formattedBool($0) },
-                        errorMessage: config.exportGitAddStatus.errorMessage
-                    )
-                }
-            }
-            SettingsDetailRow("Legacy JSONL Fallback") {
-                ProjectHealthConfigValueText(
-                    config.importAutoStatus.display { _ in config.importSummary },
-                    errorMessage: config.importAutoStatus.errorMessage
-                )
-            }
-        } else {
-            ProjectHealthUnavailableRow(errorMessage: project.projectHealthSnapshot?.storageConfig.errorMessage)
-        }
-    }
-
-    private func expansionBinding(for detail: ProjectStorageDetail) -> Binding<Bool> {
-        Binding(
-            get: { expandedDetails.contains(detail) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedDetails.insert(detail)
-                } else {
-                    expandedDetails.remove(detail)
-                }
-            }
-        )
     }
 }
 

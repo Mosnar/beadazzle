@@ -1,34 +1,43 @@
 import SwiftUI
 
-private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
-    case storage
-    case workflow
+private enum ProjectSettingsPane: String, Identifiable, Hashable {
+    case overview
+    case behavior
     case properties
     case types
     case statuses
+    case syncAndBackup
+    case maintenance
+    case diagnostics
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .storage:
-            "Storage"
-        case .workflow:
-            "Workflow"
+        case .overview:
+            "Overview"
+        case .behavior:
+            "Behavior"
         case .properties:
             "Properties"
         case .types:
             "Types"
         case .statuses:
             "Statuses"
+        case .syncAndBackup:
+            "Sync & Backup"
+        case .maintenance:
+            "Maintenance"
+        case .diagnostics:
+            "Diagnostics"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .storage:
-            "externaldrive"
-        case .workflow:
+        case .overview:
+            "gauge"
+        case .behavior:
             "checklist"
         case .properties:
             "slider.horizontal.3"
@@ -36,6 +45,12 @@ private enum ProjectSettingsPane: String, CaseIterable, Identifiable, Hashable {
             "tag"
         case .statuses:
             "circle.lefthalf.filled"
+        case .syncAndBackup:
+            "arrow.triangle.2.circlepath"
+        case .maintenance:
+            "wrench.and.screwdriver"
+        case .diagnostics:
+            "stethoscope"
         }
     }
 }
@@ -45,7 +60,7 @@ struct ProjectSettingsView: View {
     private var project: BeadProjectStore { store.project }
     let projectURL: URL?
 
-    @SceneStorage("Beadazzle.ProjectSettings.SelectedPane") private var selectedPaneRawValue = ProjectSettingsPane.storage.rawValue
+    @SceneStorage("Beadazzle.ProjectSettings.SelectedPane") private var selectedPaneRawValue = ProjectSettingsPane.overview.rawValue
 
     private var selectedPane: Binding<ProjectSettingsPane> {
         Binding {
@@ -56,12 +71,39 @@ struct ProjectSettingsView: View {
     }
 
     private var activePane: ProjectSettingsPane {
-        ProjectSettingsPane(rawValue: selectedPaneRawValue) ?? .storage
+        switch selectedPaneRawValue {
+        case "storage":
+            return .overview
+        case "workflow":
+            return .behavior
+        default:
+            return ProjectSettingsPane(rawValue: selectedPaneRawValue) ?? .overview
+        }
+    }
+
+    private var paneGroups: [SettingsPaneGroup<ProjectSettingsPane>] {
+        [
+            SettingsPaneGroup(
+                id: "project",
+                title: "Project",
+                panes: [.overview, .behavior]
+            ),
+            SettingsPaneGroup(
+                id: "issue-model",
+                title: "Issue Model",
+                panes: [.properties, .types, .statuses]
+            ),
+            SettingsPaneGroup(
+                id: "storage",
+                title: "Storage",
+                panes: [.syncAndBackup, .maintenance, .diagnostics]
+            )
+        ]
     }
 
     var body: some View {
         SettingsPaneContainer(
-            panes: Array(ProjectSettingsPane.allCases),
+            groups: paneGroups,
             selection: selectedPane,
             title: \.title,
             minDetailWidth: 680,
@@ -86,53 +128,27 @@ private struct ProjectSettingsDetail: View {
     var body: some View {
         if isActiveProject {
             switch pane {
-            case .storage:
-                ProjectStorageSettingsPane()
-            case .workflow:
-                ProjectWorkflowSettingsPane()
+            case .overview:
+                ProjectOverviewSettingsPane()
+            case .behavior:
+                ProjectBehaviorSettingsPane()
             case .properties:
                 ProjectStatePropertiesSettingsPane()
             case .types:
                 ProjectTypesSettingsPane()
             case .statuses:
                 ProjectStatusesSettingsPane()
+            case .syncAndBackup:
+                ProjectSyncAndBackupSettingsPane()
+            case .maintenance:
+                ProjectMaintenanceSettingsPane()
+            case .diagnostics:
+                ProjectDiagnosticsSettingsPane()
             }
         } else {
             ContentUnavailableView("Active Project Required", systemImage: "folder")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-}
-
-private struct ProjectWorkflowSettingsPane: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-
-    var body: some View {
-        @Bindable var store = store
-
-        Form {
-            Section {
-                LabeledContent("Consider stale after") {
-                    Stepper(value: $store.staleCutoffDays, in: 1...365) {
-                        Text("\(store.staleCutoffDays.formatted()) days")
-                            .monospacedDigit()
-                    }
-                }
-            } header: {
-                Text("Staleness")
-            } footer: {
-                Text("Controls which open beads appear in the Stale sidebar view.")
-            }
-
-            Section {
-                Toggle("Hide parents whose unfinished children are all blocked", isOn: $store.hidesParentsWithOnlyBlockedChildrenInReady)
-            } header: {
-                Text("Ready")
-            } footer: {
-                Text("Keeps blocked parent work out of Ready when none of its unfinished children can move forward.")
-            }
-        }
-        .settingsGroupedForm()
     }
 }
 

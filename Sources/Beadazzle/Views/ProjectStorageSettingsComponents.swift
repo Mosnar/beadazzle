@@ -1,5 +1,23 @@
 import SwiftUI
 
+private struct ProjectHealthLoadingModifier: ViewModifier {
+    @Environment(BeadStore.self) private var store: BeadStore
+
+    func body(content: Content) -> some View {
+        content.task(id: store.project.projectURL) {
+            guard store.project.projectHealthSnapshot == nil,
+                  !store.project.isLoadingProjectHealth else { return }
+            store.loadProjectHealthStatus()
+        }
+    }
+}
+
+extension View {
+    func loadsProjectHealthStatusIfNeeded() -> some View {
+        modifier(ProjectHealthLoadingModifier())
+    }
+}
+
 struct ProjectPreflightSummaryView: View {
     let preflight: ProjectPreflightHealth
     let badgeStatus: ProjectPreflightHealth.Status?
