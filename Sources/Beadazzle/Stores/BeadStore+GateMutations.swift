@@ -102,7 +102,7 @@ extension BeadStore {
     @discardableResult
     func createGate(blocks: String, type: GateAwaitType, reason: String?, timeout: String?, awaitID: String?) async -> Bool {
         guard let projectURL else { return false }
-        guard let issue = index.issue(with: blocks) else {
+        guard let issue = issue(with: blocks) else {
             lastError = "Bead \(blocks) was not found."
             return false
         }
@@ -171,13 +171,15 @@ extension BeadStore {
             type: type
         ) else { return false }
 
-        let snapshot = currentMutationSnapshot()
         let newDependency = BeadDependency(issueID: issueID, dependsOnID: dependsOnID, type: type, createdAt: Date())
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
-        if !snapshot.dependencies.contains(where: { $0.id == newDependency.id }) {
-            applyOptimisticState(issues: snapshot.issues, dependencies: snapshot.dependencies + [newDependency])
-        }
+        let existingDependencies = mutations.projection.dependencies(for: issueID, in: authoritativeIndex)
+        let projectionID: UUID? = existingDependencies.contains(where: { $0.id == newDependency.id })
+            ? nil
+            : applyOptimisticProjection(
+                BeadMutationProjectionEntry(addedDependencies: [newDependency])
+            )
 
         let commands = commands
         do {
@@ -187,6 +189,9 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
+            if let projectionID {
+                settleOptimisticProjection(id: projectionID, succeeded: true)
+            }
             reconcileState.request(.mutation)
             announceCompletion("Added \(type) dependency for \(issueID)")
             return true
@@ -194,7 +199,9 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
-            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: snapshot.issues)
+            if let projectionID {
+                settleOptimisticProjection(id: projectionID, succeeded: false)
+            }
             reconcileState.request(.mutation)
             // No retry baseline here: dependency edges live outside `BeadIssue`, so an issue
             // snapshot can't detect a superseding dependency change. Re-running a dependency
@@ -361,13 +368,16 @@ extension BeadStore {
             return false
         }
 
-        let snapshot = currentMutationSnapshot()
-        let optimisticDependencies = snapshot.dependencies.filter {
-            !($0.issueID == dependency.issueID && $0.dependsOnID == dependency.dependsOnID)
-        }
+        let removedDependencies = mutations.projection
+            .dependencies(for: dependency.issueID, in: authoritativeIndex)
+            .filter {
+                $0.issueID == dependency.issueID && $0.dependsOnID == dependency.dependsOnID
+            }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
-        applyOptimisticState(issues: snapshot.issues, dependencies: optimisticDependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(removedDependencies: removedDependencies)
+        )
 
         let commands = commands
         do {
@@ -381,6 +391,7 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
+            settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
             announceCompletion("Removed \(dependency.type) dependency for \(dependency.issueID)")
             return true
@@ -388,7 +399,7 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
-            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: snapshot.issues)
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             reconcileState.request(.mutation)
             reportMutationFailure(
                 error,

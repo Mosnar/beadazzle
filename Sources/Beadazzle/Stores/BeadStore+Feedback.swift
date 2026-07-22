@@ -111,7 +111,7 @@ extension BeadStore {
     func retryBaseline(for issueIDs: [String]) -> [String: BeadIssue] {
         var baseline: [String: BeadIssue] = [:]
         for id in issueIDs {
-            if let issue = index.issue(with: id) {
+            if let issue = issue(with: id) {
                 baseline[id] = issue
             }
         }
@@ -121,7 +121,7 @@ extension BeadStore {
     /// Whether every issue captured at failure time is still in exactly that state. When
     /// this fails, the retry is dropped silently — the user's newer action stands.
     func retryBaselineHolds(_ baseline: [String: BeadIssue]) -> Bool {
-        baseline.allSatisfy { id, issue in index.issue(with: id) == issue }
+        baseline.allSatisfy { id, issue in self.issue(with: id) == issue }
     }
 
     // MARK: Dialog actions

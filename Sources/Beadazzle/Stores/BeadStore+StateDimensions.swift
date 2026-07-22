@@ -479,8 +479,7 @@ extension BeadStore {
             guard settleMetadataMutation(
                 issueID: issueID,
                 mutationID: metadataMutation.id,
-                succeeded: true,
-                applyResolvedState: false
+                succeeded: true
             ) else { return false }
             synchronizeStateLabelOverride(issueID: issueID, dimension: dimension)
             reconcileState.request(.mutation)
@@ -493,8 +492,7 @@ extension BeadStore {
             guard settleMetadataMutation(
                 issueID: issueID,
                 mutationID: metadataMutation.id,
-                succeeded: false,
-                applyResolvedState: false
+                succeeded: false
             ) else { return false }
             synchronizeStateLabelOverride(issueID: issueID, dimension: dimension)
             if attemptedWrite {
@@ -569,8 +567,7 @@ extension BeadStore {
             guard settleMetadataMutation(
                 issueID: issueID,
                 mutationID: metadataMutation.id,
-                succeeded: true,
-                applyResolvedState: false
+                succeeded: true
             ) else { return false }
             synchronizeStateLabelOverride(issueID: issueID, dimension: dimension)
             reconcileState.request(.mutation)
@@ -583,8 +580,7 @@ extension BeadStore {
             guard settleMetadataMutation(
                 issueID: issueID,
                 mutationID: metadataMutation.id,
-                succeeded: false,
-                applyResolvedState: false
+                succeeded: false
             ) else { return false }
             synchronizeStateLabelOverride(issueID: issueID, dimension: dimension)
             if attemptedWrite {
@@ -750,8 +746,7 @@ extension BeadStore {
             settlementIsValid = settleMetadataMutation(
                 issueID: issueID,
                 mutationID: handle.id,
-                succeeded: succeeded,
-                applyResolvedState: false
+                succeeded: succeeded
             ) && settlementIsValid
             mutationProgress.recordCompletion(succeeded: succeeded)
             reportProgress?(mutationProgress)
@@ -776,8 +771,7 @@ extension BeadStore {
                 settlementIsValid = settleMetadataMutation(
                     issueID: issueID,
                     mutationID: handle.id,
-                    succeeded: false,
-                    applyResolvedState: false
+                    succeeded: false
                 ) && settlementIsValid
             }
         }

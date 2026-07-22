@@ -6,15 +6,27 @@ import Foundation
 final class BeadMutationWriteQueue {
     private var chain: Task<Void, Never>?
     private var generation = 0
+    private var lifecycleGeneration = 0
+
+    /// Prevents writes that are still waiting behind an earlier operation from starting
+    /// after the store switches projects. An operation that has already begun is allowed
+    /// to finish because interrupting a database write may leave the tracker inconsistent.
+    func invalidatePending() {
+        lifecycleGeneration &+= 1
+    }
 
     func enqueue<Value: Sendable>(
         _ operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {
         let previousWrite = chain
+        let expectedLifecycleGeneration = lifecycleGeneration
         generation += 1
         let operationGeneration = generation
         let resultTask = Task { () -> Result<Value, any Error> in
             await previousWrite?.value
+            guard self.lifecycleGeneration == expectedLifecycleGeneration else {
+                return .failure(CancellationError())
+            }
             do {
                 return .success(try await operation())
             } catch {

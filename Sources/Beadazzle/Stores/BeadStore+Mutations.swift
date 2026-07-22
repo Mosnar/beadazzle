@@ -13,30 +13,10 @@ extension BeadStore {
     internal static let closedStatusName = "closed"
     internal static let deferredStatusName = "deferred"
 
-    /// The in-memory issues/dependencies captured before an optimistic mutation, so a
-    /// failed `bd` write can be rolled back to the last authoritative state.
-    internal struct MutationSnapshot {
-        internal let issues: [BeadIssue]
-        internal let dependencies: [BeadDependency]
-        internal let metadataFieldWriteVersions: [String: BeadMetadataFieldVersions]
-        internal let metadataSettlementRevisions: [String: BeadMetadataFieldVersions]
-    }
-
-    internal func currentMutationSnapshot() -> MutationSnapshot {
-        MutationSnapshot(
-            issues: index.issues,
-            dependencies: index.dependencies,
-            metadataFieldWriteVersions: mutations.metadataFieldWriteVersionsSnapshot(),
-            metadataSettlementRevisions: mutations.metadataSettlementRevisionsSnapshot()
-        )
-    }
-
-    /// Rebuilds the in-memory index from patched issues/dependencies and refreshes derived
-    /// state immediately — no disk access, no loading indicator. This is what makes edits
-    /// feel instant: the UI reflects the change before `bd` has even run. Correctness is
-    /// preserved by writing through `bd` afterward and reconciling silently.
+    /// Installs a complete in-memory snapshot for focused store tests and diagnostic
+    /// callers. User mutations use sparse projection entries instead.
     internal func applyOptimisticState(issues: [BeadIssue], dependencies: [BeadDependency]) {
-        index = BeadProjectIndex(
+        let replacement = BeadProjectIndex(
             issues: issues,
             dependencies: dependencies,
             semantics: index.semantics,
@@ -44,9 +24,11 @@ extension BeadStore {
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
             reusingSearchTextFrom: index
         )
+        authoritativeIndex = replacement
+        index = replacement
         _contentRevision &+= 1
         scheduleSavedViewCountRebuild()
-        _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
+        _selectedIDs = selectedIDs.filter(replacement.isUserFacingIssueID)
         syncFullPageDetailWithSelection()
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
@@ -54,6 +36,92 @@ extension BeadStore {
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
         pruneGateDetailsForCurrentSnapshot()
+    }
+
+    @discardableResult
+    internal func applyOptimisticProjection(_ entry: BeadMutationProjectionEntry) -> UUID {
+        mutations.projection.append(entry)
+        _contentRevision &+= 1
+        _selectedIDs = selectedIDs.filter { issueID in
+            issue(with: issueID)?.isSystemRecord == false
+        }
+        syncFullPageDetailWithSelection()
+        syncCommentsForSelectionFromCache()
+        scheduleProjectionMaterialization()
+        return entry.id
+    }
+
+    internal func settleOptimisticProjection(id: UUID, succeeded: Bool) {
+        if succeeded {
+            _ = mutations.projection.markSucceeded(id)
+            return
+        }
+        guard mutations.projection.remove(id) else { return }
+        _contentRevision &+= 1
+        _selectedIDs = selectedIDs.filter { issueID in
+            issue(with: issueID)?.isSystemRecord == false
+        }
+        syncFullPageDetailWithSelection()
+        syncCommentsForSelectionFromCache()
+        scheduleProjectionMaterialization()
+    }
+
+    internal func scheduleProjectionMaterialization() {
+        projectionGeneration &+= 1
+        let generation = projectionGeneration
+        projectionMaterializationTask?.cancel()
+
+        let base = authoritativeIndex
+        let projection = mutations.projection
+        let previousIndex = index
+        let projectionMaterializer = projectionMaterializer
+        let expectedProjectURL = projectURL
+        let staleCutoffDays = staleCutoffDays
+        let hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
+
+        projectionMaterializationTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.projectionGeneration == generation {
+                    self.projectionMaterializationTask = nil
+                }
+            }
+            // Let same-run-loop mutation bursts collapse to their final sparse projection.
+            // The materializer actor serializes any rebuild that has already begun.
+            try? await Task.sleep(for: .milliseconds(20))
+            guard !Task.isCancelled else { return }
+            let materializedIndex = await projectionMaterializer.materialize(
+                projection: projection,
+                over: base,
+                previousIndex: previousIndex,
+                staleCutoffDays: staleCutoffDays,
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  let materializedIndex,
+                  self.projectionGeneration == generation,
+                  self.projectURL == expectedProjectURL
+            else { return }
+
+            self.index = materializedIndex
+            self._contentRevision &+= 1
+            self.scheduleSavedViewCountRebuild()
+            self._selectedIDs = self.selectedIDs.filter(materializedIndex.isUserFacingIssueID)
+            self.syncFullPageDetailWithSelection()
+            self.pruneExpandedIssueIDs()
+            self.expandAncestorsForSelection(rebuildRows: false)
+            self.applyFilters()
+            self.loadDependenciesForSelection()
+            self.syncCommentsForSelectionFromCache()
+            self.pruneGateDetailsForCurrentSnapshot()
+        }
+    }
+
+    func waitForPendingProjectionMaterialization() async {
+        while let task = projectionMaterializationTask {
+            await task.value
+            if projectionMaterializationTask == task { return }
+        }
     }
 
     /// Debounce window after the last mutation settles before a single reconcile runs.
@@ -178,6 +246,97 @@ extension BeadStore {
         return copy
     }
 
+    private func optimisticSavePatch(from draft: IssueDraft, originalIssue: BeadIssue) -> BeadIssueMutationPatch {
+        let now = Date()
+        return BeadIssueMutationPatch(
+            title: .set(draft.title),
+            description: .set(draft.description),
+            design: .set(draft.design),
+            acceptanceCriteria: .set(draft.acceptanceCriteria),
+            notes: .set(draft.notes),
+            status: .set(draft.status),
+            priority: .set(draft.priority),
+            issueType: .set(draft.issueType),
+            updatedAt: .set(now),
+            closedAt: .set(statusClosesBeads(draft.status) ? (originalIssue.closedAt ?? now) : nil),
+            dueAt: .set(draft.dueAt),
+            deferUntil: .set(draft.deferUntil),
+            labels: .set(draft.labels)
+        )
+    }
+
+    private func projectedCreatedIssue(id: String, draft: IssueDraft) -> BeadIssue {
+        let now = Date()
+        return BeadIssue(
+            id: id,
+            title: draft.title,
+            description: draft.description,
+            design: draft.design,
+            acceptanceCriteria: draft.acceptanceCriteria,
+            notes: draft.notes,
+            status: draft.status,
+            priority: draft.priority,
+            issueType: draft.issueType,
+            assignee: draft.assignee.nilIfBlank,
+            owner: nil,
+            createdAt: now,
+            updatedAt: now,
+            closedAt: statusClosesBeads(draft.status) ? now : nil,
+            dueAt: draft.dueAt,
+            deferUntil: draft.deferUntil,
+            externalRef: nil,
+            parentID: draft.parentID,
+            labels: draft.labels,
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
+        )
+    }
+
+    private func generatedIssueID() -> String {
+        var prefixCounts: [String: Int] = [:]
+        for issue in authoritativeIndex.issues {
+            guard let prefix = Self.issuePrefix(from: issue.id) else { continue }
+            prefixCounts[prefix, default: 0] += 1
+        }
+        let inferredPrefix = prefixCounts.max { lhs, rhs in
+            lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
+        }?.key
+        let fallbackPrefix = projectEnvironment?.context.database ?? projectURL?.lastPathComponent
+        let prefix = Self.normalizedIssuePrefix(
+            projectEnvironment?.context.issuePrefix ?? inferredPrefix ?? fallbackPrefix
+        ) ?? "bd"
+
+        while true {
+            let suffix = UUID().uuidString
+                .replacingOccurrences(of: "-", with: "")
+                .prefix(12)
+                .lowercased()
+            let candidate = "\(prefix)-\(suffix)"
+            if issue(with: candidate) == nil {
+                return candidate
+            }
+        }
+    }
+
+    private static func issuePrefix(from issueID: String) -> String? {
+        guard let root = issueID.split(separator: ".", maxSplits: 1).first,
+              let separator = root.lastIndex(of: "-"),
+              separator != root.startIndex else {
+            return nil
+        }
+        return normalizedIssuePrefix(String(root[..<separator]))
+    }
+
+    private static func normalizedIssuePrefix(_ value: String?) -> String? {
+        guard let value = value?.nilIfBlank else { return nil }
+        let components = value.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+        return components.filter { !$0.isEmpty }.joined(separator: "-").nilIfBlank
+    }
+
     internal func beginMetadataMutation(
         issueID: String,
         originalIssue: BeadIssue,
@@ -242,45 +401,31 @@ extension BeadStore {
 
     private func settleMetadataMutations(
         _ handlesByIssueID: [String: MetadataMutationHandle],
-        succeeded: Bool,
-        applyResolvedState: Bool = true
+        succeeded: Bool
     ) -> Bool {
-        let snapshot = currentMutationSnapshot()
-        let currentIssuesByID = Dictionary(uniqueKeysWithValues: snapshot.issues.map { ($0.id, $0) })
-        var updatedIssuesByID: [String: BeadIssue] = [:]
         for issueID in handlesByIssueID.keys.sorted() {
-            guard let handle = handlesByIssueID[issueID] else { return false }
-            let settlement = resolveMetadataMutationSettlement(
-                issueID: issueID,
-                mutationID: handle.id,
-                succeeded: succeeded,
-                currentIssue: currentIssuesByID[issueID]
-            )
-            guard settlement.isValid else { return false }
-            if let updatedIssue = settlement.updatedIssue {
-                updatedIssuesByID[issueID] = updatedIssue
-            }
+            guard let handle = handlesByIssueID[issueID],
+                  resolveMetadataMutationSettlement(
+                      issueID: issueID,
+                      mutationID: handle.id,
+                      succeeded: succeeded
+                  )
+            else { return false }
         }
-        guard applyResolvedState, !updatedIssuesByID.isEmpty else { return true }
-        let optimisticIssues = snapshot.issues.map { updatedIssuesByID[$0.id] ?? $0 }
-        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
         return true
     }
 
     private func resolveMetadataMutationSettlement(
         issueID: String,
         mutationID: UUID,
-        succeeded: Bool,
-        currentIssue: BeadIssue?
-    ) -> (isValid: Bool, updatedIssue: BeadIssue?) {
-        guard var state = mutations.metadataMutations[issueID] else { return (false, nil) }
-        let fieldsToSettle = state.pendingFields
-        let latestFieldWriteVersions = state.latestFieldWriteVersions
+        succeeded: Bool
+    ) -> Bool {
+        guard var state = mutations.metadataMutations[issueID] else { return false }
         guard state.pendingMutations.contains(where: { $0.id == mutationID }) else {
-            return (false, nil)
+            return false
         }
         guard let completedMutations = state.recordCompletion(id: mutationID, succeeded: succeeded) else {
-            return (false, nil)
+            return false
         }
         for mutation in completedMutations
         where mutation.patch.updatesLabels && mutation.writeWasAttempted {
@@ -307,7 +452,6 @@ extension BeadStore {
         let completedFieldWriteVersions = completedMutations.reduce(into: BeadMetadataFieldVersions()) {
             $0.replace($1.patch.fields, with: $1.fieldWriteVersions)
         }
-        let resolvedMetadataIssue = state.resolvedIssue
         mutations.recordMetadataSettlement(
             completedFields,
             issue: state.confirmedIssue,
@@ -319,13 +463,7 @@ extension BeadStore {
         } else {
             mutations.metadataMutations[issueID] = state
         }
-        guard let currentIssue else { return (true, nil) }
-        let ownedFields = mutations.metadataFieldWriteVersions(for: issueID).matchingFields(
-            latestFieldWriteVersions,
-            among: fieldsToSettle
-        )
-        let updatedIssue = replacingMetadata(ownedFields, in: currentIssue, with: resolvedMetadataIssue)
-        return (true, updatedIssue == currentIssue ? nil : updatedIssue)
+        return true
     }
 
     internal func replacingMetadata(
@@ -353,112 +491,13 @@ extension BeadStore {
     internal func settleMetadataMutation(
         issueID: String,
         mutationID: UUID,
-        succeeded: Bool,
-        applyResolvedState: Bool = true
+        succeeded: Bool
     ) -> Bool {
-        if !applyResolvedState {
-            return resolveMetadataMutationSettlement(
-                issueID: issueID,
-                mutationID: mutationID,
-                succeeded: succeeded,
-                currentIssue: nil
-            ).isValid
-        }
-
-        let snapshot = currentMutationSnapshot()
-        let settlement = resolveMetadataMutationSettlement(
+        resolveMetadataMutationSettlement(
             issueID: issueID,
             mutationID: mutationID,
-            succeeded: succeeded,
-            currentIssue: snapshot.issues.first(where: { $0.id == issueID })
+            succeeded: succeeded
         )
-        guard settlement.isValid else { return false }
-        guard let updatedIssue = settlement.updatedIssue else { return true }
-        let optimisticIssues = snapshot.issues.map { $0.id == issueID ? updatedIssue : $0 }
-        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
-        return true
-    }
-
-    private func rollbackIssuesPreservingConcurrentMetadata(
-        snapshot: MutationSnapshot,
-        optimisticIssues: [BeadIssue],
-        currentIssues: [BeadIssue]
-    ) -> [BeadIssue] {
-        let optimisticByID = Dictionary(uniqueKeysWithValues: optimisticIssues.map { ($0.id, $0) })
-        let currentByID = Dictionary(uniqueKeysWithValues: currentIssues.map { ($0.id, $0) })
-
-        return snapshot.issues.map { originalIssue in
-            let optimisticIssue = optimisticByID[originalIssue.id]
-            let currentIssue = currentByID[originalIssue.id]
-            let snapshotWrites = snapshot.metadataFieldWriteVersions[originalIssue.id] ?? .init()
-            let currentWrites = mutations.metadataFieldWriteVersions(for: originalIssue.id)
-            let snapshotSettlements = snapshot.metadataSettlementRevisions[originalIssue.id] ?? .init()
-            let settlement = mutations.metadataSettlement(for: originalIssue.id)
-            var rollbackIssue = originalIssue
-
-            if let settlement,
-               settlement.revisions.assignee != snapshotSettlements.assignee,
-               settlement.sourceWriteVersions.assignee == currentWrites.assignee
-                || currentWrites.assignee == snapshotWrites.assignee {
-                rollbackIssue.assignee = settlement.issue.assignee
-            } else if let currentIssue, let optimisticIssue,
-                      currentWrites.assignee != snapshotWrites.assignee
-                        || currentIssue.assignee != optimisticIssue.assignee {
-                rollbackIssue.assignee = currentIssue.assignee
-            }
-            if let settlement,
-               settlement.revisions.labels != snapshotSettlements.labels,
-               settlement.sourceWriteVersions.labels == currentWrites.labels
-                || currentWrites.labels == snapshotWrites.labels {
-                rollbackIssue.labels = settlement.issue.labels
-            } else if let currentIssue, let optimisticIssue,
-                      currentWrites.labels != snapshotWrites.labels
-                        || currentIssue.labels != optimisticIssue.labels {
-                rollbackIssue.labels = currentIssue.labels
-            }
-            if let settlement,
-               settlement.revisions.dueAt != snapshotSettlements.dueAt,
-               settlement.sourceWriteVersions.dueAt == currentWrites.dueAt
-                || currentWrites.dueAt == snapshotWrites.dueAt {
-                rollbackIssue.dueAt = settlement.issue.dueAt
-            } else if let currentIssue, let optimisticIssue,
-                      currentWrites.dueAt != snapshotWrites.dueAt
-                        || currentIssue.dueAt != optimisticIssue.dueAt {
-                rollbackIssue.dueAt = currentIssue.dueAt
-            }
-            if let settlement,
-               settlement.revisions.deferUntil != snapshotSettlements.deferUntil,
-               settlement.sourceWriteVersions.deferUntil == currentWrites.deferUntil
-                || currentWrites.deferUntil == snapshotWrites.deferUntil {
-                rollbackIssue.deferUntil = settlement.issue.deferUntil
-            } else if let currentIssue, let optimisticIssue,
-                      currentWrites.deferUntil != snapshotWrites.deferUntil
-                        || currentIssue.deferUntil != optimisticIssue.deferUntil {
-                rollbackIssue.deferUntil = currentIssue.deferUntil
-            }
-            if let currentIssue, let optimisticIssue,
-               currentIssue.updatedAt != optimisticIssue.updatedAt {
-                rollbackIssue.updatedAt = currentIssue.updatedAt
-            }
-            return rollbackIssue
-        }
-    }
-
-    internal func rollbackOptimisticState(
-        to snapshot: MutationSnapshot,
-        preservingConcurrentMetadataFrom optimisticIssues: [BeadIssue]
-    ) {
-        let rollbackIssues = rollbackIssuesPreservingConcurrentMetadata(
-            snapshot: snapshot,
-            optimisticIssues: optimisticIssues,
-            currentIssues: index.issues
-        )
-        applyOptimisticState(issues: rollbackIssues, dependencies: snapshot.dependencies)
-        for issue in rollbackIssues {
-            if mutations.metadataMutations[issue.id]?.pendingMutations.isEmpty == true {
-                mutations.metadataMutations.removeValue(forKey: issue.id)
-            }
-        }
     }
 
     private func blockUnsafeLabelClear(
@@ -500,8 +539,8 @@ extension BeadStore {
     ) async -> Bool {
         guard let projectURL else { return false }
 
-        // Create can't be optimistic — the id is minted by `bd`. Await the write, then
-        // reconcile silently and reveal the new bead (no full-screen loading indicator).
+        // The id is minted by `bd`, so create awaits that single write. Once the id arrives,
+        // a projected issue is revealed immediately; snapshot export/reload happens later.
         guard let draftID = draft.id else {
             return await createBead(draft, revealCreated: true) != nil
         }
@@ -594,29 +633,31 @@ extension BeadStore {
         }()
         let childIDSet = Set(childIDs)
         let ancestorIDSet = Set(ancestorIDs)
-        let snapshot = currentMutationSnapshot()
         let now = Date()
-        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
-            if issue.id == draftID {
-                return optimisticallyUpdatedIssue(issue, from: optimisticDraft)
-            }
-            if ancestorIDSet.contains(issue.id), let ancestorReopenStatus {
-                var copy = issue
-                copy.status = ancestorReopenStatus
-                copy.closedAt = nil
-                copy.updatedAt = now
-                return copy
-            }
-            guard childIDSet.contains(issue.id) else { return issue }
-            var copy = issue
-            copy.status = draft.status
-            copy.closedAt = copy.closedAt ?? now
-            copy.updatedAt = now
-            return copy
+        var issueChanges: [String: BeadProjectedIssueChange] = [
+            draftID: .update(optimisticSavePatch(from: optimisticDraft, originalIssue: originalIssue))
+        ]
+        for ancestorID in ancestorIDSet {
+            guard let ancestorReopenStatus else { continue }
+            issueChanges[ancestorID] = .update(BeadIssueMutationPatch(
+                status: .set(ancestorReopenStatus),
+                updatedAt: .set(now),
+                closedAt: .set(nil)
+            ))
+        }
+        for childID in childIDSet {
+            let closedAt = issue(with: childID)?.closedAt ?? now
+            issueChanges[childID] = .update(BeadIssueMutationPatch(
+                status: .set(draft.status),
+                updatedAt: .set(now),
+                closedAt: .set(closedAt)
+            ))
         }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
-        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(issueChanges: issueChanges)
+        )
 
         let ancestorIDsForWrite = hierarchyReopenWriteOrder(ancestorIDs)
         let childIDsForWrite = hierarchyCompletionWriteOrder(childIDs)
@@ -657,6 +698,7 @@ extension BeadStore {
                 mutationID: metadataMutation.id,
                 succeeded: true
             ) else { return false }
+            settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
             return true
         } catch {
@@ -668,10 +710,7 @@ extension BeadStore {
                 mutationID: metadataMutation.id,
                 succeeded: false
             ) else { return false }
-            rollbackOptimisticState(
-                to: snapshot,
-                preservingConcurrentMetadataFrom: optimisticIssues
-            )
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
@@ -694,6 +733,14 @@ extension BeadStore {
 
     @discardableResult
     func createBead(_ draft: IssueDraft, revealCreated: Bool) async -> String? {
+        guard let submission = submitCreateBead(draft, revealCreated: revealCreated) else {
+            return nil
+        }
+        return await submission.value ? submission.issueID : nil
+    }
+
+    @discardableResult
+    func submitCreateBead(_ draft: IssueDraft, revealCreated: Bool) -> BeadCreateSubmission? {
         guard let projectURL else { return nil }
         guard draft.id == nil else { return nil }
         guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(draft.issueType) else {
@@ -702,9 +749,6 @@ extension BeadStore {
         }
 
         let mutationGeneration = mutations.metadataMutationGeneration
-        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
-        await optimisticMutationQueue.acquire()
-        defer { optimisticMutationQueue.release() }
         guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
             return nil
         }
@@ -714,193 +758,140 @@ extension BeadStore {
             return nil
         }
         let mutationLifetimeGeneration = beginMutation()
-        defer { endMutation(generation: mutationLifetimeGeneration) }
-
-        let createdIssueID: String
-        do {
-            let commands = commands
-            createdIssueID = try await enqueueMutationWrite {
-                try await commands.create(projectURL: projectURL, draft: draft)
-            }
-        } catch {
-            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-                _ = rejectStaleMutation(targeting: projectURL)
-                return nil
-            }
-            requestReconcile()
-            reportMutationFailure(
-                error,
-                title: "Couldn't create bead",
-                retry: { [weak self] in
-                    _ = await self?.createBead(draft, revealCreated: revealCreated)
-                }
+        let createdIssueID = generatedIssueID()
+        var preparedCommandDraft = draft
+        preparedCommandDraft.id = createdIssueID
+        let commandDraft = preparedCommandDraft
+        let projectedIssue = projectedCreatedIssue(id: createdIssueID, draft: draft)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(
+                issueChanges: [createdIssueID: .insert(projectedIssue)]
             )
-            return nil
-        }
-
-        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-            _ = rejectStaleMutation(targeting: projectURL)
-            return nil
-        }
-
-        do {
-            let reloaded = try await reloadProjectAfterMutation(
-                projectURL: projectURL,
-                revealIssueID: createdIssueID,
-                revealCreated: revealCreated,
-                mutationGeneration: mutationGeneration
-            )
-            guard reloaded else {
-                _ = rejectStaleMutation(targeting: projectURL)
-                return nil
-            }
-            announceCompletion("Created bead \(createdIssueID)")
-            return createdIssueID
-        } catch {
-            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-                _ = rejectStaleMutation(targeting: projectURL)
-                return nil
-            }
-            requestReconcile()
-            // The bead was created; only the reveal/refresh failed. Retrying create would
-            // duplicate it, so this failure is not retryable.
-            reportMutationFailure(
-                error,
-                title: "Created \(createdIssueID), but couldn't refresh"
-            )
-            if revealCreated, index.issue(with: createdIssueID) != nil {
-                revealIssue(id: createdIssueID)
-            }
-            return createdIssueID
-        }
-    }
-
-    private func reloadProjectAfterMutation(
-        projectURL: URL,
-        revealIssueID: String,
-        revealCreated: Bool,
-        mutationGeneration: Int
-    ) async throws -> Bool {
-        let metadataBaseline = mutations.reloadBaseline()
-        let refreshGeneration = project.beginRefresh()
-        defer { project.finishRefresh(generation: refreshGeneration) }
-        lastError = nil
-
-        let loadedProject = try await loadProjectRecoveringMissingDataSource(projectURL: projectURL)
-        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration),
-              project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
-        else { return false }
-
-        applyLoadedProject(
-            loadedProject,
-            projectURL: projectURL,
-            metadataBaseline: metadataBaseline
         )
-        guard index.issue(with: revealIssueID) != nil else {
-            throw BeadError.commandFailed(
-                command: "bd create --silent",
-                output: "Created bead \(revealIssueID) was not found after refresh."
-            )
-        }
         if revealCreated {
-            revealIssue(id: revealIssueID)
+            revealIssue(id: createdIssueID)
         }
-        return true
-    }
 
-    private func loadProjectRecoveringMissingDataSource(projectURL: URL) async throws -> LoadedProject {
-        do {
-            return try await projectLoader.refreshSnapshotAndLoadProject(
-                projectURL: projectURL,
-                staleCutoffDays: staleCutoffDays,
-                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-                cachedDefinitions: cachedDefinitions,
-                cachedEnvironment: projectEnvironment
-            )
-        } catch BeadError.projectMissingDataSource {
-            return try await projectLoader.exportAndLoadProject(
-                projectURL: projectURL,
-                staleCutoffDays: staleCutoffDays,
-                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-                cachedDefinitions: cachedDefinitions,
-                cachedEnvironment: projectEnvironment
-            )
+        let commands = commands
+        let completion = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            defer { self.endMutation(generation: mutationLifetimeGeneration) }
+            do {
+                let persistedIssueID = try await self.enqueueMutationWrite {
+                    try await commands.create(projectURL: projectURL, draft: commandDraft)
+                }
+                guard persistedIssueID == createdIssueID else {
+                    throw BeadError.commandFailed(
+                        command: "bd create --id \(createdIssueID)",
+                        output: "bd reported the unexpected issue id \(persistedIssueID)."
+                    )
+                }
+                guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                    return self.rejectStaleMutation(targeting: projectURL)
+                }
+                self.settleOptimisticProjection(id: projectionID, succeeded: true)
+                self.reconcileState.request(.mutation)
+                self.announceCompletion("Created bead \(createdIssueID)")
+                return true
+            } catch {
+                guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                    return self.rejectStaleMutation(targeting: projectURL)
+                }
+                self.settleOptimisticProjection(id: projectionID, succeeded: false)
+                self.reconcileState.request(.mutation)
+                self.reportMutationFailure(
+                    error,
+                    title: "Couldn't create bead",
+                    retry: { [weak self] in
+                        guard let retry = self?.submitCreateBead(draft, revealCreated: revealCreated) else {
+                            return
+                        }
+                        _ = await retry.value
+                    }
+                )
+                return false
+            }
         }
+        return BeadCreateSubmission(issueID: createdIssueID, completion: completion)
     }
 
     func closeSelected() {
         let ids = Array(selectedIDs)
-        Task { @MainActor in
-            await close(issueIDs: ids, reason: "Closed in Beadazzle")
-        }
+        _ = submitClose(issueIDs: ids, reason: "Closed in Beadazzle")
     }
 
     @discardableResult
     func close(issueIDs: [String], reason: String?) async -> Bool {
-        guard let projectURL else { return false }
-        let mutationGeneration = mutations.metadataMutationGeneration
-        let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
-        await optimisticMutationQueue.acquire()
-        defer { optimisticMutationQueue.release() }
-        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+        guard let submission = submitClose(issueIDs: issueIDs, reason: reason) else {
             return false
+        }
+        return await submission.value
+    }
+
+    @discardableResult
+    func submitClose(issueIDs: [String], reason: String?) -> BeadMutationSubmission? {
+        guard let projectURL else { return nil }
+        let mutationGeneration = mutations.metadataMutationGeneration
+        guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+            return nil
         }
         let ids = Array(Set(issueIDs)).sorted()
-        guard !ids.isEmpty else { return false }
-        guard ids.allSatisfy({ index.issue(with: $0)?.isSystemRecord != true }) else {
+        guard !ids.isEmpty else { return nil }
+        guard ids.allSatisfy({ issue(with: $0)?.isSystemRecord != true }) else {
             lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
-            return false
+            return nil
         }
-        guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else { return false }
+        guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else { return nil }
 
-        let snapshot = currentMutationSnapshot()
-        let idSet = Set(ids)
         let now = Date()
-        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
-            guard idSet.contains(issue.id) else { return issue }
-            var copy = issue
-            copy.status = Self.closedStatusName
-            copy.closedAt = copy.closedAt ?? now
-            copy.updatedAt = now
-            return copy
+        var issueChanges: [String: BeadProjectedIssueChange] = [:]
+        for issueID in ids {
+            issueChanges[issueID] = .update(BeadIssueMutationPatch(
+                status: .set(Self.closedStatusName),
+                updatedAt: .set(now),
+                closedAt: .set(issue(with: issueID)?.closedAt ?? now)
+            ))
         }
         let mutationLifetimeGeneration = beginMutation()
-        defer { endMutation(generation: mutationLifetimeGeneration) }
-        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(issueChanges: issueChanges)
+        )
 
         let idsForWrite = hierarchyCompletionWriteOrder(ids)
         let commands = commands
-        var attemptedWrite = false
-        do {
-            attemptedWrite = true
-            try await enqueueMutationWrite {
-                try await commands.close(projectURL: projectURL, ids: idsForWrite, reason: reason)
-            }
-            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-                return rejectStaleMutation(targeting: projectURL)
-            }
-            reconcileState.request(.mutation)
-            announceCompletion(ids.count == 1 ? "Closed bead \(ids[0])" : "Closed \(ids.count) beads")
-            return true
-        } catch {
-            guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-                return rejectStaleMutation(targeting: projectURL)
-            }
-            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: optimisticIssues)
-            if attemptedWrite {
-                reconcileState.request(.mutation)
-            }
-            let retryBaseline = retryBaseline(for: ids)
-            reportMutationFailure(
-                error,
-                title: ids.count == 1 ? "Couldn't close \(ids[0])" : "Couldn't close \(ids.count) beads",
-                retry: { [weak self] in
-                    guard let self, self.retryBaselineHolds(retryBaseline) else { return }
-                    await self.close(issueIDs: issueIDs, reason: reason)
+        let completion = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            defer { self.endMutation(generation: mutationLifetimeGeneration) }
+            do {
+                try await self.enqueueMutationWrite {
+                    try await commands.close(projectURL: projectURL, ids: idsForWrite, reason: reason)
                 }
-            )
-            return false
+                guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                    return self.rejectStaleMutation(targeting: projectURL)
+                }
+                self.settleOptimisticProjection(id: projectionID, succeeded: true)
+                self.reconcileState.request(.mutation)
+                self.announceCompletion(ids.count == 1 ? "Closed bead \(ids[0])" : "Closed \(ids.count) beads")
+                return true
+            } catch {
+                guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
+                    return self.rejectStaleMutation(targeting: projectURL)
+                }
+                self.settleOptimisticProjection(id: projectionID, succeeded: false)
+                self.reconcileState.request(.mutation)
+                let retryBaseline = self.retryBaseline(for: ids)
+                self.reportMutationFailure(
+                    error,
+                    title: ids.count == 1 ? "Couldn't close \(ids[0])" : "Couldn't close \(ids.count) beads",
+                    retry: { [weak self] in
+                        guard let self, self.retryBaselineHolds(retryBaseline) else { return }
+                        await self.close(issueIDs: issueIDs, reason: reason)
+                    }
+                )
+                return false
+            }
         }
+        return BeadMutationSubmission(completion: completion)
     }
 
     @discardableResult
@@ -910,7 +901,7 @@ extension BeadStore {
             return false
         }
         let ids = issueIDs
-            .compactMap { index.issue(with: $0) }
+            .compactMap { issue(with: $0) }
             .filter(isDone)
             .map(\.id)
             .sorted()
@@ -940,24 +931,31 @@ extension BeadStore {
         }
         let requestedIDs = Array(Set(issueIDs)).sorted()
         guard !requestedIDs.isEmpty else { return false }
-        guard requestedIDs.allSatisfy({ index.issue(with: $0)?.isSystemRecord != true }) else {
+        guard requestedIDs.allSatisfy({ issue(with: $0)?.isSystemRecord != true }) else {
             lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
             return false
         }
         let ownedSystemRecordIDs = index.systemRecordIssueIDs(ownedBy: requestedIDs)
         let ids = Array(Set(requestedIDs).union(ownedSystemRecordIDs)).sorted()
 
-        let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
-        let optimisticIssues = snapshot.issues.filter { !idSet.contains($0.id) }
-        let optimisticDependencies = snapshot.dependencies.filter {
-            !idSet.contains($0.issueID) && !idSet.contains($0.dependsOnID)
-        }
+        let removedDependencies = mutations.projection.dependencies(
+            touching: idSet,
+            in: authoritativeIndex
+        )
+        let issueChanges = Dictionary(uniqueKeysWithValues: ids.map {
+            ($0, BeadProjectedIssueChange.delete)
+        })
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
         _selectedIDs.subtract(idSet)
         syncFullPageDetailWithSelection()
-        applyOptimisticState(issues: optimisticIssues, dependencies: optimisticDependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(
+                issueChanges: issueChanges,
+                removedDependencies: removedDependencies
+            )
+        )
 
         let commands = commands
         do {
@@ -968,6 +966,7 @@ extension BeadStore {
                 return rejectStaleMutation(targeting: projectURL)
             }
             mutations.discardMetadataMutations(for: ids)
+            settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
             announceCompletion(
                 requestedIDs.count == 1
@@ -979,7 +978,7 @@ extension BeadStore {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
                 return rejectStaleMutation(targeting: projectURL)
             }
-            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: optimisticIssues)
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             reconcileState.request(.mutation)
             let retryBaseline = retryBaseline(for: ids)
             reportMutationFailure(
@@ -1131,8 +1130,7 @@ extension BeadStore {
                     _ = settleMetadataMutation(
                         issueID: issueID,
                         mutationID: handle.id,
-                        succeeded: false,
-                        applyResolvedState: false
+                        succeeded: false
                     )
                 }
             }
@@ -1143,18 +1141,21 @@ extension BeadStore {
             )
         }
 
-        let snapshot = currentMutationSnapshot()
-        let optimisticIssues = snapshot.issues.map { issue in
-            guard targetIDSet.contains(issue.id),
-                  let resolved = mutations.metadataMutations[issue.id]?.resolvedIssue
-            else { return issue }
-            return replacingMetadata(.labels, in: issue, with: resolved)
+        var optimisticIssueChanges: [String: BeadProjectedIssueChange] = [:]
+        optimisticIssueChanges.reserveCapacity(targetIDSet.count)
+        for issueID in targetIDSet {
+            guard let resolved = mutations.metadataMutations[issueID]?.resolvedIssue else { continue }
+            optimisticIssueChanges[issueID] = .update(
+                BeadIssueMutationPatch(labels: .set(resolved.labels))
+            )
         }
         let lifetimeGeneration = beginMutation()
         defer { endMutation(generation: lifetimeGeneration) }
         let busyToken = beginPerceptibleBusy(issueIDs: targetIDSet)
         defer { endPerceptibleBusy(busyToken) }
-        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(issueChanges: optimisticIssueChanges)
+        )
 
         var remainingPlanCountByID: [String: Int] = [:]
         for plan in plans {
@@ -1218,8 +1219,7 @@ extension BeadStore {
                 settlementIsValid = settleMetadataMutation(
                     issueID: issueID,
                     mutationID: handle.id,
-                    succeeded: succeeded,
-                    applyResolvedState: false
+                    succeeded: succeeded
                 ) && settlementIsValid
                 remainingPlanCountByID[issueID, default: 1] -= 1
                 if remainingPlanCountByID[issueID] == 0 {
@@ -1246,13 +1246,13 @@ extension BeadStore {
                     settlementIsValid = settleMetadataMutation(
                         issueID: issueID,
                         mutationID: handle.id,
-                        succeeded: false,
-                        applyResolvedState: false
+                        succeeded: false
                     ) && settlementIsValid
                 }
             }
         }
         guard settlementIsValid else {
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             requestReconcile()
             return BulkMutationResult(
                 progress: mutationProgress,
@@ -1263,15 +1263,27 @@ extension BeadStore {
             )
         }
 
-        let finalSnapshot = currentMutationSnapshot()
-        let finalIssues = finalSnapshot.issues.map { issue in
-            guard targetIDSet.contains(issue.id) else { return issue }
-            let resolved = mutations.metadataMutations[issue.id]?.resolvedIssue
-                ?? mutations.metadataSettlement(for: issue.id)?.issue
-                ?? issue
-            return replacingMetadata(.labels, in: issue, with: resolved)
+        settleOptimisticProjection(id: projectionID, succeeded: false)
+        var finalIssueChanges: [String: BeadProjectedIssueChange] = [:]
+        finalIssueChanges.reserveCapacity(targetIDSet.count)
+        for issueID in targetIDSet {
+            guard let currentIssue = issue(with: issueID) else { continue }
+            let resolved = mutations.metadataMutations[issueID]?.resolvedIssue
+                ?? mutations.metadataSettlement(for: issueID)?.issue
+                ?? currentIssue
+            guard currentIssue.labels != resolved.labels else { continue }
+            finalIssueChanges[issueID] = .update(
+                BeadIssueMutationPatch(labels: .set(resolved.labels))
+            )
         }
-        applyOptimisticState(issues: finalIssues, dependencies: finalSnapshot.dependencies)
+        if !finalIssueChanges.isEmpty {
+            _ = applyOptimisticProjection(
+                BeadMutationProjectionEntry(
+                    issueChanges: finalIssueChanges,
+                    settlement: .succeeded
+                )
+            )
+        }
         if nextPlanIndex > 0 {
             reconcileState.request(.mutation)
         }
@@ -1330,14 +1342,14 @@ extension BeadStore {
         }
         let ids = Array(Set(issueIDs)).sorted()
         guard !ids.isEmpty else { return false }
-        guard ids.allSatisfy({ index.issue(with: $0)?.isSystemRecord != true }) else {
+        guard ids.allSatisfy({ issue(with: $0)?.isSystemRecord != true }) else {
             lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
             return false
         }
         if let type {
             guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(type),
                   ids.allSatisfy({ id in
-                      guard let issue = index.issue(with: id) else { return false }
+                      guard let issue = issue(with: id) else { return false }
                       return !issue.isGate
                   }) else {
                 lastError = BeadIssueWorkflowPolicy.normalMutationTypeError(for: type)
@@ -1371,7 +1383,7 @@ extension BeadStore {
         var metadataMutationsByIssueID: [String: MetadataMutationHandle] = [:]
         if case .set = deferUntil {
             for issueID in ids {
-                guard let issue = index.issue(with: issueID) else { continue }
+                guard let issue = issue(with: issueID) else { continue }
                 metadataMutationsByIssueID[issueID] = beginMetadataMutation(
                     issueID: issueID,
                     originalIssue: issue,
@@ -1384,38 +1396,39 @@ extension BeadStore {
                 )
             }
         }
-        let snapshot = currentMutationSnapshot()
         let idSet = Set(ids)
         let ancestorIDSet = Set(ancestorIDs)
         let now = Date()
-        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
-            if ancestorIDSet.contains(issue.id), let ancestorReopenStatus {
-                var copy = issue
-                copy.status = ancestorReopenStatus
-                copy.closedAt = nil
-                copy.updatedAt = now
-                return copy
+        var issueChanges: [String: BeadProjectedIssueChange] = [:]
+        issueChanges.reserveCapacity(idSet.count + ancestorIDSet.count)
+        if let ancestorReopenStatus {
+            for issueID in ancestorIDSet {
+                issueChanges[issueID] = .update(
+                    BeadIssueMutationPatch(
+                        status: .set(ancestorReopenStatus),
+                        updatedAt: .set(now),
+                        closedAt: .set(nil)
+                    )
+                )
             }
-            guard idSet.contains(issue.id) else { return issue }
-            var copy = issue
-            if let status { copy.status = status }
-            if let type { copy.issueType = type }
-            if let priority { copy.priority = priority }
-            switch deferUntil {
-            case .unchanged:
-                break
-            case .set(let date):
-                copy.deferUntil = date
-            }
+        }
+        for issueID in idSet {
+            guard let originalIssue = issue(with: issueID) else { continue }
+            var patch = BeadIssueMutationPatch(updatedAt: .set(now))
             if let status {
-                copy.closedAt = statusClosesBeads(status) ? (copy.closedAt ?? now) : nil
+                patch.status = .set(status)
+                patch.closedAt = .set(statusClosesBeads(status) ? (originalIssue.closedAt ?? now) : nil)
             }
-            copy.updatedAt = now
-            return copy
+            if let type { patch.issueType = .set(type) }
+            if let priority { patch.priority = .set(priority) }
+            if case .set(let date) = deferUntil { patch.deferUntil = .set(date) }
+            issueChanges[issueID] = .update(patch)
         }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
-        applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(issueChanges: issueChanges)
+        )
 
         let idsForWrite: [String]
         if makesDone {
@@ -1451,19 +1464,22 @@ extension BeadStore {
                 )
             }
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration),
-                  settleMetadataMutations(metadataMutationsByIssueID, succeeded: true)
+                  settleMetadataMutations(
+                      metadataMutationsByIssueID,
+                      succeeded: true
+                  )
             else { return rejectStaleMutation(targeting: projectURL) }
+            settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
             return true
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration),
                   settleMetadataMutations(
                     metadataMutationsByIssueID,
-                    succeeded: false,
-                    applyResolvedState: false
+                    succeeded: false
                   )
             else { return rejectStaleMutation(targeting: projectURL) }
-            rollbackOptimisticState(to: snapshot, preservingConcurrentMetadataFrom: optimisticIssues)
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
@@ -1517,18 +1533,27 @@ extension BeadStore {
             originalIssue: originalIssue,
             patch: patch
         )
-        let snapshot = currentMutationSnapshot()
-        let optimisticIssues = snapshot.issues.map { issue -> BeadIssue in
-            guard issue.id == issueID else { return issue }
-            return patch.applying(to: issue)
+        let projectedIssue = patch.applying(to: originalIssue)
+        var issuePatch = BeadIssueMutationPatch()
+        if patch.updatesAssignee {
+            issuePatch.assignee = .set(projectedIssue.assignee)
+        }
+        if patch.updatesLabels {
+            issuePatch.labels = .set(projectedIssue.labels)
+        }
+        if case .set = dueAt {
+            issuePatch.dueAt = .set(projectedIssue.dueAt)
+        }
+        if case .set = deferUntil {
+            issuePatch.deferUntil = .set(projectedIssue.deferUntil)
         }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
         let perceptibleBusyToken = beginPerceptibleBusy(issueIDs: [issueID])
         defer { endPerceptibleBusy(perceptibleBusyToken) }
-        if optimisticIssues != snapshot.issues {
-            applyOptimisticState(issues: optimisticIssues, dependencies: snapshot.dependencies)
-        }
+        let projectionID = applyOptimisticProjection(
+            BeadMutationProjectionEntry(issueChanges: [issueID: .update(issuePatch)])
+        )
 
         let commands = commands
         var attemptedWrite = false
@@ -1558,6 +1583,7 @@ extension BeadStore {
                 mutationID: metadataMutation.id,
                 succeeded: true
             ) else { return false }
+            settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
             return true
         } catch {
@@ -1569,6 +1595,7 @@ extension BeadStore {
                 mutationID: metadataMutation.id,
                 succeeded: false
             ) else { return false }
+            settleOptimisticProjection(id: projectionID, succeeded: false)
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }

@@ -15,6 +15,7 @@ extension BeadStore {
         // current, so a pending debounce can't be dropped by the switch.
         flushPendingWorkspaceState()
         project.cancelLifecycleWork()
+        mutations.writeQueue.invalidatePending()
         mutations.resetMetadataMutations()
         workspace.cancelQueryWork()
         detail.cancelSelectionWork()
@@ -174,6 +175,11 @@ extension BeadStore {
     private func clearLoadedProjectData() {
         project.cancelReconciliationWork()
         reconcileState.reset()
+        projectionGeneration &+= 1
+        projectionMaterializationTask?.cancel()
+        projectionMaterializationTask = nil
+        mutations.projection.reset()
+        authoritativeIndex = .empty
         index = .empty
         stateLabelOverridesByIssueID = [:]
         _filteredIssueIDs = []
@@ -451,9 +457,14 @@ extension BeadStore {
         )
         _projectReadiness = .ready
         let loadedIndex = indexMatchingCurrentProjectPreferences(from: loadedProject.index)
-        index = metadataBaseline.map {
+        let refreshedAuthoritativeIndex = metadataBaseline.map {
             indexPreservingMetadataChanges(in: loadedIndex, since: $0)
         } ?? loadedIndex
+        authoritativeIndex = refreshedAuthoritativeIndex
+        mutations.projection.reconcile(
+            authoritative: loadedProject.snapshotRefreshWarning == nil
+        )
+        index = refreshedAuthoritativeIndex
         reconcileStateLabelOverrides(
             authoritative: loadedProject.snapshotRefreshWarning == nil
         )
@@ -519,6 +530,9 @@ extension BeadStore {
             )
             requestReconcile(trigger: .externalMarker)
         }
+        if !mutations.projection.isEmpty {
+            scheduleProjectionMaterialization()
+        }
         scheduleReconcileIfIdle()
     }
 
@@ -544,7 +558,7 @@ extension BeadStore {
             }
 
             var mergedIssue = loadedIssue
-            if let currentIssue = index.issue(with: issueID) {
+            if let currentIssue = issue(with: issueID) {
                 mergedIssue = replacingMetadata(writeFields, in: mergedIssue, with: currentIssue)
             }
             if let settlement = mutations.metadataSettlement(for: issueID) {

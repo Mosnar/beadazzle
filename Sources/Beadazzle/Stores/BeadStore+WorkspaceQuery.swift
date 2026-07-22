@@ -589,14 +589,16 @@ extension BeadStore {
 
     internal func rebuildIndexForProjectIndexPreferenceChange() {
         guard !index.issues.isEmpty || !index.dependencies.isEmpty || index.semantics != .empty else { return }
-        index = BeadProjectIndex(
-            issues: index.issues,
-            dependencies: index.dependencies,
-            semantics: index.semantics,
+        let rebuiltAuthoritativeIndex = BeadProjectIndex(
+            issues: authoritativeIndex.issues,
+            dependencies: authoritativeIndex.dependencies,
+            semantics: authoritativeIndex.semantics,
             staleCutoffDays: staleCutoffDays,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-            reusingSearchTextFrom: index
+            reusingSearchTextFrom: authoritativeIndex
         )
+        authoritativeIndex = rebuiltAuthoritativeIndex
+        index = rebuiltAuthoritativeIndex
         _contentRevision &+= 1
         scheduleSavedViewCountRebuild()
         _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
@@ -604,6 +606,9 @@ extension BeadStore {
         applyFilters()
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
+        if !mutations.projection.isEmpty {
+            scheduleProjectionMaterialization()
+        }
     }
 
     internal func indexMatchingCurrentProjectPreferences(from loadedIndex: BeadProjectIndex) -> BeadProjectIndex {

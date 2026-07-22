@@ -355,7 +355,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
             awaitID: nil
         )
 
-        XCTAssertEqual(createdIssueID, "bd-created")
+        XCTAssertNotNil(createdIssueID)
         XCTAssertTrue(createdGate)
     }
 
@@ -906,7 +906,9 @@ private struct TestBeadsCommands: BeadsCommanding {
         return context
     }
 
-    func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
+    func create(projectURL: URL, draft: IssueDraft) async throws -> String {
+        draft.id ?? "bd-created"
+    }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {}
 

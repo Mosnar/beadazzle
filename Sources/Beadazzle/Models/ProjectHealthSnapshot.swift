@@ -6,6 +6,8 @@ enum ProjectHealthAction: Equatable, Sendable {
     case pullingIssues
     case pushingIssues
     case syncingBackup
+    case compactingDatabase
+    case flatteningDatabase
 
     var title: String {
         switch self {
@@ -19,8 +21,63 @@ enum ProjectHealthAction: Equatable, Sendable {
             "Pushing issues"
         case .syncingBackup:
             "Syncing backup"
+        case .compactingDatabase:
+            "Compacting database"
+        case .flatteningDatabase:
+            "Flattening database"
         }
     }
+}
+
+enum BeadsDoltMaintenanceKind: String, Identifiable, Sendable {
+    case compact
+    case flatten
+
+    var id: Self { self }
+}
+
+struct BeadsDoltCompactPreview: Codable, Equatable, Sendable {
+    var totalCommits: Int
+    var oldCommits: Int
+    var recentCommits: Int
+    var cutoffDays: Int
+
+    enum CodingKeys: String, CodingKey {
+        case totalCommits = "total_commits"
+        case oldCommits = "old_commits"
+        case recentCommits = "recent_commits"
+        case cutoffDays = "cutoff_days"
+    }
+
+    static func decode(from text: String) throws -> Self {
+        try JSONDecoder().decode(Self.self, from: Data(text.utf8))
+    }
+}
+
+struct BeadsDoltFlattenPreview: Codable, Equatable, Sendable {
+    var commitCount: Int
+    var wouldFlatten: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case commitCount = "commit_count"
+        case wouldFlatten = "would_flatten"
+    }
+
+    static func decode(from text: String) throws -> Self {
+        try JSONDecoder().decode(Self.self, from: Data(text.utf8))
+    }
+}
+
+struct BeadsDoltMaintenancePreview: Equatable, Sendable {
+    var compact: ProjectHealthValue<BeadsDoltCompactPreview>
+    var flatten: ProjectHealthValue<BeadsDoltFlattenPreview>
+    var embeddedDatabaseSize: Int64?
+
+    static let unavailable = Self(
+        compact: .unavailable("Database compaction is not supported by this command service."),
+        flatten: .unavailable("Database flattening is not supported by this command service."),
+        embeddedDatabaseSize: nil
+    )
 }
 
 struct ProjectHealthActionFailure: Equatable, Sendable {
@@ -40,6 +97,13 @@ struct ProjectHealthActionFailure: Equatable, Sendable {
             message: "The Dolt database was updated, but Beadazzle could not export its readable snapshot. The issue list may be stale. \(message)"
         )
     }
+
+    static func maintenanceCompletedButSnapshotRefreshFailed(_ message: String) -> ProjectHealthActionFailure {
+        ProjectHealthActionFailure(
+            title: "Maintenance completed, but refresh failed",
+            message: "The Dolt database maintenance finished, but Beadazzle could not export its readable snapshot. The issue list may be stale. \(message)"
+        )
+    }
 }
 
 struct ProjectHealthSnapshot: Equatable, Sendable {
@@ -50,6 +114,7 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
     var hooks: ProjectHealthValue<BeadsHooksStatus>
     var backup: ProjectHealthValue<BeadsBackupStatus>
     var snapshotFile: ProjectSnapshotFileStatus
+    var maintenance: BeadsDoltMaintenancePreview = .unavailable
 
     static func load(
         projectURL: URL,
@@ -75,9 +140,19 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
         async let backup = ProjectHealthValue.capture {
             try await commands.loadBackupStatus(projectURL: projectURL)
         }
+        async let maintenance = commands.loadDoltMaintenancePreview(projectURL: projectURL)
 
         async let context = ProjectHealthValue.capture {
             try await commands.loadProjectContext(projectURL: projectURL)
+        }
+
+        var maintenancePreview = await maintenance
+        if environment?.storageMode == .embedded,
+           let databaseURL = environment?.beadsDirectoryURL
+            .appendingPathComponent("embeddeddolt", isDirectory: true) {
+            maintenancePreview.embeddedDatabaseSize = await Task.detached(priority: .utility) {
+                Self.directorySize(at: databaseURL)
+            }.value
         }
 
         return ProjectHealthSnapshot(
@@ -87,8 +162,26 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
             doltRemotes: await doltRemotes,
             hooks: await hooks,
             backup: await backup,
-            snapshotFile: snapshotFile
+            snapshotFile: snapshotFile,
+            maintenance: maintenancePreview
         )
+    }
+
+    private static func directorySize(at directoryURL: URL) -> Int64? {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: directoryURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants]
+        ) else { return nil }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else { continue }
+            total += Int64(size)
+        }
+        return total
     }
 }
 
@@ -653,6 +746,7 @@ struct BeadsProjectContext: Codable, Equatable, Sendable {
     var isRedirected: Bool?
     var isWorktree: Bool?
     var projectID: String?
+    var issuePrefix: String? = nil
     var repoRoot: String?
     var role: String?
     var schemaVersion: Int?
@@ -669,6 +763,7 @@ struct BeadsProjectContext: Codable, Equatable, Sendable {
         case isRedirected = "is_redirected"
         case isWorktree = "is_worktree"
         case projectID = "project_id"
+        case issuePrefix = "issue_prefix"
         case repoRoot = "repo_root"
         case role
         case schemaVersion = "schema_version"

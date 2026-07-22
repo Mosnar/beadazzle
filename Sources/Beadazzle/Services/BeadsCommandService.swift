@@ -58,6 +58,9 @@ protocol BeadsCommanding: Sendable {
     func pullDoltRemote(projectURL: URL) async throws
     func pushDoltRemote(projectURL: URL) async throws
     func syncBackup(projectURL: URL) async throws
+    func loadDoltMaintenancePreview(projectURL: URL) async -> BeadsDoltMaintenancePreview
+    func compactDoltDatabase(projectURL: URL, retainingDays: Int) async throws
+    func flattenDoltDatabase(projectURL: URL) async throws
 
     func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate?
     func resolveGate(projectURL: URL, id: String, reason: String?) async throws
@@ -117,6 +120,24 @@ extension BeadsCommanding {
         throw BeadError.commandFailed(command: "bd backup sync", output: "Backup sync is not supported by this command service.")
     }
 
+    func loadDoltMaintenancePreview(projectURL _: URL) async -> BeadsDoltMaintenancePreview {
+        .unavailable
+    }
+
+    func compactDoltDatabase(projectURL _: URL, retainingDays _: Int) async throws {
+        throw BeadError.commandFailed(
+            command: "bd compact",
+            output: "Database compaction is not supported by this command service."
+        )
+    }
+
+    func flattenDoltDatabase(projectURL _: URL) async throws {
+        throw BeadError.commandFailed(
+            command: "bd flatten",
+            output: "Database flattening is not supported by this command service."
+        )
+    }
+
     // Gate support is optional: conformers that don't shell out to `bd` (test doubles) get
     // safe no-op defaults so a `bd` without gate support degrades to an empty Gates section.
     func loadGateDetail(projectURL _: URL, id _: String) async throws -> BeadGate? { nil }
@@ -169,6 +190,10 @@ extension BeadsCommanding {
             deferUntil: .unchanged
         )
     }
+}
+
+private struct BeadsProjectLocation: Decodable {
+    var prefix: String?
 }
 
 struct BeadsCommandService {
@@ -428,13 +453,27 @@ struct BeadsCommandService {
 
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
         do {
+            async let locationText: String? = try? await runOutput(
+                projectURL: projectURL,
+                arguments: ["--readonly", "where", "--json"],
+                terminatesOnCancel: true,
+                timeout: readOnlyCommandTimeout
+            )
             let text = try await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "context", "--json"],
                 terminatesOnCancel: true,
                 timeout: readOnlyCommandTimeout
             )
-            return try BeadsProjectContext.decode(from: text)
+            var context = try BeadsProjectContext.decode(from: text)
+            if let locationText = await locationText,
+               let location = try? JSONDecoder().decode(
+                BeadsProjectLocation.self,
+                from: Data(locationText.utf8)
+               ) {
+                context.issuePrefix = location.prefix?.nilIfBlank
+            }
+            return context
         } catch {
             if case BeadError.commandFailed(_, let output) = error,
                Self.contextReportsMissingBeadsDirectory(output) {
@@ -526,6 +565,48 @@ struct BeadsCommandService {
 
     func syncBackup(projectURL: URL) async throws {
         try await run(projectURL: projectURL, arguments: ["backup", "sync"])
+    }
+
+    func loadDoltMaintenancePreview(projectURL: URL) async -> BeadsDoltMaintenancePreview {
+        async let compact = ProjectHealthValue.capture {
+            let text = try await runOutput(
+                projectURL: projectURL,
+                arguments: ["--readonly", "compact", "--dry-run", "--json"],
+                terminatesOnCancel: true,
+                timeout: readOnlyCommandTimeout
+            )
+            return try BeadsDoltCompactPreview.decode(from: text)
+        }
+        async let flatten = ProjectHealthValue.capture {
+            let text = try await runOutput(
+                projectURL: projectURL,
+                arguments: ["--readonly", "flatten", "--dry-run", "--json"],
+                terminatesOnCancel: true,
+                timeout: readOnlyCommandTimeout
+            )
+            return try BeadsDoltFlattenPreview.decode(from: text)
+        }
+        return BeadsDoltMaintenancePreview(
+            compact: await compact,
+            flatten: await flatten,
+            embeddedDatabaseSize: nil
+        )
+    }
+
+    func compactDoltDatabase(projectURL: URL, retainingDays: Int = 30) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: ["compact", "--days", String(max(1, retainingDays)), "--force", "--json"],
+            timeout: remoteSyncCommandTimeout
+        )
+    }
+
+    func flattenDoltDatabase(projectURL: URL) async throws {
+        try await run(
+            projectURL: projectURL,
+            arguments: ["flatten", "--force", "--json"],
+            timeout: remoteSyncCommandTimeout
+        )
     }
 
     private func run(
@@ -1078,6 +1159,7 @@ enum BeadsCommandArguments {
 
     static func create(draft: IssueDraft, silent: Bool = false) -> [String] {
         var arguments = ["create", draft.title, "--type", draft.issueType, "--priority", "P\(draft.priority)"]
+        appendNonEmpty(&arguments, flag: "--id", value: draft.id)
         appendNonEmpty(&arguments, flag: "--description", value: draft.description)
         appendNonEmpty(&arguments, flag: "--design", value: draft.design)
         appendNonEmpty(&arguments, flag: "--acceptance", value: draft.acceptanceCriteria)
@@ -1086,7 +1168,13 @@ enum BeadsCommandArguments {
         appendNonEmpty(&arguments, flag: "--due", value: BeadFormatters.commandDate(draft.dueAt))
         appendNonEmpty(&arguments, flag: "--defer", value: BeadFormatters.commandDate(draft.deferUntil))
         appendNonEmpty(&arguments, flag: "--labels", value: normalizedLabelArgument(draft.labelsText))
-        appendNonEmpty(&arguments, flag: "--parent", value: draft.parentID)
+        if draft.id != nil, let parentID = draft.parentID?.nilIfBlank {
+            // bd rejects --id together with --parent. The equivalent parent-child
+            // dependency preserves hierarchy while allowing a client-assigned id.
+            arguments += ["--deps", "parent-child:\(parentID)"]
+        } else {
+            appendNonEmpty(&arguments, flag: "--parent", value: draft.parentID)
+        }
         if silent {
             arguments.append("--silent")
         }

@@ -119,12 +119,16 @@ struct CloseBeadReasonSheet: View {
         isClosing = true
         let childIssueIDs = includingChildren ? store.openChildIssues(forClosing: request.issueIDs).map(\.id) : []
         let issueIDs = uniqueSortedIssueIDs(request.issueIDs + childIssueIDs)
-        Task { @MainActor in
-            let didClose = await store.close(issueIDs: issueIDs, reason: reason.nilIfBlank)
+        guard let submission = store.submitClose(
+            issueIDs: issueIDs,
+            reason: reason.nilIfBlank
+        ) else {
             isClosing = false
-            if didClose {
-                dismiss()
-            }
+            return
+        }
+        dismiss()
+        Task { @MainActor in
+            _ = await submission.value
         }
     }
 

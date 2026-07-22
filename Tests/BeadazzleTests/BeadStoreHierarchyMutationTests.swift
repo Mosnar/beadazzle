@@ -42,7 +42,9 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
         let didDelete = await loaded.store.delete(issueIDs: ["bd-parent"])
 
         XCTAssertTrue(didDelete)
-        XCTAssertTrue(loaded.store.issues.isEmpty)
+        try await waitUntil("optimistic delete materialization") {
+            loaded.store.issues.isEmpty
+        }
         let calls = await loaded.commands.deleteCalls
         XCTAssertEqual(calls.map(\.ids), [["bd-parent", "bd-parent.1"]])
     }
@@ -60,7 +62,9 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
         let didDelete = await loaded.store.delete(issueIDs: ["bd-parent"] + childIDs)
 
         XCTAssertTrue(didDelete)
-        XCTAssertTrue(loaded.store.issues.isEmpty)
+        try await waitUntil("optimistic delete materialization") {
+            loaded.store.issues.isEmpty
+        }
         let calls = await loaded.commands.deleteCalls
         XCTAssertEqual(calls.map(\.ids), [["bd-child", "bd-grandchild", "bd-parent"]])
     }

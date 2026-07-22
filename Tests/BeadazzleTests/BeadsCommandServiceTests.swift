@@ -24,6 +24,30 @@ final class BeadsCommandServiceTests: XCTestCase {
         }
     }
 
+    func testProjectContextIncludesAuthoritativeIssuePrefixFromWhere() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly context --json")
+            printf '%s\n' '{"backend":"dolt","database":"database-name","dolt_mode":"embedded"}'
+            ;;
+          "--readonly where --json")
+            printf '%s\n' '{"prefix":"actual-prefix"}'
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let context = try await service.loadProjectContext(projectURL: projectURL)
+
+        XCTAssertEqual(context.issuePrefix, "actual-prefix")
+        XCTAssertEqual(context.database, "database-name")
+    }
+
     func testDecodeCommentsHandlesCurrentAndLegacyFieldNames() throws {
         let data = Data(
             #"[{"id":12,"issue_id":"bd-1","author":"Riley","text":"First","created_at":"2026-07-03T20:58:35Z"},{"issueId":"bd-1","body":"Second","createdAt":"2026-07-03T21:58:35.123Z"}]"#.utf8
@@ -290,6 +314,54 @@ final class BeadsCommandServiceTests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Timed out waiting for `bd` to finish."))
         }
+    }
+
+    func testDoltMaintenancePreviewDecodesCurrentCompactAndFlattenSchemas() throws {
+        let compact = try BeadsDoltCompactPreview.decode(from: """
+        {"total_commits":160,"old_commits":42,"recent_commits":118,"cutoff_days":30}
+        """)
+        let flatten = try BeadsDoltFlattenPreview.decode(from: """
+        {"commit_count":160,"would_flatten":true}
+        """)
+
+        XCTAssertEqual(compact.totalCommits, 160)
+        XCTAssertEqual(compact.oldCommits, 42)
+        XCTAssertEqual(compact.recentCommits, 118)
+        XCTAssertEqual(compact.cutoffDays, 30)
+        XCTAssertEqual(flatten.commitCount, 160)
+        XCTAssertTrue(flatten.wouldFlatten)
+    }
+
+    func testDoltMaintenanceUsesDryRunProbesAndExplicitForcedWrites() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let logURL = projectURL.appendingPathComponent("commands.log")
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        printf '%s\n' "$*" >> "$PWD/commands.log"
+        case "$*" in
+          "--readonly compact --dry-run --json")
+            printf '%s\n' '{"total_commits":12,"old_commits":5,"recent_commits":7,"cutoff_days":30}'
+            ;;
+          "--readonly flatten --dry-run --json")
+            printf '%s\n' '{"commit_count":12,"would_flatten":true}'
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let preview = await service.loadDoltMaintenancePreview(projectURL: projectURL)
+        try await service.compactDoltDatabase(projectURL: projectURL, retainingDays: 30)
+        try await service.flattenDoltDatabase(projectURL: projectURL)
+
+        XCTAssertEqual(preview.compact.value?.oldCommits, 5)
+        XCTAssertEqual(preview.flatten.value?.commitCount, 12)
+        let commands = try String(contentsOf: logURL, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        XCTAssertTrue(commands.contains("--readonly compact --dry-run --json"))
+        XCTAssertTrue(commands.contains("--readonly flatten --dry-run --json"))
+        XCTAssertTrue(commands.contains("compact --days 30 --force --json"))
+        XCTAssertTrue(commands.contains("flatten --force --json"))
     }
 
     func testHooksStatusParsesMissingHooksAsActionable() {

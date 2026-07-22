@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Bead saves, closes, creates, metadata edits, relationship changes, and deletes now update immediately without rebuilding the full project on the main thread or waiting for a post-create snapshot export.
+- Project Settings now shows Dolt database size and commit history, with backup-first tools to compact older commits or flatten excessive history when database growth begins slowing writes.
 - Project Storage now shows configured Dolt remotes, automatic-push status, and real backup destinations, with explicit Pull and Push actions, serialized sync alongside issue edits, clear partial-refresh errors, and better separation between remote sync, readable snapshots, optional Git hooks, and backups.
 - Closed beads no longer offer or accept new sub-issues.
 - Fixed removing a parent from child beads whose hierarchy was stored as a dependency.
