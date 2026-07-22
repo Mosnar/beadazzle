@@ -13,16 +13,14 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
-- Status and type dropdowns now show positional number shortcuts, while priority uses matching 0–4 shortcuts, so metadata can be selected with a single key while the dropdown is open.
-- Project Settings is now organized into Project, Issue Model, and Storage groups, with a focused Overview and separate Sync & Backup, Maintenance, and Diagnostics panes instead of one long Storage page.
-- Bead saves, closes, creates, metadata edits, relationship changes, and deletes now update immediately without rebuilding the full project on the main thread or waiting for a post-create snapshot export.
-- Project Settings now shows Beads database size and history, with backup-first tools to compact or flatten Beads' internal Dolt history when database growth begins slowing writes, without rewriting project Git history. Maintenance warns about shared-history coordination and tagged history, and never auto-pushes a rewrite.
-- Project Storage now shows configured Dolt remotes, automatic-push status, and real backup destinations, with explicit Pull and Push actions, serialized sync alongside issue edits, clear partial-refresh errors, and better separation between remote sync, readable snapshots, optional Git hooks, and backups.
-- Closed beads no longer offer or accept new sub-issues.
-- Fixed removing a parent from child beads whose hierarchy was stored as a dependency.
-- Fixed newly created sub-issues so Save Changes and Command-S become available immediately without closing and reopening the detail view.
-- Fixed list bullets appearing too high in Description, Design, Acceptance Criteria, and Notes.
-- When automatic update checks are enabled, Beadazzle now checks at every launch and refreshes promptly after switching the beta-update preference.
+## [1.4.0] - 2026-07-21
+
+- Added one-key shortcuts for status, type, and priority menus.
+- Reorganized Project Settings with clearer sync, backup, database health, and maintenance controls.
+- Bead edits and creation now appear immediately without a full project reload.
+- Fixed sub-issue and parent relationship issues, including preventing new sub-issues on closed beads.
+- Fixed list bullet alignment in text fields.
+- Improved automatic update checks at launch and after changing the beta preference.
 
 ## [1.3.0] - 2026-07-17
 
@@ -261,7 +259,9 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.4.0
+[1.3.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.0.0
