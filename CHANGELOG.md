@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Status and type dropdowns now show positional number shortcuts, while priority uses matching 0–4 shortcuts, so metadata can be selected with a single key while the dropdown is open.
 - Project Settings is now organized into Project, Issue Model, and Storage groups, with a focused Overview and separate Sync & Backup, Maintenance, and Diagnostics panes instead of one long Storage page.
 - Bead saves, closes, creates, metadata edits, relationship changes, and deletes now update immediately without rebuilding the full project on the main thread or waiting for a post-create snapshot export.
 - Project Settings now shows Beads database size and history, with backup-first tools to compact or flatten Beads' internal Dolt history when database growth begins slowing writes, without rewriting project Git history. Maintenance warns about shared-history coordination and tagged history, and never auto-pushes a rewrite.

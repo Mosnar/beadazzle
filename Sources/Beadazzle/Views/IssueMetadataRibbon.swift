@@ -11,9 +11,10 @@ struct IssueMetadataRibbon: View {
                     title: "Status",
                     systemImage: store.statusSymbol(for: draft.status),
                     tint: store.statusColor(for: draft.status),
-                    options: store.statusChangeOptions(excluding: draft.status),
+                    options: store.statusOptions(including: draft.status),
                     selected: $draft.status,
                     presentation: .ribbonChip,
+                    numericShortcutStart: 1,
                     displayValue: { $0 }
                 )
 
@@ -23,6 +24,7 @@ struct IssueMetadataRibbon: View {
                     options: store.mutableTypeOptions(including: draft.issueType),
                     selected: $draft.issueType,
                     presentation: .ribbonChip,
+                    numericShortcutStart: 1,
                     displayValue: { $0 }
                 )
 
@@ -33,6 +35,7 @@ struct IssueMetadataRibbon: View {
                     options: Array(0...4),
                     selected: $draft.priority,
                     presentation: .ribbonChip,
+                    numericShortcutStart: 0,
                     displayValue: { "P\($0)" }
                 )
 

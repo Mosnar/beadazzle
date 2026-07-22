@@ -40,7 +40,7 @@ struct IssueInspector: View {
                     InspectorRowDivider()
                     ResolvedGateStatusRepairRow(
                         gates: resolvedGates,
-                        statusOptions: store.statusChangeOptions(excluding: draft.status),
+                        statusOptions: store.statusOptions(including: draft.status),
                         selectedStatus: $draft.status
                     )
                 }
@@ -141,6 +141,10 @@ struct ResolvedGateStatusRepairRow: View {
     @State private var isPresented = false
     @State private var isHovered = false
 
+    private var hasAlternativeStatusOptions: Bool {
+        statusOptions.contains { $0 != selectedStatus }
+    }
+
     var body: some View {
         Button {
             isPresented.toggle()
@@ -155,12 +159,12 @@ struct ResolvedGateStatusRepairRow: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(statusOptions.isEmpty)
+        .disabled(!hasAlternativeStatusOptions)
         .onHover { isHovered = $0 }
         .help(helpText)
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 2) {
-                if statusOptions.isEmpty {
+                if !hasAlternativeStatusOptions {
                     Text("No statuses available")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -169,6 +173,9 @@ struct ResolvedGateStatusRepairRow: View {
                     ForEach(statusOptions, id: \.self) { status in
                         InspectorOptionItemRow(
                             title: status,
+                            shortcut: InspectorOptionShortcut.numeric(
+                                at: statusOptions.firstIndex(of: status)
+                            ),
                             isSelected: status == selectedStatus
                         ) {
                             selectedStatus = status
@@ -186,7 +193,7 @@ struct ResolvedGateStatusRepairRow: View {
 
     private var helpText: String {
         let gateIDs = gates.map(\.id).joined(separator: ", ")
-        guard !statusOptions.isEmpty else {
+        guard hasAlternativeStatusOptions else {
             return "Gate \(gateIDs) is closed, but no other statuses are available."
         }
         return "Gate \(gateIDs) is closed; choose a status to update the bead."
