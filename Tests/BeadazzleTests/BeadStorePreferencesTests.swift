@@ -637,15 +637,17 @@ final class BeadStorePreferencesTests: XCTestCase {
         await store.waitForPendingSavedViewCountRebuild()
 
         let saved = try XCTUnwrap(store.savedViews.first)
+        let savedQuery = try XCTUnwrap(saved.smartQuery)
+        let savedSort = try XCTUnwrap(saved.savedSort)
         XCTAssertEqual(saved.name, "Open Tasks")
         XCTAssertEqual(saved.symbolName, BeadSavedViewSymbols.fallback)
-        XCTAssertEqual(saved.query.basePreset, .all)
-        XCTAssertEqual(saved.query.statusFilters, ["open"])
-        XCTAssertEqual(saved.query.typeFilters, ["task"])
-        XCTAssertEqual(saved.query.priorityFilters, [1])
-        XCTAssertEqual(saved.query.searchText, "Example")
-        XCTAssertEqual(saved.ordering.fallbackSort.field, .updated)
-        XCTAssertEqual(saved.ordering.fallbackSort.direction, .descending)
+        XCTAssertEqual(savedQuery.basePreset, .all)
+        XCTAssertEqual(savedQuery.statusFilters, ["open"])
+        XCTAssertEqual(savedQuery.typeFilters, ["task"])
+        XCTAssertEqual(savedQuery.priorityFilters, [1])
+        XCTAssertEqual(savedQuery.searchText, "Example")
+        XCTAssertEqual(savedSort.field, .updated)
+        XCTAssertEqual(savedSort.direction, .descending)
         XCTAssertEqual(store.activeSavedViewID, saved.id)
         XCTAssertEqual(store.count(forSavedViewID: saved.id), 1)
 
@@ -677,6 +679,203 @@ final class BeadStorePreferencesTests: XCTestCase {
         otherStore.openProject(otherProjectURL)
         try await waitUntil { !otherStore.isLoading && otherStore.issue(with: "other-1") != nil }
         XCTAssertTrue(otherStore.savedViews.isEmpty)
+    }
+
+    func testFolderWorkflowPreservesManualOrderSupportsTransientFiltersAndPersists() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject([
+            issueLine(id: "bd-1", status: "open", type: "task"),
+            issueLine(id: "bd-2", status: "closed", type: "bug"),
+            issueLine(id: "bd-3", status: "open", type: "task")
+        ].joined(separator: "\n"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-3") != nil }
+
+        let folderID = try XCTUnwrap(store.createFolder(
+            name: "Cleanup Sprint",
+            issueIDs: ["bd-3", "bd-1", "bd-2", "bd-1", "missing"]
+        ))
+        await store.waitForPendingQueryRecompute()
+        await store.waitForPendingSavedViewCountRebuild()
+
+        XCTAssertEqual(store.activeSavedViewID, folderID)
+        XCTAssertEqual(store.selectedBookmark, .all)
+        XCTAssertEqual(store.listOrdering, .manual)
+        XCTAssertEqual(store.folderIssueIDs(id: folderID), ["bd-3", "bd-1", "bd-2"])
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-3", "bd-1", "bd-2"])
+        XCTAssertEqual(store.count(forSavedViewID: folderID), 3)
+        XCTAssertEqual(store.issueListMode, .outline)
+        XCTAssertEqual(store.effectiveIssueListMode, .flat)
+        XCTAssertTrue(store.canReorderActiveFolder)
+
+        store.statusFilters = ["open"]
+        try await waitUntil { store.filteredIssueIDs == ["bd-3", "bd-1"] }
+        XCTAssertEqual(store.activeSavedViewID, folderID)
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-3", "bd-1"])
+        XCTAssertFalse(store.canReorderActiveFolder)
+
+        store.clearFilters()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertTrue(store.moveIssueIDs(["bd-3"], inFolder: folderID, toOffset: 3))
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.folderIssueIDs(id: folderID), ["bd-1", "bd-2", "bd-3"])
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1", "bd-2", "bd-3"])
+
+        store.selectListSort(.title)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(
+            store.listOrdering,
+            .sorted(BeadSavedViewSort(field: .title, direction: .ascending))
+        )
+        XCTAssertEqual(store.activeSavedViewID, folderID)
+        XCTAssertFalse(store.canReorderActiveFolder)
+
+        store.selectManualFolderOrdering()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1", "bd-2", "bd-3"])
+        XCTAssertTrue(store.canReorderActiveFolder)
+        XCTAssertTrue(store.moveIssueIDs(["bd-1", "bd-3"], inFolder: folderID, toOffset: 3))
+        XCTAssertEqual(store.folderIssueIDs(id: folderID), ["bd-2", "bd-1", "bd-3"])
+        XCTAssertTrue(store.moveIssueIDs(["bd-1", "bd-3"], inFolder: folderID, toOffset: 0))
+        XCTAssertEqual(store.folderIssueIDs(id: folderID), ["bd-1", "bd-3", "bd-2"])
+        XCTAssertFalse(store.addIssueIDs(["bd-1", "missing"], toFolder: folderID))
+        XCTAssertTrue(store.removeIssueIDs(["bd-2"], fromFolder: folderID))
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.folderIssueIDs(id: folderID), ["bd-1", "bd-3"])
+
+        store.applyBookmark(.all)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertNil(store.activeSavedViewID)
+        XCTAssertEqual(Set(store.filteredIssueIDs), ["bd-1", "bd-2", "bd-3"])
+
+        store.applySavedView(id: folderID)
+        await store.waitForPendingQueryRecompute()
+        store.applyBookmark(.ready)
+        store.statusFilters = ["closed"]
+        store.searchText = "temporary"
+        store.applySavedView(id: folderID)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.selectedBookmark, .all)
+        XCTAssertTrue(store.statusFilters.isEmpty)
+        XCTAssertEqual(store.searchText, "")
+        XCTAssertEqual(store.issueListMode, .outline)
+        XCTAssertEqual(store.effectiveIssueListMode, .flat)
+        XCTAssertEqual(store.listOrdering, .manual)
+
+        let reloaded = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloaded.openProject(projectURL)
+        try await waitUntil { !reloaded.isLoading && reloaded.issue(with: "bd-3") != nil }
+        await reloaded.waitForPendingSavedViewCountRebuild()
+        XCTAssertEqual(reloaded.folderIssueIDs(id: folderID), ["bd-1", "bd-3"])
+        XCTAssertEqual(reloaded.count(forSavedViewID: folderID), 2)
+
+        reloaded.applySavedView(id: folderID)
+        await reloaded.waitForPendingQueryRecompute()
+        reloaded.deleteSavedView(id: folderID)
+        await reloaded.waitForPendingQueryRecompute()
+        XCTAssertNil(reloaded.activeSavedViewID)
+        XCTAssertEqual(
+            reloaded.listOrdering,
+            .sorted(BeadSavedViewSort(
+                field: reloaded.sort,
+                direction: reloaded.sortDirection
+            ))
+        )
+        XCTAssertEqual(Set(reloaded.filteredIssueIDs), ["bd-1", "bd-2", "bd-3"])
+    }
+
+    func testFolderUsesFlatRowsWithoutChangingPreferredListMode() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic"}
+            {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent"}
+            """
+        )
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-child") != nil }
+
+        XCTAssertEqual(store.issueListMode, .outline)
+        XCTAssertEqual(store.effectiveIssueListMode, .outline)
+
+        _ = store.createFolder(
+            name: "Flat Folder",
+            issueIDs: ["bd-child", "bd-parent"]
+        )
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.issueListMode, .outline)
+        XCTAssertEqual(store.effectiveIssueListMode, .flat)
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-child", "bd-parent"])
+        XCTAssertEqual(store.issueListRows.map(\.depth), [0, 0])
+        XCTAssertTrue(store.canReorderActiveFolder)
+
+        store.applyBookmark(.all)
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.issueListMode, .outline)
+        XCTAssertEqual(store.effectiveIssueListMode, .outline)
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent"])
+    }
+
+    func testFolderDragPayloadsAreProjectScopedAndDeadReferencesPruneOnceAuthoritative() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject([
+            issueLine(id: "bd-1", status: "open", type: "task"),
+            issueLine(id: "bd-2", status: "open", type: "task")
+        ].joined(separator: "\n"))
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        let folderID = UUID()
+        let folder = BeadSavedView(
+            id: folderID,
+            name: "Inbox",
+            symbolName: "folder",
+            content: .folder(BeadFolderBookmark(
+                orderedIssueIDs: ["bd-2", "deleted-bead", "bd-1"]
+            ))
+        )
+        defaults.set(
+            try JSONEncoder().encode(BeadSavedViewsPayload(views: [folder])),
+            forKey: key
+        )
+
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        XCTAssertEqual(store.folderIssueIDs(id: folderID, resolvedOnly: false), ["bd-2", "bd-1"])
+        let persisted = try XCTUnwrap(defaults.data(forKey: key))
+        XCTAssertEqual(
+            try JSONDecoder().decode(BeadSavedViewsPayload.self, from: persisted)
+                .views.first?.folder?.orderedIssueIDs,
+            ["bd-2", "bd-1"]
+        )
+
+        let payload = try XCTUnwrap(store.beadDragPayload(issueID: "bd-1"))
+        XCTAssertTrue(store.canAcceptBeadDragPayloads([payload]))
+        XCTAssertFalse(store.canAcceptBeadDragPayloads([
+            BeadDragPayload(
+                projectIdentity: "/another/project",
+                issueID: "bd-1",
+                sourceFolderID: nil
+            )
+        ]))
+        XCTAssertFalse(store.canAcceptBeadDragPayloads([
+            BeadDragPayload(
+                projectIdentity: payload.projectIdentity,
+                issueID: "deleted-bead",
+                sourceFolderID: nil
+            )
+        ]))
+
+        let batchFolderID = try XCTUnwrap(store.createFolder(name: "Batch"))
+        let batchPayload = try XCTUnwrap(
+            store.beadDragPayload(issueIDs: ["bd-2", "bd-1"])
+        )
+        XCTAssertTrue(store.addBeadDragPayloads([batchPayload], toFolder: batchFolderID))
+        XCTAssertEqual(store.folderIssueIDs(id: batchFolderID), ["bd-2", "bd-1"])
     }
 
     func testSavedViewCRUDAndOrderingPersist() async throws {
@@ -787,7 +986,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.activeSavedViewID, id)
         XCTAssertEqual(store.sourceSavedViewID, id)
         XCTAssertFalse(store.isSavedViewDrifted)
-        XCTAssertEqual(store.savedViews.first?.ordering.fallbackSort, BeadSavedViewSort(
+        XCTAssertEqual(store.savedViews.first?.savedSort, BeadSavedViewSort(
             field: .updated,
             direction: .descending
         ))
@@ -825,10 +1024,10 @@ final class BeadStorePreferencesTests: XCTestCase {
             ),
             ordering: .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
         )
-        let validObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(BeadSavedViewNode.view(valid)))
+        let validObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid))
         let payload = try JSONSerialization.data(withJSONObject: [
             "version": BeadSavedViewsPayload.currentVersion,
-            "rootNodes": [validObject, ["kind": "broken"]]
+            "views": [validObject, ["kind": "broken"]]
         ])
         defaults.set(payload, forKey: BeadazzlePreferenceKeys.savedViews(projectURL: projectURL))
 
@@ -847,15 +1046,15 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertNil(store.savedViewsPersistenceMessage)
         let persisted = try XCTUnwrap(defaults.data(forKey: key))
         XCTAssertEqual(
-            try JSONDecoder().decode(BeadSavedViewsPayload.self, from: persisted).rootNodes,
-            [.view(valid)]
+            try JSONDecoder().decode(BeadSavedViewsPayload.self, from: persisted).views,
+            [valid]
         )
     }
 
     func testUnsupportedFuturePayloadIsPreservedAndReadOnly() async throws {
         let defaults = makeUserDefaults()
         let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
-        let payload = try JSONSerialization.data(withJSONObject: ["version": 99, "rootNodes": []])
+        let payload = try JSONSerialization.data(withJSONObject: ["version": 99, "views": []])
         let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
         defaults.set(payload, forKey: key)
         let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())

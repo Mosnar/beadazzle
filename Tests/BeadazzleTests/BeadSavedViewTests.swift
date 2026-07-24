@@ -2,16 +2,6 @@ import XCTest
 @testable import Beadazzle
 
 final class BeadSavedViewTests: XCTestCase {
-    func testFolderOnlyTreeIsNotEmpty() {
-        let tree = BeadSavedViewTree(rootNodes: [
-            .folder(BeadSavedViewFolder(id: UUID(), name: "Empty Folder", children: []))
-        ])
-
-        XCTAssertFalse(tree.isEmpty)
-        XCTAssertTrue(tree.savedViews.isEmpty)
-        XCTAssertTrue(tree.containsFolders)
-    }
-
     func testSavedViewRoundTripsAllFilterFields() throws {
         let view = BeadSavedView(
             id: UUID(),
@@ -96,55 +86,32 @@ final class BeadSavedViewTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(BeadSavedView.self, from: encoded))
     }
 
-    func testFinalVersionOnePayloadRoundTripsFoldersQueriesAndManualOrdering() throws {
-        let view = makeSavedView(
-            ordering: .manual(BeadSavedViewManualOrdering(
-                issueIDs: ["bd-3", "bd-1"],
-                fallback: BeadSavedViewSort(field: .updated, direction: .descending)
-            ))
+    func testVersionTwoPayloadRoundTripsSmartBookmarksAndFolders() throws {
+        let smartView = makeSavedView(
+            ordering: .sorted(BeadSavedViewSort(field: .updated, direction: .descending))
         )
-        let folder = BeadSavedViewFolder(id: UUID(), name: "Planning", children: [.view(view)])
-        let payload = BeadSavedViewsPayload(rootNodes: [.folder(folder)])
+        let folderView = BeadSavedView(
+            id: UUID(),
+            name: "Planning",
+            symbolName: "folder",
+            content: .folder(BeadFolderBookmark(orderedIssueIDs: ["bd-3", "bd-1"]))
+        )
+        let payload = BeadSavedViewsPayload(views: [smartView, folderView])
         let data = try JSONEncoder().encode(payload)
 
         let decoded = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: data)
-        XCTAssertEqual(decoded.rootNodes, payload.rootNodes)
+        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.views, payload.views)
 
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertNotNil(object["rootNodes"])
-        XCTAssertNil(object["views"])
-        let rootNodes = try XCTUnwrap(object["rootNodes"] as? [[String: Any]])
-        let folderObject = try XCTUnwrap(rootNodes.first?["folder"] as? [String: Any])
-        let children = try XCTUnwrap(folderObject["children"] as? [[String: Any]])
-        let viewObject = try XCTUnwrap(children.first?["view"] as? [String: Any])
-        XCTAssertNotNil(viewObject["query"])
-        XCTAssertNotNil(viewObject["ordering"])
-        XCTAssertNil((viewObject["query"] as? [String: Any])?["sort"])
-    }
-
-    func testTreeHelpersPreserveFolderPlacementForBookmarkMutations() throws {
-        let original = makeSavedView()
-        var tree = BeadSavedViewTree(rootNodes: [
-            .folder(BeadSavedViewFolder(id: UUID(), name: "Planning", children: [.view(original)]))
-        ])
-        let duplicate = makeSavedView()
-
-        XCTAssertTrue(tree.updateSavedView(id: original.id) { $0.name = "Renamed" })
-        XCTAssertTrue(tree.insertSavedView(duplicate, after: original.id))
-        XCTAssertEqual(tree.savedViews.map(\.name), ["Renamed", duplicate.name])
-        XCTAssertTrue(tree.removeSavedView(id: original.id))
-        XCTAssertEqual(tree.savedViews, [duplicate])
-        guard case .folder(let folder) = tree.rootNodes.first else { return XCTFail("Expected folder") }
-        XCTAssertEqual(folder.children, [.view(duplicate)])
-    }
-
-    func testTreeRejectsDuplicateFolderAndBookmarkIdentities() {
-        let view = makeSavedView()
-        let tree = BeadSavedViewTree(rootNodes: [
-            .folder(BeadSavedViewFolder(id: view.id, name: "Duplicate", children: [.view(view)]))
-        ])
-
-        XCTAssertFalse(tree.hasUniqueNodeIDs)
+        XCTAssertNil(object["rootNodes"])
+        let views = try XCTUnwrap(object["views"] as? [[String: Any]])
+        let smartContent = try XCTUnwrap(views[0]["content"] as? [String: Any])
+        let folderContent = try XCTUnwrap(views[1]["content"] as? [String: Any])
+        XCTAssertEqual(smartContent["kind"] as? String, "smart")
+        XCTAssertEqual(folderContent["kind"] as? String, "folder")
+        XCTAssertNil(views[0]["query"])
+        XCTAssertNil(views[0]["ordering"])
     }
 
     private func makeSavedView(

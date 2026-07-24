@@ -967,6 +967,9 @@ extension BeadStore {
             }
             mutations.discardMetadataMutations(for: ids)
             settleOptimisticProjection(id: projectionID, succeeded: true)
+            pruneMissingFolderIssueIDs(
+                validIssueIDs: authoritativeIndex.allIssueIDs.subtracting(idSet)
+            )
             reconcileState.request(.mutation)
             announceCompletion(
                 requestedIDs.count == 1

@@ -5,15 +5,55 @@ struct BeadSavedView: Identifiable, Hashable, Codable, Sendable {
     var id: UUID
     var name: String
     var symbolName: String
-    var query: BeadSavedViewQuery
-    var ordering: BeadSavedViewOrdering
+    var content: BeadSavedViewContent
 
     var hasValidQuery: Bool {
-        query.advancedPredicate?.isValid ?? true
+        smartQuery?.advancedPredicate?.isValid ?? true
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, symbolName, query, ordering }
+    var isFolder: Bool {
+        if case .folder = content { true } else { false }
+    }
 
+    var smartQuery: BeadSavedViewQuery? {
+        guard case .smart(let smart) = content else { return nil }
+        return smart.query
+    }
+
+    var savedSort: BeadSavedViewSort? {
+        guard case .smart(let smart) = content else { return nil }
+        return smart.sort
+    }
+
+    var folder: BeadFolderBookmark? {
+        guard case .folder(let folder) = content else { return nil }
+        return folder
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case symbolName
+        case content
+
+        // Version 1 compatibility. Version 2 encoders never emit these keys.
+        case query
+        case ordering
+    }
+
+    init(
+        id: UUID,
+        name: String,
+        symbolName: String,
+        content: BeadSavedViewContent
+    ) {
+        self.id = id
+        self.name = name
+        self.symbolName = symbolName
+        self.content = content
+    }
+
+    /// Compatibility initializer for existing smart-bookmark call sites and tests.
     init(
         id: UUID,
         name: String,
@@ -24,8 +64,10 @@ struct BeadSavedView: Identifiable, Hashable, Codable, Sendable {
         self.id = id
         self.name = name
         self.symbolName = symbolName
-        self.query = query
-        self.ordering = ordering
+        content = .smart(BeadSmartBookmark(
+            query: query,
+            sort: ordering.fallbackSort
+        ))
     }
 
     init(from decoder: Decoder) throws {
@@ -33,11 +75,26 @@ struct BeadSavedView: Identifiable, Hashable, Codable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         symbolName = try container.decode(String.self, forKey: .symbolName)
-        query = try container.decode(BeadSavedViewQuery.self, forKey: .query)
-        ordering = try container.decode(BeadSavedViewOrdering.self, forKey: .ordering)
-        guard hasValidQuery, query.advancedPredicate?.hasUniqueNodeIDs != false else {
+
+        if let decodedContent = try container.decodeIfPresent(
+            BeadSavedViewContent.self,
+            forKey: .content
+        ) {
+            content = decodedContent
+        } else {
+            let query = try container.decode(BeadSavedViewQuery.self, forKey: .query)
+            let ordering = try container.decode(BeadSavedViewOrdering.self, forKey: .ordering)
+            content = .smart(BeadSmartBookmark(
+                query: query,
+                sort: ordering.fallbackSort
+            ))
+        }
+
+        guard hasValidQuery,
+              smartQuery?.advancedPredicate?.hasUniqueNodeIDs != false
+        else {
             throw DecodingError.dataCorruptedError(
-                forKey: .query,
+                forKey: .content,
                 in: container,
                 debugDescription: "Saved view contains an invalid predicate or duplicate node identity"
             )
@@ -49,8 +106,46 @@ struct BeadSavedView: Identifiable, Hashable, Codable, Sendable {
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
         try container.encode(symbolName, forKey: .symbolName)
-        try container.encode(query, forKey: .query)
-        try container.encode(ordering, forKey: .ordering)
+        try container.encode(content, forKey: .content)
+    }
+}
+
+struct BeadSmartBookmark: Hashable, Codable, Sendable {
+    var query: BeadSavedViewQuery
+    var sort: BeadSavedViewSort
+}
+
+struct BeadFolderBookmark: Hashable, Codable, Sendable {
+    var orderedIssueIDs: [String]
+}
+
+enum BeadSavedViewContent: Hashable, Codable, Sendable {
+    case smart(BeadSmartBookmark)
+    case folder(BeadFolderBookmark)
+
+    private enum CodingKeys: String, CodingKey { case kind, smart, folder }
+    private enum Kind: String, Codable { case smart, folder }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .smart:
+            self = .smart(try container.decode(BeadSmartBookmark.self, forKey: .smart))
+        case .folder:
+            self = .folder(try container.decode(BeadFolderBookmark.self, forKey: .folder))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .smart(let smart):
+            try container.encode(Kind.smart, forKey: .kind)
+            try container.encode(smart, forKey: .smart)
+        case .folder(let folder):
+            try container.encode(Kind.folder, forKey: .kind)
+            try container.encode(folder, forKey: .folder)
+        }
     }
 }
 
@@ -67,6 +162,15 @@ struct BeadSavedViewQuery: Hashable, Codable, Sendable {
 struct BeadSavedViewSort: Hashable, Codable, Sendable {
     var field: IssueSort
     var direction: SortDirection
+}
+
+enum BeadListOrdering: Hashable, Codable, Sendable {
+    case manual
+    case sorted(BeadSavedViewSort)
+
+    var isManual: Bool {
+        if case .manual = self { true } else { false }
+    }
 }
 
 struct BeadSavedViewManualOrdering: Hashable, Codable, Sendable {
@@ -619,10 +723,10 @@ enum BeadSavedViewSymbols {
 }
 
 struct BeadSavedViewsPayload: Codable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version = currentVersion
-    var rootNodes: [BeadSavedViewNode]
+    var views: [BeadSavedView]
 }
 
 struct BeadSavedViewPreview: Equatable, Sendable {

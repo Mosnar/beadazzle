@@ -1,32 +1,22 @@
 import Foundation
 
-struct BeadSavedViewFolder: Identifiable, Hashable, Codable, Sendable {
+/// Version 1 bookmark organization retained only for loss-tolerant migration.
+/// Runtime bookmark and folder state is the flat version 2 `[BeadSavedView]` model.
+struct BeadSavedViewFolder: Codable, Sendable {
     var id: UUID
     var name: String
     var children: [BeadSavedViewNode]
 }
 
-indirect enum BeadSavedViewNode: Identifiable, Hashable, Codable, Sendable {
+indirect enum BeadSavedViewNode: Codable, Sendable {
     case folder(BeadSavedViewFolder)
     case view(BeadSavedView)
-
-    var id: UUID {
-        switch self {
-        case .folder(let folder): folder.id
-        case .view(let view): view.id
-        }
-    }
 
     var savedViews: [BeadSavedView] {
         switch self {
         case .folder(let folder): folder.children.flatMap(\.savedViews)
         case .view(let view): [view]
         }
-    }
-
-    var outlineChildren: [BeadSavedViewNode]? {
-        guard case .folder(let folder) = self else { return nil }
-        return folder.children
     }
 
     fileprivate enum CodingKeys: String, CodingKey { case kind, folder, view }
@@ -55,94 +45,13 @@ indirect enum BeadSavedViewNode: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
-struct BeadSavedViewTree: Equatable, Sendable {
+struct BeadSavedViewTree: Sendable {
     private(set) var rootNodes: [BeadSavedViewNode]
     private(set) var savedViews: [BeadSavedView]
-    private var viewsByID: [UUID: BeadSavedView]
 
     init(rootNodes: [BeadSavedViewNode] = []) {
         self.rootNodes = rootNodes
-        let views = rootNodes.flatMap(\.savedViews)
-        savedViews = views
-        viewsByID = Dictionary(views.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.rootNodes == rhs.rootNodes
-    }
-
-    var isEmpty: Bool { rootNodes.isEmpty }
-    var containsFolders: Bool { rootNodes.contains { if case .folder = $0 { true } else { false } } }
-    var hasUniqueNodeIDs: Bool { rootNodes.hasUniqueNodeIDs }
-
-    func savedView(id: UUID) -> BeadSavedView? {
-        viewsByID[id]
-    }
-
-    mutating func append(_ view: BeadSavedView) {
-        rootNodes.append(.view(view))
-        rebuildIndex()
-    }
-
-    @discardableResult
-    mutating func updateSavedView(id: UUID, _ update: (inout BeadSavedView) -> Void) -> Bool {
-        guard rootNodes.updateSavedView(id: id, update) else { return false }
-        rebuildIndex()
-        return true
-    }
-
-    @discardableResult
-    mutating func removeSavedView(id: UUID) -> Bool {
-        guard rootNodes.removeSavedView(id: id) else { return false }
-        rebuildIndex()
-        return true
-    }
-
-    @discardableResult
-    mutating func insertSavedView(_ view: BeadSavedView, after id: UUID) -> Bool {
-        guard rootNodes.insertSavedView(view, after: id) else { return false }
-        rebuildIndex()
-        return true
-    }
-
-    mutating func moveRootNodes(fromOffsets offsets: IndexSet, toOffset destination: Int) {
-        let validOffsets = offsets.filter { rootNodes.indices.contains($0) }
-        guard !validOffsets.isEmpty else { return }
-        let moving = validOffsets.map { rootNodes[$0] }
-        for offset in validOffsets.reversed() {
-            rootNodes.remove(at: offset)
-        }
-        let removedBeforeDestination = validOffsets.lazy.filter { $0 < destination }.count
-        let insertionIndex = min(max(destination - removedBeforeDestination, 0), rootNodes.count)
-        rootNodes.insert(contentsOf: moving, at: insertionIndex)
-        rebuildIndex()
-    }
-
-    @discardableResult
-    mutating func moveRootNodeUp(id: UUID) -> Bool {
-        guard let index = rootNodes.firstIndex(where: { $0.id == id }), index > 0 else { return false }
-        rootNodes.swapAt(index, index - 1)
-        rebuildIndex()
-        return true
-    }
-
-    @discardableResult
-    mutating func moveRootNodeDown(id: UUID) -> Bool {
-        guard let index = rootNodes.firstIndex(where: { $0.id == id }),
-              index < rootNodes.index(before: rootNodes.endIndex) else { return false }
-        rootNodes.swapAt(index, index + 1)
-        rebuildIndex()
-        return true
-    }
-
-    func canMoveRootNodeUp(id: UUID) -> Bool {
-        guard let index = rootNodes.firstIndex(where: { $0.id == id }) else { return false }
-        return index > 0
-    }
-
-    func canMoveRootNodeDown(id: UUID) -> Bool {
-        guard let index = rootNodes.firstIndex(where: { $0.id == id }) else { return false }
-        return index < rootNodes.index(before: rootNodes.endIndex)
+        savedViews = rootNodes.flatMap(\.savedViews)
     }
 
     mutating func normalize(
@@ -152,13 +61,7 @@ struct BeadSavedViewTree: Equatable, Sendable {
         rootNodes = rootNodes.map {
             $0.normalized(view: viewTransform, folder: folderTransform)
         }
-        rebuildIndex()
-    }
-
-    private mutating func rebuildIndex() {
-        let views = rootNodes.flatMap(\.savedViews)
-        savedViews = views
-        viewsByID = Dictionary(views.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        savedViews = rootNodes.flatMap(\.savedViews)
     }
 }
 
@@ -234,7 +137,7 @@ extension BeadSavedViewTree {
             switch node {
             case .view(let view):
                 guard view.hasValidQuery,
-                      view.query.advancedPredicate?.hasUniqueNodeIDs != false,
+                      view.smartQuery?.advancedPredicate?.hasUniqueNodeIDs != false,
                       seenNodeIDs.insert(view.id).inserted else {
                     recoveryIssueCount += 1
                     continue
@@ -306,95 +209,5 @@ private extension BeadSavedViewNode {
             }
             return .folder(folderTransform(folder))
         }
-    }
-}
-
-private extension Array where Element == BeadSavedViewNode {
-    func savedView(id: UUID) -> BeadSavedView? {
-        for node in self {
-            switch node {
-            case .view(let view) where view.id == id:
-                return view
-            case .folder(let folder):
-                if let view = folder.children.savedView(id: id) { return view }
-            default:
-                continue
-            }
-        }
-        return nil
-    }
-
-    @discardableResult
-    mutating func updateSavedView(id: UUID, _ update: (inout BeadSavedView) -> Void) -> Bool {
-        for index in indices {
-            switch self[index] {
-            case .view(var view) where view.id == id:
-                update(&view)
-                self[index] = .view(view)
-                return true
-            case .folder(var folder):
-                if folder.children.updateSavedView(id: id, update) {
-                    self[index] = .folder(folder)
-                    return true
-                }
-            default:
-                continue
-            }
-        }
-        return false
-    }
-
-    @discardableResult
-    mutating func removeSavedView(id: UUID) -> Bool {
-        for index in indices {
-            switch self[index] {
-            case .view(let view) where view.id == id:
-                remove(at: index)
-                return true
-            case .folder(var folder):
-                if folder.children.removeSavedView(id: id) {
-                    self[index] = .folder(folder)
-                    return true
-                }
-            default:
-                continue
-            }
-        }
-        return false
-    }
-
-    @discardableResult
-    mutating func insertSavedView(_ newView: BeadSavedView, after id: UUID) -> Bool {
-        for index in indices {
-            switch self[index] {
-            case .view(let view) where view.id == id:
-                insert(.view(newView), at: index + 1)
-                return true
-            case .folder(var folder):
-                if folder.children.insertSavedView(newView, after: id) {
-                    self[index] = .folder(folder)
-                    return true
-                }
-            default:
-                continue
-            }
-        }
-        return false
-    }
-
-    var hasUniqueNodeIDs: Bool {
-        var ids: Set<UUID> = []
-        return collectUniqueNodeIDs(into: &ids)
-    }
-
-    private func collectUniqueNodeIDs(into ids: inout Set<UUID>) -> Bool {
-        for node in self {
-            guard ids.insert(node.id).inserted else { return false }
-            if case .folder(let folder) = node,
-               !folder.children.collectUniqueNodeIDs(into: &ids) {
-                return false
-            }
-        }
-        return true
     }
 }

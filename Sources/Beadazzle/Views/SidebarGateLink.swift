@@ -80,6 +80,7 @@ struct SidebarGateLink: View {
         .accessibilityLabel("\(GatePresentation.compactTitle(for: gate)), \(issue.id)")
         .accessibilityValue("\(GatePresentation.conditionHeadline(for: gate, now: now)), status: \(gate.status)")
         .accessibilityHint("Opens the gate")
+        .beadFolderSource(issueID: issue.id)
     }
 
     private func subtitle(now: Date) -> String {

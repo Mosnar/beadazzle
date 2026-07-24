@@ -822,6 +822,62 @@ struct BeadProjectIndex: Sendable {
         return (Array(matchingIDs), counts)
     }
 
+    /// Filters a static, ordered scope without scanning the rest of the project.
+    /// Set intersections identify matches, then the result is projected back through
+    /// `orderedIDs` so Manual folder ordering never depends on `Set` iteration order.
+    func filteredIssueIDsAndCounts(
+        within orderedIDs: [String],
+        statusFilters: Set<String>,
+        typeFilters: Set<String>,
+        priorityFilters: Set<Int>,
+        labelFilters: Set<String>,
+        searchText: String,
+        shouldCancel: @Sendable () -> Bool = { false }
+    ) -> (matchingIDs: [String], counts: BeadFilterCounts) {
+        let baseIDs = Set(orderedIDs).intersection(allIssueIDs)
+        let nonLabelIDs = filteredIssueIDs(
+            within: baseIDs,
+            statusFilters: statusFilters,
+            typeFilters: typeFilters,
+            priorityFilters: priorityFilters,
+            labelFilters: [],
+            searchText: searchText,
+            shouldCancel: shouldCancel
+        )
+        guard !shouldCancel() else { return ([], .empty) }
+
+        var labelCounts: [String: Int] = [:]
+        for id in nonLabelIDs {
+            guard !shouldCancel() else { return ([], .empty) }
+            guard let issue = issueByID[id] else { continue }
+            for label in issue.labels {
+                labelCounts[label, default: 0] += 1
+            }
+        }
+        for label in labelFilters where labelCounts[label] == nil {
+            labelCounts[label] = 0
+        }
+
+        let baseCounts = Self.baseFilterCounts(
+            for: baseIDs,
+            issueByID: issueByID,
+            semantics: semantics
+        )
+        let counts = BeadFilterCounts(
+            statusCounts: baseCounts.statusCounts,
+            typeCounts: baseCounts.typeCounts,
+            priorityCounts: baseCounts.priorityCounts,
+            labelCounts: Self.sortedStringCounts(labelCounts, defaults: [])
+        )
+
+        var matchingSet = Set(nonLabelIDs)
+        for label in labelFilters {
+            guard !shouldCancel() else { return ([], .empty) }
+            matchingSet.formIntersection(issueIDsByLabel[label, default: []])
+        }
+        return (orderedIDs.filter(matchingSet.contains), counts)
+    }
+
     private func filterCounts(
         for bookmark: BeadBookmark,
         nonLabelFilteredIDs: [String],

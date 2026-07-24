@@ -49,7 +49,7 @@ final class BeadSavedViewQueryEvaluatorTests: XCTestCase {
         XCTAssertEqual(BeadSavedViewQueryEvaluator.filteredIssueIDs(index: index, filter: filter(group)), ["parent"])
     }
 
-    func testAdvancedPredicateRoundTripsInFinalVersionOnePayload() throws {
+    func testAdvancedPredicateRoundTripsInCurrentPayload() throws {
         let group = BeadFilterGroup(match: .any, children: [
             .condition(condition(.assignee, .contains, text: "sam")),
             .condition(condition(.due, .isEmpty))
@@ -58,12 +58,12 @@ final class BeadSavedViewQueryEvaluatorTests: XCTestCase {
             id: UUID(), name: "Advanced", symbolName: "star", query: filter(group),
             ordering: .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
         )
-        let payload = BeadSavedViewsPayload(rootNodes: [.view(view)])
+        let payload = BeadSavedViewsPayload(views: [view])
 
         let decoded = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: JSONEncoder().encode(payload))
 
-        XCTAssertEqual(decoded.version, 1)
-        XCTAssertEqual(decoded.rootNodes, [.view(view)])
+        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.views, [view])
     }
 
     func testInvalidPredicateFailsClosedInsteadOfBroadeningBaseView() {

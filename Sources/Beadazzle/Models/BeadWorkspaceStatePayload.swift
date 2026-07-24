@@ -14,6 +14,7 @@ struct BeadWorkspaceStatePayload: Codable, Sendable {
     var activeSavedViewID: UUID?
     var sourceSavedViewID: UUID?
     var savedViewOrdering: BeadSavedViewOrdering?
+    var listOrdering: BeadListOrdering?
     var selectedIDs: [String]
     var fullPageDetailIssueID: String?
     var searchText: String
@@ -34,6 +35,7 @@ struct BeadWorkspaceStatePayload: Codable, Sendable {
         activeSavedViewID = snapshot.activeSavedViewID
         sourceSavedViewID = snapshot.sourceSavedViewID
         savedViewOrdering = snapshot.savedViewOrdering
+        listOrdering = snapshot.listOrdering
         selectedIDs = snapshot.selectedIDs.sorted()
         fullPageDetailIssueID = snapshot.fullPageDetailIssueID
         searchText = snapshot.searchText
@@ -55,6 +57,10 @@ struct BeadWorkspaceStatePayload: Codable, Sendable {
             activeSavedViewID: activeSavedViewID,
             sourceSavedViewID: sourceSavedViewID,
             savedViewOrdering: savedViewOrdering,
+            listOrdering: listOrdering ?? .sorted(BeadSavedViewSort(
+                field: sort,
+                direction: sortDirection
+            )),
             selectedIDs: Set(selectedIDs),
             fullPageDetailIssueID: fullPageDetailIssueID,
             searchText: searchText,

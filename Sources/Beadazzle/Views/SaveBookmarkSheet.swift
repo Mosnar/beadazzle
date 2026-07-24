@@ -35,8 +35,8 @@ struct SaveBookmarkSheet: View {
         existingID = existing?.id
         _name = State(initialValue: existing?.name ?? suggestedName)
         _symbolName = State(initialValue: existing?.symbolName ?? BeadSavedViewSymbols.normalized(initialSymbolName))
-        _query = State(initialValue: existing?.query ?? initialQuery)
-        _ordering = State(initialValue: existing?.ordering ?? initialOrdering)
+        _query = State(initialValue: existing?.smartQuery ?? initialQuery)
+        _ordering = State(initialValue: existing?.savedSort.map(BeadSavedViewOrdering.sorted) ?? initialOrdering)
     }
 
     var body: some View {

@@ -190,13 +190,18 @@ struct BeadQueryRecomputeRequest: Sendable {
 final class BeadWorkspaceStore {
     fileprivate(set) var filteredIssueIDs: [String] = []
     fileprivate(set) var issueListRows: [IssueListRow] = []
+    /// Changes only when the derived row content or order changes. The AppKit table uses
+    /// this to distinguish a selection-only SwiftUI update from a list reconciliation.
+    @ObservationIgnored fileprivate(set) var issueListRowsRevision = 0
     fileprivate(set) var selectedIDs: Set<String> = []
     fileprivate(set) var fullPageDetailIssueID: String?
     fileprivate(set) var selectedBookmark: BeadBookmark = .ready
-    fileprivate(set) var savedViewTree = BeadSavedViewTree()
-    var savedViews: [BeadSavedView] { savedViewTree.savedViews }
+    fileprivate(set) var savedViews: [BeadSavedView] = []
     fileprivate(set) var activeSavedViewID: UUID?
     fileprivate(set) var sourceSavedViewID: UUID?
+    fileprivate(set) var listOrdering = BeadListOrdering.sorted(
+        BeadSavedViewSort(field: .priority, direction: .ascending)
+    )
     fileprivate(set) var activeAdvancedPredicate: BeadFilterGroup?
     fileprivate(set) var savedViewCounts: [UUID: Int] = [:]
     fileprivate(set) var isRebuildingSavedViewCounts = false
@@ -204,6 +209,7 @@ final class BeadWorkspaceStore {
     fileprivate(set) var filterCounts = BeadFilterCounts.empty
     fileprivate(set) var savedViewFilterClock = Date()
     fileprivate(set) var requestedSavedViewEditorID: UUID?
+    fileprivate(set) var requestedFolderIssueIDs: [String]?
     fileprivate(set) var canGoBack = false
     fileprivate(set) var canGoForward = false
 
@@ -743,7 +749,14 @@ final class BeadStore {
     var filteredIssueIDs: [String] { workspace.filteredIssueIDs }
     internal var _filteredIssueIDs: [String] { get { workspace.filteredIssueIDs } set { workspace.filteredIssueIDs = newValue } }
     var issueListRows: [IssueListRow] { workspace.issueListRows }
-    internal var _issueListRows: [IssueListRow] { get { workspace.issueListRows } set { workspace.issueListRows = newValue } }
+    internal var _issueListRows: [IssueListRow] {
+        get { workspace.issueListRows }
+        set {
+            guard workspace.issueListRows != newValue else { return }
+            workspace.issueListRowsRevision &+= 1
+            workspace.issueListRows = newValue
+        }
+    }
     var dependencies: [BeadDependency] { detail.dependencies }
     internal var _dependencies: [BeadDependency] { get { detail.dependencies } set { detail.dependencies = newValue } }
     var dependencyIssueID: String? { detail.dependencyIssueID }
@@ -771,12 +784,13 @@ final class BeadStore {
     var selectedBookmark: BeadBookmark { workspace.selectedBookmark }
     internal var _selectedBookmark: BeadBookmark { get { workspace.selectedBookmark } set { workspace.selectedBookmark = newValue } }
     var savedViews: [BeadSavedView] { workspace.savedViews }
-    var savedViewTree: BeadSavedViewTree { workspace.savedViewTree }
-    internal var _savedViewTree: BeadSavedViewTree { get { workspace.savedViewTree } set { workspace.savedViewTree = newValue } }
+    internal var _savedViews: [BeadSavedView] { get { workspace.savedViews } set { workspace.savedViews = newValue } }
     var activeSavedViewID: UUID? { workspace.activeSavedViewID }
     internal var _activeSavedViewID: UUID? { get { workspace.activeSavedViewID } set { workspace.activeSavedViewID = newValue } }
     var sourceSavedViewID: UUID? { workspace.sourceSavedViewID }
     internal var _sourceSavedViewID: UUID? { get { workspace.sourceSavedViewID } set { workspace.sourceSavedViewID = newValue } }
+    var listOrdering: BeadListOrdering { workspace.listOrdering }
+    internal var _listOrdering: BeadListOrdering { get { workspace.listOrdering } set { workspace.listOrdering = newValue } }
     var activeAdvancedPredicate: BeadFilterGroup? { workspace.activeAdvancedPredicate }
     internal var _activeAdvancedPredicate: BeadFilterGroup? { get { workspace.activeAdvancedPredicate } set { workspace.activeAdvancedPredicate = newValue } }
     var savedViewCounts: [UUID: Int] { workspace.savedViewCounts }
@@ -831,6 +845,11 @@ final class BeadStore {
     internal var _gateClock: Date { get { detail.gateClock } set { detail.gateClock = newValue } }
     var savedViewFilterClock: Date { workspace.savedViewFilterClock }
     internal var _savedViewFilterClock: Date { get { workspace.savedViewFilterClock } set { workspace.savedViewFilterClock = newValue } }
+    var requestedFolderIssueIDs: [String]? { workspace.requestedFolderIssueIDs }
+    internal var _requestedFolderIssueIDs: [String]? {
+        get { workspace.requestedFolderIssueIDs }
+        set { workspace.requestedFolderIssueIDs = newValue }
+    }
     var searchText = "" {
         didSet {
             guard oldValue != searchText else { return }

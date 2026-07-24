@@ -2,6 +2,7 @@ import SwiftUI
 
 struct IssueListView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    @State private var emptyFolderIsDropTargeted = false
     private var project: BeadProjectStore { store.project }
     private var workspace: BeadWorkspaceStore { store.workspace }
     private var detail: BeadDetailStore { store.detail }
@@ -27,6 +28,34 @@ struct IssueListView: View {
                         systemImage: "circle.hexagongrid",
                         description: Text("Create a bead to start tracking work in this project.")
                     )
+                } else if store.isShowingFolder,
+                          let folder = store.activeFolderSavedView,
+                          folder.folder?.orderedIssueIDs.isEmpty == true {
+                    ContentUnavailableView(
+                        "Folder is Empty",
+                        systemImage: "folder",
+                        description: Text("Drag beads here or use Add to Folder from any bead menu.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay {
+                        if emptyFolderIsDropTargeted {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(.tint, lineWidth: 2)
+                                .padding(12)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .onDrop(
+                        of: BeadFolderDropHandler.contentTypes,
+                        isTargeted: $emptyFolderIsDropTargeted
+                    ) { providers in
+                        BeadFolderDropHandler.accept(
+                            providers,
+                            into: folder.id,
+                            store: store
+                        )
+                    }
                 } else if workspace.filteredIssueIDs.isEmpty {
                     ContentUnavailableView("No Beads Match", systemImage: "line.3.horizontal.decrease.circle")
                 } else {
@@ -35,9 +64,10 @@ struct IssueListView: View {
                     // which hangs the main thread for seconds at ~1200 rows.
                     IssueListTableView(
                         rows: workspace.issueListRows,
+                        rowRevision: workspace.issueListRowsRevision,
                         selectedIDs: workspace.selectedIDs,
                         bookmark: workspace.selectedBookmark,
-                        mode: store.issueListMode,
+                        mode: store.effectiveIssueListMode,
                         displayOptions: store.beadListDisplayOptions,
                         contentRevision: project.contentRevision,
                         gateClock: detail.gateClock,
@@ -167,7 +197,7 @@ private struct IssueListHeader: View {
 
                 // The Gates section always shows gate → blocked beads, so the flat/outline
                 // toggle has no meaning there.
-                if workspace.selectedBookmark != .gates {
+                if workspace.selectedBookmark != .gates, !store.isShowingFolder {
                     IssueListModePicker()
                 }
             }
@@ -185,9 +215,12 @@ private struct IssueListHeader: View {
     }
 
     private var summaryText: String {
-        let count = store.filteredIssueCount == store.issues.count
-            ? "\(store.issues.count.formatted()) beads"
-            : "\(store.filteredIssueCount.formatted()) of \(store.issues.count.formatted())"
+        let totalCount = store.activeFolderSavedView.map {
+            store.count(forSavedViewID: $0.id) ?? store.folderIssueIDs(id: $0.id).count
+        } ?? store.issues.count
+        let count = store.filteredIssueCount == totalCount
+            ? "\(totalCount.formatted()) beads"
+            : "\(store.filteredIssueCount.formatted()) of \(totalCount.formatted())"
         guard !workspace.selectedIDs.isEmpty else { return count }
         return "\(count), \(workspace.selectedIDs.count.formatted()) selected"
     }
@@ -248,11 +281,24 @@ private struct SortMenu: View {
     var body: some View {
         Menu {
             Section("Sort By") {
+                if store.isShowingFolder {
+                    Button {
+                        store.selectManualFolderOrdering()
+                    } label: {
+                        if store.listOrdering.isManual {
+                            Label("Manual", systemImage: "checkmark")
+                        } else {
+                            Text("Manual")
+                        }
+                    }
+                    Divider()
+                }
+
                 ForEach(IssueSort.allCases) { sort in
                     Button {
-                        store.sort = sort
+                        store.selectListSort(sort)
                     } label: {
-                        if store.sort == sort {
+                        if !store.listOrdering.isManual, store.sort == sort {
                             Label(sort.rawValue, systemImage: "checkmark")
                         } else {
                             Text(sort.rawValue)
@@ -264,7 +310,7 @@ private struct SortMenu: View {
             Divider()
 
             Button {
-                store.sortDirection = .ascending
+                store.selectListSortDirection(.ascending)
             } label: {
                 if store.sortDirection == .ascending {
                     Label("Ascending", systemImage: "checkmark")
@@ -272,9 +318,10 @@ private struct SortMenu: View {
                     Text("Ascending")
                 }
             }
+            .disabled(store.isShowingFolder && store.listOrdering.isManual)
 
             Button {
-                store.sortDirection = .descending
+                store.selectListSortDirection(.descending)
             } label: {
                 if store.sortDirection == .descending {
                     Label("Descending", systemImage: "checkmark")
@@ -282,15 +329,19 @@ private struct SortMenu: View {
                     Text("Descending")
                 }
             }
+            .disabled(store.isShowingFolder && store.listOrdering.isManual)
         } label: {
-            Label(store.sort.rawValue, systemImage: "arrow.up.arrow.down")
+            Label(
+                store.isShowingFolder && store.listOrdering.isManual ? "Manual" : store.sort.rawValue,
+                systemImage: "arrow.up.arrow.down"
+            )
                 .labelStyle(.titleAndIcon)
                 .lineLimit(1)
         }
         .menuStyle(.button)
         .controlSize(.small)
         .fixedSize()
-        .help("Sort: \(store.sort.rawValue)")
+        .help(store.isShowingFolder && store.listOrdering.isManual ? "Sort: Manual" : "Sort: \(store.sort.rawValue)")
     }
 }
 

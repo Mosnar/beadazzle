@@ -56,6 +56,7 @@ struct SidebarBeadLink: View {
         .accessibilityLabel("\(issue.title), \(issue.id)")
         .accessibilityValue("Status: \(issue.status), priority P\(issue.priority), type: \(issue.issueType)")
         .accessibilityHint("Opens the bead")
+        .beadFolderSource(issueID: issue.id)
     }
 }
 

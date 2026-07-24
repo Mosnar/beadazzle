@@ -51,6 +51,29 @@ struct BeadIssueListQuery: Sendable {
         }
     }
 
+    static func filteredIssueIDsAndCounts(
+        index: BeadProjectIndex,
+        orderedCandidateIDs: [String],
+        statusFilters: Set<String>,
+        typeFilters: Set<String>,
+        priorityFilters: Set<Int>,
+        labelFilters: Set<String>,
+        searchText: String,
+        shouldCancel: @Sendable () -> Bool = { false }
+    ) -> (matchingIDs: [String], counts: BeadFilterCounts) {
+        PerformanceSignposts.query.withIntervalSignpost("FolderFilter") {
+            index.filteredIssueIDsAndCounts(
+                within: orderedCandidateIDs,
+                statusFilters: statusFilters,
+                typeFilters: typeFilters,
+                priorityFilters: priorityFilters,
+                labelFilters: labelFilters,
+                searchText: searchText,
+                shouldCancel: shouldCancel
+            )
+        }
+    }
+
     static func sortedIssueIDs(
         index: BeadProjectIndex,
         ids: [String],

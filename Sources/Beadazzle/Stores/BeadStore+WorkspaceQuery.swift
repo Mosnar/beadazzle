@@ -6,6 +6,7 @@ extension BeadStore {
         _selectedBookmark = .ready
         _activeSavedViewID = nil
         _sourceSavedViewID = nil
+        _listOrdering = .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
         _activeAdvancedPredicate = nil
         searchText = ""
         statusFilters = []
@@ -35,7 +36,9 @@ extension BeadStore {
 
     func clearFilters() {
         guard hasActiveFilters else { return }
-        _activeSavedViewID = nil
+        if activeSavedView?.isFolder != true {
+            _activeSavedViewID = nil
+        }
         suppressesFilterUpdates = true
         statusFilters = []
         typeFilters = []
@@ -59,14 +62,19 @@ extension BeadStore {
 
     internal func filterStateDidChange(debounce: Bool = false) {
         guard !suppressesFilterUpdates else { return }
-        _activeSavedViewID = nil
+        if activeSavedView?.isFolder != true {
+            _activeSavedViewID = nil
+        }
         scheduleFilterUpdate(debounce: debounce)
         syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     internal func sortStateDidChange() {
         guard !suppressesFilterUpdates else { return }
-        _activeSavedViewID = nil
+        _listOrdering = .sorted(BeadSavedViewSort(field: sort, direction: sortDirection))
+        if activeSavedView?.isFolder != true {
+            _activeSavedViewID = nil
+        }
         applySortOnly()
         syncCurrentWorkspaceSnapshotIfNeeded()
     }
@@ -83,7 +91,12 @@ extension BeadStore {
             activeSavedViewID: activeSavedViewID,
             sourceSavedViewID: sourceSavedViewID,
             savedViewOrdering: (activeSavedViewID ?? sourceSavedViewID)
-                .flatMap { savedViewTree.savedView(id: $0)?.ordering },
+                .flatMap { id in
+                    savedViews.first(where: { $0.id == id })?.savedSort.map(
+                        BeadSavedViewOrdering.sorted
+                    )
+                },
+            listOrdering: listOrdering,
             selectedIDs: selectedIDs,
             fullPageDetailIssueID: fullPageDetailIssueID,
             searchText: searchText,
@@ -191,6 +204,9 @@ extension BeadStore {
         _activeAdvancedPredicate = snapshot.advancedPredicate?.normalized
         sort = snapshot.sort
         sortDirection = snapshot.sortDirection
+        _listOrdering = activeFolderSavedView == nil
+            ? .sorted(BeadSavedViewSort(field: sort, direction: sortDirection))
+            : snapshot.listOrdering
         issueListMode = snapshot.issueListMode
         outlineState = snapshot.outlineState
         suppressesFilterUpdates = false
@@ -207,19 +223,23 @@ extension BeadStore {
         guard let id = snapshot.activeSavedViewID,
               let view = savedViews.first(where: { $0.id == id })
         else { return nil }
-        let filter = view.query
-        guard filter.basePreset.bookmark == snapshot.bookmark,
-              filter.statusFilters == snapshot.statusFilters,
-              filter.typeFilters == snapshot.typeFilters,
-              filter.priorityFilters == snapshot.priorityFilters,
-              filter.labelFilters == snapshot.labelFilters,
-              filter.advancedPredicate?.normalized == snapshot.advancedPredicate?.normalized,
-              filter.searchText == snapshot.searchText,
-              view.ordering == snapshot.savedViewOrdering,
-              view.ordering.fallbackSort.field == snapshot.sort,
-              view.ordering.fallbackSort.direction == snapshot.sortDirection
-        else { return nil }
-        return id
+        switch view.content {
+        case .folder:
+            return snapshot.bookmark == .all ? id : nil
+        case .smart(let smart):
+            guard smart.query.basePreset.bookmark == snapshot.bookmark,
+                  smart.query.statusFilters == snapshot.statusFilters,
+                  smart.query.typeFilters == snapshot.typeFilters,
+                  smart.query.priorityFilters == snapshot.priorityFilters,
+                  smart.query.labelFilters == snapshot.labelFilters,
+                  smart.query.advancedPredicate?.normalized == snapshot.advancedPredicate?.normalized,
+                  smart.query.searchText == snapshot.searchText,
+                  BeadSavedViewOrdering.sorted(smart.sort) == snapshot.savedViewOrdering,
+                  smart.sort.field == snapshot.sort,
+                  smart.sort.direction == snapshot.sortDirection
+            else { return nil }
+            return id
+        }
     }
 
     private func validatedSourceSavedViewID(for snapshot: BeadWorkspaceSnapshot) -> UUID? {
@@ -274,7 +294,7 @@ extension BeadStore {
         ))
     }
 
-    private func applySortOnly() {
+    func applySortOnly() {
         scheduleQueryRecompute(BeadQueryRecomputeRequest(
             scope: .resort,
             recomputeCounts: false,
@@ -283,7 +303,7 @@ extension BeadStore {
     }
 
     internal var selectedOutlineRow: IssueListRow? {
-        guard issueListMode == .outline,
+        guard effectiveIssueListMode == .outline,
               selectedIDs.count == 1,
               let selectedID = selectedIDs.first else {
             return nil
@@ -358,7 +378,11 @@ extension BeadStore {
         let advancedPredicate = activeAdvancedPredicate
         let sort = sort
         let direction = sortDirection
-        let mode = issueListMode
+        let listOrdering = listOrdering
+        let folderOrderedIssueIDs = activeSavedViewID.flatMap { id in
+            savedViews.first(where: { $0.id == id })?.folder?.orderedIssueIDs
+        }
+        let mode = effectiveIssueListMode
         let gateClock = gateClock
         let savedViewFilterClock = savedViewFilterClock
         let outlineSnapshot = outlineState
@@ -378,17 +402,34 @@ extension BeadStore {
                 case .rowsOnly:
                     sortedIDs = currentFilteredIssueIDs
                 case .resort:
-                    sortedIDs = BeadIssueListQuery.sortedIssueIDs(
-                        index: index,
-                        ids: currentFilteredIssueIDs,
-                        sort: sort,
-                        direction: direction,
-                        bookmark: bookmark,
-                        now: gateClock
-                    )
+                    if folderOrderedIssueIDs != nil, listOrdering.isManual {
+                        sortedIDs = currentFilteredIssueIDs
+                    } else {
+                        sortedIDs = BeadIssueListQuery.sortedIssueIDs(
+                            index: index,
+                            ids: currentFilteredIssueIDs,
+                            sort: sort,
+                            direction: direction,
+                            bookmark: bookmark,
+                            now: gateClock
+                        )
+                    }
                 case .full:
                     let filteredIDs: [String]
-                    if advancedPredicate == nil, request.recomputeCounts, bookmark != .gates {
+                    if let folderOrderedIssueIDs {
+                        let result = BeadIssueListQuery.filteredIssueIDsAndCounts(
+                            index: index,
+                            orderedCandidateIDs: folderOrderedIssueIDs,
+                            statusFilters: statusFilters,
+                            typeFilters: typeFilters,
+                            priorityFilters: priorityFilters,
+                            labelFilters: labelFilters,
+                            searchText: searchText,
+                            shouldCancel: { Task.isCancelled }
+                        )
+                        filteredIDs = result.matchingIDs
+                        counts = request.recomputeCounts ? result.counts : nil
+                    } else if advancedPredicate == nil, request.recomputeCounts, bookmark != .gates {
                         (filteredIDs, counts) = BeadIssueListQuery.filteredIssueIDsAndCounts(
                             index: index,
                             bookmark: bookmark,
@@ -426,14 +467,18 @@ extension BeadStore {
                             )
                             : nil
                     }
-                    sortedIDs = BeadIssueListQuery.sortedIssueIDs(
-                        index: index,
-                        ids: filteredIDs,
-                        sort: sort,
-                        direction: direction,
-                        bookmark: bookmark,
-                        now: gateClock
-                    )
+                    if folderOrderedIssueIDs != nil, listOrdering.isManual {
+                        sortedIDs = filteredIDs
+                    } else {
+                        sortedIDs = BeadIssueListQuery.sortedIssueIDs(
+                            index: index,
+                            ids: filteredIDs,
+                            sort: sort,
+                            direction: direction,
+                            bookmark: bookmark,
+                            now: gateClock
+                        )
+                    }
                 }
 
                 var outlineState = outlineSnapshot
@@ -486,12 +531,40 @@ extension BeadStore {
         let expectedProjectURL = projectURL
         let expectedContentRevision = contentRevision
         let evaluationNow = Date()
-        _isRebuildingSavedViewCounts = !views.isEmpty
         guard !views.isEmpty else {
             if replacesAllCounts { _savedViewCounts = [:] }
+            _isRebuildingSavedViewCounts = false
             savedViewCountTask = nil
             return
         }
+
+        let folderCounts: [UUID: Int] = Dictionary(uniqueKeysWithValues: views.compactMap { view in
+            guard let folder = view.folder else { return nil }
+            let count = folder.orderedIssueIDs.reduce(into: 0) { count, id in
+                if index.isUserFacingIssueID(id) {
+                    count += 1
+                }
+            }
+            return (view.id, count)
+        })
+        let smartViews = views.compactMap { view -> (id: UUID, filter: BeadSavedViewQuery)? in
+            guard let query = view.smartQuery else { return nil }
+            return (view.id, query)
+        }
+
+        if replacesAllCounts {
+            _savedViewCounts = folderCounts
+        } else {
+            for (id, count) in folderCounts {
+                _savedViewCounts[id] = count
+            }
+        }
+        _isRebuildingSavedViewCounts = !smartViews.isEmpty
+        guard !smartViews.isEmpty else {
+            savedViewCountTask = nil
+            return
+        }
+
         savedViewCountTask = Task { @MainActor [weak self] in
             defer {
                 if let self, self.savedViewCountGeneration == generation {
@@ -503,7 +576,7 @@ extension BeadStore {
             let worker = Task.detached(priority: .utility) { () -> [UUID: Int]? in
                 BeadSavedViewQueryEvaluator.matchingIssueCounts(
                     index: index,
-                    filters: views.map { (id: $0.id, filter: $0.query) },
+                    filters: smartViews,
                     now: evaluationNow,
                     shouldCancel: { Task.isCancelled }
                 )
@@ -521,7 +594,9 @@ extension BeadStore {
                   self.contentRevision == expectedContentRevision
             else { return }
             if replacesAllCounts {
-                self._savedViewCounts = counts
+                self._savedViewCounts = folderCounts.merging(counts) { _, smartCount in
+                    smartCount
+                }
             } else {
                 for (id, count) in counts {
                     self._savedViewCounts[id] = count

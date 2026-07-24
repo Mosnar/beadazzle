@@ -181,6 +181,19 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
                     priorityFilters: [], labelFilters: [], searchText: "navigation"
                 )
             }
+            if scale == 10_000 {
+                let folderIDs = (9_000..<10_000).reversed().map { "bd-\($0)" }
+                time("folder filter (1k / 10k)") {
+                    _ = index.filteredIssueIDsAndCounts(
+                        within: folderIDs,
+                        statusFilters: ["todo"],
+                        typeFilters: ["task"],
+                        priorityFilters: [],
+                        labelFilters: ["crawler"],
+                        searchText: "task"
+                    )
+                }
+            }
 
             let savedViews = (0..<25).map { offset in
                 let condition = BeadFilterCondition(

@@ -472,6 +472,9 @@ extension BeadStore {
             mutations.confirmAuthoritativeMetadata()
         }
         _contentRevision &+= 1
+        if loadedProject.snapshotRefreshWarning == nil {
+            pruneMissingFolderIssueIDs(validIssueIDs: refreshedAuthoritativeIndex.allIssueIDs)
+        }
         scheduleSavedViewCountRebuild()
         if let definitions = loadedProject.definitions {
             cachedDefinitions = definitions

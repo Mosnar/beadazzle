@@ -119,5 +119,6 @@ private struct SubIssueRow: View {
         .accessibilityLabel("\(issue.title), \(issue.id)")
         .accessibilityValue("Status: \(issue.status), priority P\(issue.priority), type: \(issue.issueType)")
         .accessibilityHint("Opens the sub-issue")
+        .beadFolderSource(issueID: issue.id)
     }
 }

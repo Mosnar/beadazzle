@@ -60,6 +60,7 @@ struct BeadPickerResultRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(pickerRow.issue.title), \(pickerRow.issue.id)")
         .accessibilityValue("Status: \(pickerRow.issue.status), priority P\(pickerRow.issue.priority), type: \(pickerRow.issue.issueType)")
+        .beadFolderSource(issueID: pickerRow.issue.id)
     }
 
     private var rowBackground: Color {

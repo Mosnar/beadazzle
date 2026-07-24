@@ -187,6 +187,10 @@ struct IssueBreadcrumbBar: View {
                             systemImage: BlockingRelationshipDirection.blocking.systemImage
                         )
                     }
+                    if store.canCreateSavedView {
+                        Divider()
+                        FolderActionsMenu(issueIDs: [issue.id])
+                    }
                     Divider()
                     if canCreateGate {
                         Button {

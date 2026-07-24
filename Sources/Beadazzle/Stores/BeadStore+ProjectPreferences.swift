@@ -202,7 +202,7 @@ extension BeadStore {
 
     private func loadSavedViews(for url: URL) {
         let result = savedViewRepository.load(projectURL: url)
-        _savedViewTree = result.tree
+        _savedViews = result.views
         _savedViewCounts = [:]
         _savedViewPersistenceState = result.persistenceState
         _activeSavedViewID = nil
@@ -218,7 +218,7 @@ extension BeadStore {
             return
         }
         guard let projectURL else { return }
-        savedViewRepository.save(savedViewTree, projectURL: projectURL)
+        savedViewRepository.save(savedViews, projectURL: projectURL)
     }
 
     internal func normalizedSavedView(_ view: BeadSavedView) -> BeadSavedView {
@@ -227,14 +227,21 @@ extension BeadStore {
 
     func resetSavedViews() {
         guard let projectURL else { return }
+        let wasShowingFolder = isShowingFolder
         let reconcilesCurrentIdentity = activeSavedViewID != nil || sourceSavedViewID != nil
         savedViewRepository.reset(projectURL: projectURL)
-        _savedViewTree = BeadSavedViewTree()
+        _savedViews = []
         _savedViewCounts = [:]
         _savedViewPersistenceState = .ready
         _activeSavedViewID = nil
         _sourceSavedViewID = nil
+        if wasShowingFolder {
+            _listOrdering = .sorted(BeadSavedViewSort(field: sort, direction: sortDirection))
+        }
         scheduleSavedViewCountRebuild()
+        if wasShowingFolder {
+            applyFilters()
+        }
         if reconcilesCurrentIdentity {
             syncCurrentWorkspaceSnapshotIfNeeded()
         }
@@ -242,7 +249,7 @@ extension BeadStore {
 
     func acceptRecoveredSavedViews() {
         guard case .recovered = savedViewPersistenceState, let projectURL else { return }
-        guard savedViewRepository.save(savedViewTree, projectURL: projectURL) else {
+        guard savedViewRepository.save(savedViews, projectURL: projectURL) else {
             lastError = "The recovered bookmarks could not be saved."
             return
         }

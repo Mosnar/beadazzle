@@ -13,6 +13,7 @@ struct SavedViewRow: View {
     @State private var isChoosingIcon = false
     @State private var isConfirmingDelete = false
     @State private var isConfirmingFilterReplacement = false
+    @State private var isDropTargeted = false
     @FocusState private var nameIsFocused: Bool
 
     var body: some View {
@@ -24,7 +25,7 @@ struct SavedViewRow: View {
 
             Group {
                 if isRenaming {
-                    TextField("Bookmark Name", text: $draftName)
+                    TextField(view.isFolder ? "Folder Name" : "Bookmark Name", text: $draftName)
                         .focused($nameIsFocused)
                         .onSubmit(commitRename)
                         .onExitCommand(perform: cancelRename)
@@ -54,19 +55,53 @@ struct SavedViewRow: View {
                 ProgressView()
                     .controlSize(.mini)
                     .frame(width: 16, height: 16)
-                    .accessibilityLabel("Updating bookmark count")
+                    .accessibilityLabel("Updating \(view.isFolder ? "folder" : "bookmark") count")
             }
         }
         .foregroundStyle(.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(.tint, lineWidth: 2)
+                    .padding(.horizontal, -4)
+                    .padding(.vertical, -2)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .onDrop(
+            of: view.isFolder ? BeadFolderDropHandler.contentTypes : [],
+            isTargeted: Binding(
+                get: { isDropTargeted },
+                set: { isDropTargeted = view.isFolder && $0 }
+            ),
+            perform: { providers in
+                guard view.isFolder else { return false }
+                return BeadFolderDropHandler.accept(
+                    providers,
+                    into: view.id,
+                    store: store
+                )
+            }
+        )
         .contextMenu {
-            Button("Edit Bookmark...", action: onEdit)
-            Button("Update from Current View") {
-                if store.updateWouldReplaceAdvancedRules(id: view.id) {
-                    isConfirmingFilterReplacement = true
-                } else {
-                    store.updateSavedViewFilterFromCurrentState(id: view.id)
+            if view.isFolder {
+                Button("Copy All Bead IDs") {
+                    IssueClipboard.copyIssueID(
+                        store.folderIssueIDs(id: view.id).joined(separator: "\n")
+                    )
+                }
+                .disabled(store.folderIssueIDs(id: view.id).isEmpty)
+            } else {
+                Button("Edit Bookmark...", action: onEdit)
+                Button("Update from Current View") {
+                    if store.updateWouldReplaceAdvancedRules(id: view.id) {
+                        isConfirmingFilterReplacement = true
+                    } else {
+                        store.updateSavedViewFilterFromCurrentState(id: view.id)
+                    }
                 }
             }
             Button("Rename", action: beginRename)
@@ -90,11 +125,11 @@ struct SavedViewRow: View {
             ))
             .padding()
         }
-        .alert("Delete “\(view.name)” Bookmark?", isPresented: $isConfirmingDelete) {
+        .alert("Delete “\(view.name)” \(view.isFolder ? "Folder" : "Bookmark")?", isPresented: $isConfirmingDelete) {
             Button("Delete", role: .destructive) { store.deleteSavedView(id: view.id) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the local bookmark. It does not change any beads.")
+            Text("This removes the local \(view.isFolder ? "folder" : "bookmark"). It does not change any beads.")
         }
         .alert("Replace Advanced Rules?", isPresented: $isConfirmingFilterReplacement) {
             Button("Replace", role: .destructive) {

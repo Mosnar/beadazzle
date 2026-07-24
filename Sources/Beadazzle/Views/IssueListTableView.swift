@@ -10,6 +10,7 @@ import SwiftUI
 /// reused `NSHostingView`; updates flow through an `NSTableViewDiffableDataSource`.
 struct IssueListTableView: NSViewRepresentable {
     let rows: [IssueListRow]
+    let rowRevision: Int
     let selectedIDs: Set<String>
     let bookmark: BeadBookmark
     let mode: IssueListMode
@@ -58,14 +59,29 @@ struct IssueListTableView: NSViewRepresentable {
         tableView.contextMenuProvider = { [weak coordinator] row in
             coordinator?.contextMenu(forClickedRow: row)
         }
+        tableView.registerForDraggedTypes([.beadazzleBeadDrag])
+        tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+        tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
 
         let column = NSTableColumn(identifier: Coordinator.columnID)
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
 
-        let dataSource = NSTableViewDiffableDataSource<Int, String>(tableView: tableView) {
+        let dataSource = IssueListDiffableDataSource(tableView: tableView) {
             [weak coordinator] table, _, _, itemID in
             coordinator?.makeCell(for: itemID, in: table) ?? NSView()
+        }
+        dataSource.pasteboardWriter = { [weak coordinator] row in
+            coordinator?.pasteboardWriter(forRow: row)
+        }
+        tableView.onPrimaryMouseInteractionEnded = { [weak coordinator] in
+            coordinator?.commitTableSelectionAfterPrimaryMouseInteraction()
+        }
+        dataSource.validateDrop = { [weak coordinator] info, row, operation in
+            coordinator?.validateDrop(info, row: row, operation: operation) ?? []
+        }
+        dataSource.acceptDrop = { [weak coordinator] info, row, operation in
+            coordinator?.acceptDrop(info, row: row, operation: operation) ?? false
         }
         tableView.dataSource = dataSource
         coordinator.tableView = tableView
@@ -94,8 +110,8 @@ struct IssueListTableView: NSViewRepresentable {
         private static let rowViewID = NSUserInterfaceItemIdentifier("IssueListRowView")
 
         var parent: IssueListTableView
-        weak var tableView: NSTableView?
-        var dataSource: NSTableViewDiffableDataSource<Int, String>?
+        fileprivate weak var tableView: IssueKeyboardTableView?
+        fileprivate var dataSource: IssueListDiffableDataSource?
 
         private var orderedIDs: [String] = []
         private var indexByID: [String: Int] = [:]
@@ -105,13 +121,8 @@ struct IssueListTableView: NSViewRepresentable {
         private var isHandlingContextClick = false
         private var contextFocusedIssueID: String?
 
-        // Last-applied inputs, so an update that only changed the selection skips the
-        // (expensive) SwiftUI relayout of every visible row.
-        private var lastRows: [IssueListRow] = []
-        private var lastMode: IssueListMode?
-        private var lastDisplayOptions: BeadListDisplayOptions?
-        private var lastContentRevision = -1
-        private var lastGateClock = Date.distantPast
+        private var lastUpdateKey: UpdateKey?
+        private(set) var rowReconciliationCount = 0
 
         init(_ parent: IssueListTableView) {
             self.parent = parent
@@ -122,54 +133,81 @@ struct IssueListTableView: NSViewRepresentable {
         /// issue content changed, and always syncs selection. A selection-only update thus
         /// stays inside AppKit's native selection invalidation path.
         func update(force: Bool) {
+            let updateKey = UpdateKey(parent: parent)
+            let previousUpdateKey = lastUpdateKey
+            guard force || updateKey != previousUpdateKey else {
+                syncSelection(parent.selectedIDs)
+                return
+            }
+
+            let rowsChanged = force || updateKey.rowRevision != previousUpdateKey?.rowRevision
+            let globalPresentationChanged = force
+                || updateKey.bookmark != previousUpdateKey?.bookmark
+                || updateKey.mode != previousUpdateKey?.mode
+                || updateKey.displayOptions != previousUpdateKey?.displayOptions
+                || updateKey.contentRevision != previousUpdateKey?.contentRevision
+                || updateKey.gateClock != previousUpdateKey?.gateClock
             let rows = parent.rows
-            let ids = rows.map(\.issueID)
             let previousRowByID = rowByID
             let previousIDs = orderedIDs
 
-            orderedIDs = ids
-            indexByID = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
-            rowByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.issueID, $0) })
-            readyGateGroupRange = computeReadyGateGroupRange(rows)
-            if let contextFocusedIssueID, indexByID[contextFocusedIssueID] == nil {
-                self.contextFocusedIssueID = nil
+            if rowsChanged {
+                rowReconciliationCount &+= 1
+                let ids = rows.map(\.issueID)
+                orderedIDs = ids
+                indexByID = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
+                rowByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.issueID, $0) })
+                readyGateGroupRange = computeReadyGateGroupRange(rows)
+                if let contextFocusedIssueID, indexByID[contextFocusedIssueID] == nil {
+                    self.contextFocusedIssueID = nil
+                }
             }
 
             var rebuiltAllVisible = false
-            if force || ids != previousIDs {
+            if rowsChanged, force || orderedIDs != previousIDs {
                 var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
                 snapshot.appendSections([0])
-                snapshot.appendItems(ids, toSection: 0)
+                snapshot.appendItems(orderedIDs, toSection: 0)
                 dataSource?.apply(snapshot, animatingDifferences: false)
                 // A wholesale turnover (bookmark switch / sort / filter) deletes every old
                 // item and inserts every new one, so `apply` already rebuilds all visible
                 // cells fresh — the reconfigure pass below would just build them a second time.
-                rebuiltAllVisible = force || isWholesaleChange(from: previousIDs, to: ids)
+                rebuiltAllVisible = force || isWholesaleChange(from: previousIDs, to: orderedIDs)
             }
 
             // Only cells the snapshot did NOT already rebuild need reconfiguring: rows that
             // survived (same id) but whose content changed — an edit (contentRevision), a
             // display-option/mode toggle, or a row field like expansion state.
             if !rebuiltAllVisible {
-                let globalChange = force
-                    || parent.mode != lastMode
-                    || parent.displayOptions != lastDisplayOptions
-                    || parent.contentRevision != lastContentRevision
-                    || parent.gateClock != lastGateClock
                 reconfigureVisibleRows { id in
-                    guard let previous = previousRowByID[id] else { return false }
-                    return globalChange || rowByID[id] != previous
+                    guard rowsChanged else { return globalPresentationChanged }
+                    guard let previous = previousRowByID[id] else { return true }
+                    return globalPresentationChanged || rowByID[id] != previous
                 }
             }
 
-            lastRows = rows
-            lastMode = parent.mode
-            lastDisplayOptions = parent.displayOptions
-            lastContentRevision = parent.contentRevision
-            lastGateClock = parent.gateClock
+            lastUpdateKey = updateKey
 
             syncSelection(parent.selectedIDs)
             updateVisibleFocusOutlines()
+        }
+
+        private struct UpdateKey: Equatable {
+            let rowRevision: Int
+            let bookmark: BeadBookmark
+            let mode: IssueListMode
+            let displayOptions: BeadListDisplayOptions
+            let contentRevision: Int
+            let gateClock: Date
+
+            init(parent: IssueListTableView) {
+                rowRevision = parent.rowRevision
+                bookmark = parent.bookmark
+                mode = parent.mode
+                displayOptions = parent.displayOptions
+                contentRevision = parent.contentRevision
+                gateClock = parent.gateClock
+            }
         }
 
         /// True when the old and new row sets overlap little (bookmark/filter change) or are
@@ -341,7 +379,7 @@ struct IssueListTableView: NSViewRepresentable {
         // MARK: Selection
 
         func syncSelection(_ ids: Set<String>) {
-            guard let tableView else { return }
+            guard let tableView, !tableView.isHandlingPrimaryMouseInteraction else { return }
             var target = IndexSet()
             for id in ids {
                 if let index = indexByID[id] { target.insert(index) }
@@ -358,6 +396,17 @@ struct IssueListTableView: NSViewRepresentable {
                 syncSelection(parent.selectedIDs)
                 return
             }
+            guard !tableView.isHandlingPrimaryMouseInteraction else { return }
+            commitTableSelection()
+        }
+
+        func commitTableSelectionAfterPrimaryMouseInteraction() {
+            guard !isSyncingSelection, !isHandlingContextClick else { return }
+            commitTableSelection()
+        }
+
+        private func commitTableSelection() {
+            guard let tableView else { return }
             let ids = Set(tableView.selectedRowIndexes.compactMap { index -> String? in
                 index >= 0 && index < orderedIDs.count ? orderedIDs[index] : nil
             })
@@ -382,6 +431,10 @@ struct IssueListTableView: NSViewRepresentable {
 
         @objc func openClickedRow(_ sender: NSTableView) {
             let row = sender.clickedRow >= 0 ? sender.clickedRow : sender.selectedRow
+            openRow(row)
+        }
+
+        func openRow(_ row: Int) {
             guard row >= 0, row < orderedIDs.count else { return }
             let issueID = orderedIDs[row]
             setContextFocusedIssueID(nil)
@@ -396,6 +449,59 @@ struct IssueListTableView: NSViewRepresentable {
             case .left: return parent.store.navigateIssueOutlineLeft()
             case .right: return parent.store.navigateIssueOutlineRight()
             }
+        }
+
+        // MARK: Drag and drop
+
+        func pasteboardWriter(forRow row: Int) -> (any NSPasteboardWriting)? {
+            guard row >= 0,
+                  row < orderedIDs.count,
+                  let payload = parent.store.beadDragPayload(issueID: orderedIDs[row])
+            else { return nil }
+            return BeadDragPasteboardItem.make(payload: payload)
+        }
+
+        func validateDrop(
+            _ info: any NSDraggingInfo,
+            row: Int,
+            operation: NSTableView.DropOperation
+        ) -> NSDragOperation {
+            guard parent.store.canReorderActiveFolder,
+                  let folderID = parent.store.activeFolderSavedView?.id,
+                  operation == .above,
+                  let payloads = dragPayloads(from: info),
+                  parent.store.canAcceptBeadDragPayloads(payloads),
+                  payloads.allSatisfy({ $0.sourceFolderID == folderID })
+            else { return [] }
+            return .move
+        }
+
+        func acceptDrop(
+            _ info: any NSDraggingInfo,
+            row: Int,
+            operation: NSTableView.DropOperation
+        ) -> Bool {
+            guard validateDrop(info, row: row, operation: operation) == .move,
+                  let folderID = parent.store.activeFolderSavedView?.id,
+                  let payloads = dragPayloads(from: info)
+            else { return false }
+            return parent.store.moveIssueIDs(
+                payloads.flatMap(\.issueIDs),
+                inFolder: folderID,
+                toOffset: row
+            )
+        }
+
+        private func dragPayloads(from info: any NSDraggingInfo) -> [BeadDragPayload]? {
+            guard let items = info.draggingPasteboard.pasteboardItems, !items.isEmpty else {
+                return nil
+            }
+            let decoder = JSONDecoder()
+            let payloads = items.compactMap { item -> BeadDragPayload? in
+                guard let data = item.data(forType: .beadazzleBeadDrag) else { return nil }
+                return try? decoder.decode(BeadDragPayload.self, from: data)
+            }
+            return payloads.count == items.count ? payloads : nil
         }
 
         func setContextClickActive(_ isActive: Bool) {
@@ -491,6 +597,57 @@ struct IssueListTableView: NSViewRepresentable {
             ))
             menu.addItem(.separator())
 
+            if parent.store.canCreateSavedView {
+                let addToFolderItem = NSMenuItem(title: "Add to Folder", action: nil, keyEquivalent: "")
+                let addToFolderMenu = NSMenu()
+                for folder in parent.store.folderSavedViews {
+                    addToFolderMenu.addItem(contextMenuItem(
+                        title: folder.name,
+                        action: #selector(addContextBeadsToFolder(_:)),
+                        ids: ids,
+                        folderID: folder.id
+                    ))
+                }
+                if !parent.store.folderSavedViews.isEmpty {
+                    addToFolderMenu.addItem(.separator())
+                }
+                addToFolderMenu.addItem(contextMenuItem(
+                    title: "New Folder from Selection…",
+                    action: #selector(createFolderFromContextBeads(_:)),
+                    ids: ids
+                ))
+                menu.addItem(addToFolderItem)
+                menu.setSubmenu(addToFolderMenu, for: addToFolderItem)
+
+                if let folderID = parent.store.activeFolderSavedView?.id {
+                    menu.addItem(contextMenuItem(
+                        title: "Remove from Folder",
+                        action: #selector(removeContextBeadsFromFolder(_:)),
+                        ids: ids,
+                        folderID: folderID
+                    ))
+                    if parent.store.canReorderActiveFolder {
+                        let moveItem = NSMenuItem(title: "Move in Folder", action: nil, keyEquivalent: "")
+                        let moveMenu = NSMenu()
+                        moveMenu.addItem(contextMenuItem(
+                            title: "Move to Top",
+                            action: #selector(moveContextBeadsToTop(_:)),
+                            ids: ids,
+                            folderID: folderID
+                        ))
+                        moveMenu.addItem(contextMenuItem(
+                            title: "Move to Bottom",
+                            action: #selector(moveContextBeadsToBottom(_:)),
+                            ids: ids,
+                            folderID: folderID
+                        ))
+                        menu.addItem(moveItem)
+                        menu.setSubmenu(moveMenu, for: moveItem)
+                    }
+                }
+                menu.addItem(.separator())
+            }
+
             menu.addItem(contextMenuItem(
                 title: "Add Labels…",
                 systemSymbolName: "tag",
@@ -559,14 +716,16 @@ struct IssueListTableView: NSViewRepresentable {
             action: Selector,
             ids: Set<String>,
             status: String? = nil,
-            bulkEditTarget: BulkEditTarget? = nil
+            bulkEditTarget: BulkEditTarget? = nil,
+            folderID: UUID? = nil
         ) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = ContextMenuAction(
                 ids: Array(ids),
                 status: status,
-                bulkEditTarget: bulkEditTarget
+                bulkEditTarget: bulkEditTarget,
+                folderID: folderID
             )
             if let systemSymbolName {
                 item.image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil)
@@ -597,6 +756,51 @@ struct IssueListTableView: NSViewRepresentable {
             IssueClipboard.copyIssueID(action.ids.sorted().joined(separator: "\n"))
         }
 
+        @objc private func addContextBeadsToFolder(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ContextMenuAction,
+                  let folderID = action.folderID
+            else { return }
+            parent.store.addIssueIDs(
+                orderedContextIssueIDs(action.ids),
+                toFolder: folderID
+            )
+        }
+
+        @objc private func createFolderFromContextBeads(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ContextMenuAction else { return }
+            parent.store.requestNewFolder(issueIDs: orderedContextIssueIDs(action.ids))
+        }
+
+        @objc private func removeContextBeadsFromFolder(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ContextMenuAction,
+                  let folderID = action.folderID
+            else { return }
+            parent.store.removeIssueIDs(Set(action.ids), fromFolder: folderID)
+        }
+
+        @objc private func moveContextBeadsToTop(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ContextMenuAction,
+                  let folderID = action.folderID
+            else { return }
+            parent.store.moveIssueIDs(action.ids, inFolder: folderID, toOffset: 0)
+        }
+
+        @objc private func moveContextBeadsToBottom(_ sender: NSMenuItem) {
+            guard let action = sender.representedObject as? ContextMenuAction,
+                  let folderID = action.folderID
+            else { return }
+            parent.store.moveIssueIDs(
+                action.ids,
+                inFolder: folderID,
+                toOffset: parent.store.folderIssueIDs(id: folderID, resolvedOnly: false).count
+            )
+        }
+
+        private func orderedContextIssueIDs(_ ids: [String]) -> [String] {
+            let idSet = Set(ids)
+            return orderedIDs.filter(idSet.contains)
+        }
+
         @objc private func setContextStatus(_ sender: NSMenuItem) {
             guard let action = sender.representedObject as? ContextMenuAction,
                   let status = action.status
@@ -619,6 +823,42 @@ struct IssueListTableView: NSViewRepresentable {
     }
 }
 
+@MainActor
+final class IssueListDiffableDataSource: NSTableViewDiffableDataSource<Int, String> {
+    var pasteboardWriter: ((Int) -> (any NSPasteboardWriting)?)?
+    var validateDrop: ((any NSDraggingInfo, Int, NSTableView.DropOperation) -> NSDragOperation)?
+    var acceptDrop: ((any NSDraggingInfo, Int, NSTableView.DropOperation) -> Bool)?
+
+    @objc func tableView(
+        _ tableView: NSTableView,
+        pasteboardWriterForRow row: Int
+    ) -> (any NSPasteboardWriting)? {
+        pasteboardWriter?(row)
+    }
+
+    @objc func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: any NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        let result = validateDrop?(info, row, .above) ?? []
+        if result != [] {
+            tableView.setDropRow(row, dropOperation: .above)
+        }
+        return result
+    }
+
+    @objc func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: any NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        acceptDrop?(info, row, .above) ?? false
+    }
+}
+
 extension IssueListTableView.Coordinator: NSMenuDelegate {
     func menuDidClose(_ menu: NSMenu) {
         setContextClickActive(false)
@@ -630,11 +870,18 @@ private final class ContextMenuAction {
     let ids: [String]
     let status: String?
     let bulkEditTarget: BulkEditTarget?
+    let folderID: UUID?
 
-    init(ids: [String], status: String? = nil, bulkEditTarget: BulkEditTarget? = nil) {
+    init(
+        ids: [String],
+        status: String? = nil,
+        bulkEditTarget: BulkEditTarget? = nil,
+        folderID: UUID? = nil
+    ) {
         self.ids = ids
         self.status = status
         self.bulkEditTarget = bulkEditTarget
+        self.folderID = folderID
     }
 }
 
@@ -906,6 +1153,8 @@ private final class IssueKeyboardTableView: NSTableView {
     var onContextTargetRowChange: ((Int?) -> Void)?
     var onContextClickChange: ((Bool) -> Void)?
     var contextMenuProvider: ((Int) -> NSMenu?)?
+    var onPrimaryMouseInteractionEnded: (() -> Void)?
+    private(set) var isHandlingPrimaryMouseInteraction = false
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
@@ -932,6 +1181,13 @@ private final class IssueKeyboardTableView: NSTableView {
             onContextClickChange?(false)
         } else {
             onContextTargetRowChange?(nil)
+            // Keep AppKit's selection live through its click/drag tracking loop. SwiftUI
+            // receives the resolved selection only after the native interaction returns.
+            isHandlingPrimaryMouseInteraction = true
+            defer {
+                isHandlingPrimaryMouseInteraction = false
+                onPrimaryMouseInteractionEnded?()
+            }
             super.mouseDown(with: event)
         }
     }

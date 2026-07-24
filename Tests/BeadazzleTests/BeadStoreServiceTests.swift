@@ -4,28 +4,28 @@ import XCTest
 
 @MainActor
 final class BeadSavedViewRepositoryTests: XCTestCase {
-    func testRoundTripNormalizesPresentationFields() {
+    func testFolderRoundTripNormalizesPresentationFieldsAndIssueIDs() {
         let defaults = makeUserDefaults()
         let repository = BeadSavedViewRepository(userDefaults: defaults)
         let projectURL = URL(fileURLWithPath: "/tmp/repository-round-trip")
-        var view = makeSavedView()
+        var view = BeadSavedView(
+            id: UUID(),
+            name: "Focus",
+            symbolName: "folder",
+            content: .folder(BeadFolderBookmark(
+                orderedIssueIDs: ["bd-1", " bd-1 ", "", "bd-2"]
+            ))
+        )
         view.name = "  Focus  "
         view.symbolName = "not.a.real.saved.view.symbol"
-        view.ordering = .manual(BeadSavedViewManualOrdering(
-            issueIDs: ["bd-1", " bd-1 ", "", "bd-2"],
-            fallback: BeadSavedViewSort(field: .updated, direction: .descending)
-        ))
 
-        repository.save(BeadSavedViewTree(rootNodes: [.view(view)]), projectURL: projectURL)
+        repository.save([view], projectURL: projectURL)
         let result = repository.load(projectURL: projectURL)
 
         XCTAssertEqual(result.views.count, 1)
         XCTAssertEqual(result.views[0].name, "Focus")
         XCTAssertEqual(result.views[0].symbolName, BeadSavedViewSymbols.normalized(view.symbolName))
-        guard case .manual(let ordering) = result.views[0].ordering else {
-            return XCTFail("Expected manual ordering")
-        }
-        XCTAssertEqual(ordering.issueIDs, ["bd-1", "bd-2"])
+        XCTAssertEqual(result.views[0].folder?.orderedIssueIDs, ["bd-1", "bd-2"])
         XCTAssertTrue(result.rebuildsCounts)
         XCTAssertFalse(result.isCorrupt)
     }
@@ -52,7 +52,7 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
         let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
         let earlierRecovery = Data("earlier".utf8)
         defaults.set(earlierRecovery, forKey: "\(key).Recovery")
-        repository.save(BeadSavedViewTree(rootNodes: [.view(makeSavedView())]), projectURL: projectURL)
+        repository.save([makeSavedView()], projectURL: projectURL)
         let currentPayload = try XCTUnwrap(defaults.data(forKey: key))
 
         repository.reset(projectURL: projectURL)
@@ -66,25 +66,19 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
         XCTAssertTrue(archivedPayloads.contains(currentPayload))
     }
 
-    func testMalformedNestedNodePreservesFolderAndValidSiblings() throws {
+    func testMalformedCurrentPayloadPreservesValidSiblings() throws {
         let defaults = makeUserDefaults()
         let repository = BeadSavedViewRepository(userDefaults: defaults)
-        let projectURL = URL(fileURLWithPath: "/tmp/repository-nested-recovery")
+        let projectURL = URL(fileURLWithPath: "/tmp/repository-current-recovery")
         let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
         let view = makeSavedView()
-        let payload = BeadSavedViewsPayload(rootNodes: [
-            .folder(BeadSavedViewFolder(id: UUID(), name: "  Planning  ", children: [.view(view)]))
-        ])
+        let payload = BeadSavedViewsPayload(views: [view])
         var object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any]
         )
-        var rootNodes = try XCTUnwrap(object["rootNodes"] as? [[String: Any]])
-        var folder = try XCTUnwrap(rootNodes[0]["folder"] as? [String: Any])
-        var children = try XCTUnwrap(folder["children"] as? [[String: Any]])
-        children.append(["kind": "future-node"])
-        folder["children"] = children
-        rootNodes[0]["folder"] = folder
-        object["rootNodes"] = rootNodes
+        var views = try XCTUnwrap(object["views"] as? [[String: Any]])
+        views.append(["kind": "future-bookmark"])
+        object["views"] = views
         let damagedData = try JSONSerialization.data(withJSONObject: object)
         defaults.set(damagedData, forKey: key)
 
@@ -92,12 +86,69 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
 
         XCTAssertEqual(result.recoveryIssueCount, 1)
         XCTAssertEqual(result.views, [view])
-        guard case .folder(let recoveredFolder) = result.rootNodes.first else {
-            return XCTFail("Expected recovered folder")
-        }
-        XCTAssertEqual(recoveredFolder.name, "Planning")
-        XCTAssertEqual(recoveredFolder.children, [.view(view)])
         XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), damagedData)
+    }
+
+    func testVersionOneMigrationFlattensOrganizationAndDiscardsDormantManualMembership() throws {
+        let defaults = makeUserDefaults()
+        let repository = BeadSavedViewRepository(userDefaults: defaults)
+        let projectURL = URL(fileURLWithPath: "/tmp/repository-version-one-migration")
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        let query = BeadSavedViewQuery(
+            basePreset: .all,
+            statusFilters: ["open"],
+            typeFilters: [],
+            priorityFilters: [],
+            labelFilters: [],
+            searchText: ""
+        )
+        let fallbackSort = BeadSavedViewSort(field: .updated, direction: .descending)
+        let first = LegacySavedViewFixture(
+            id: UUID(),
+            name: "First",
+            symbolName: "bookmark",
+            query: query,
+            ordering: .manual(BeadSavedViewManualOrdering(
+                issueIDs: ["bd-3", "bd-1"],
+                fallback: fallbackSort
+            ))
+        )
+        let second = LegacySavedViewFixture(
+            id: UUID(),
+            name: "Second",
+            symbolName: "star",
+            query: query,
+            ordering: .sorted(BeadSavedViewSort(field: .priority, direction: .ascending))
+        )
+        let legacyPayload = LegacySavedViewsPayloadFixture(rootNodes: [
+            .folder(
+                id: UUID(),
+                name: "Planning",
+                children: [
+                    .view(first),
+                    .folder(id: UUID(), name: "Nested", children: [.view(second)])
+                ]
+            )
+        ])
+        let legacyData = try JSONEncoder().encode(legacyPayload)
+        defaults.set(legacyData, forKey: key)
+
+        let result = repository.load(projectURL: projectURL)
+
+        XCTAssertEqual(result.views.map(\.id), [first.id, second.id])
+        XCTAssertEqual(result.views.map(\.smartQuery), [query, query])
+        XCTAssertEqual(result.views[0].savedSort, fallbackSort)
+        XCTAssertEqual(
+            result.views[1].savedSort,
+            BeadSavedViewSort(field: .priority, direction: .ascending)
+        )
+        XCTAssertTrue(result.views.allSatisfy { !$0.isFolder })
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), legacyData)
+
+        let migratedData = try XCTUnwrap(defaults.data(forKey: key))
+        let migrated = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: migratedData)
+        XCTAssertEqual(migrated.version, 2)
+        XCTAssertEqual(migrated.views, result.views)
     }
 
     private func makeSavedView() -> BeadSavedView {
@@ -124,6 +175,51 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
         return defaults
     }
 
+}
+
+private struct LegacySavedViewsPayloadFixture: Encodable {
+    var version = 1
+    var rootNodes: [LegacySavedViewNodeFixture]
+}
+
+private struct LegacySavedViewFixture: Encodable {
+    var id: UUID
+    var name: String
+    var symbolName: String
+    var query: BeadSavedViewQuery
+    var ordering: BeadSavedViewOrdering
+}
+
+private indirect enum LegacySavedViewNodeFixture: Encodable {
+    case folder(id: UUID, name: String, children: [Self])
+    case view(LegacySavedViewFixture)
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case folder
+        case view
+    }
+
+    private enum FolderKeys: String, CodingKey {
+        case id
+        case name
+        case children
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .folder(let id, let name, let children):
+            try container.encode("folder", forKey: .kind)
+            var folder = container.nestedContainer(keyedBy: FolderKeys.self, forKey: .folder)
+            try folder.encode(id, forKey: .id)
+            try folder.encode(name, forKey: .name)
+            try folder.encode(children, forKey: .children)
+        case .view(let view):
+            try container.encode("view", forKey: .kind)
+            try container.encode(view, forKey: .view)
+        }
+    }
 }
 
 @MainActor

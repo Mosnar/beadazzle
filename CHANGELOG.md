@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Added per-project bookmark folders for collecting beads from any list by drag and drop or bead menus, arranging them manually, filtering or sorting them temporarily, and copying their IDs for handoff without slowing normal list selection.
+
 ## [1.4.0] - 2026-07-21
 
 - Added one-key shortcuts for status, type, and priority menus.

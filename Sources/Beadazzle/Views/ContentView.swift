@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var searchPresented = false
     @State private var savedViewEditorRequest: SavedViewEditorRequest?
+    @State private var folderEditorRequest: FolderBookmarkEditorRequest?
     @State private var bulkEditRequest: BulkEditRequest?
 
     var body: some View {
@@ -84,6 +85,12 @@ struct ContentView: View {
                 initialSymbolName: workspace.selectedBookmark.systemImage
             )
         }
+        .sheet(item: $folderEditorRequest) { request in
+            FolderBookmarkSheet(
+                initialIssueIDs: request.initialIssueIDs,
+                suggestedName: store.suggestedFolderName
+            )
+        }
         .sheet(item: $bulkEditRequest) { request in
             BulkEditSheet(request: request)
         }
@@ -99,13 +106,14 @@ struct ContentView: View {
             openProject: openProject,
             refresh: canRefresh ? { store.refresh() } : nil,
             find: store.hasReadableProject ? { searchPresented = true } : nil,
-            saveCurrentViewAsBookmark: store.canCreateSavedView ? presentSaveBookmark : nil
+            saveCurrentViewAsBookmark: store.canSaveCurrentViewAsSmartBookmark ? presentSaveBookmark : nil
         ))
         .onChange(of: project.projectURL) {
             pendingDeleteRequest = nil
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
             savedViewEditorRequest = nil
+            folderEditorRequest = nil
             bulkEditRequest = nil
         }
         .onChange(of: scenePhase) { _, phase in
@@ -116,6 +124,11 @@ struct ContentView: View {
             guard let id else { return }
             savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
             store.clearRequestedSavedViewEditor()
+        }
+        .onChange(of: workspace.requestedFolderIssueIDs) { _, issueIDs in
+            guard let issueIDs else { return }
+            folderEditorRequest = FolderBookmarkEditorRequest(initialIssueIDs: issueIDs)
+            store.clearRequestedFolder()
         }
     }
 
@@ -130,6 +143,7 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(
                 onSaveBookmark: presentSaveBookmark,
+                onNewFolder: { store.requestNewFolder() },
                 onEditBookmark: { id in savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id)) }
             )
                 .navigationSplitViewColumnWidth(
@@ -166,13 +180,13 @@ struct ContentView: View {
     }
 
     private func presentSaveBookmark() {
-        guard store.canCreateSavedView else { return }
+        guard store.canSaveCurrentViewAsSmartBookmark else { return }
         savedViewEditorRequest = SavedViewEditorRequest(mode: .create)
     }
 
     private func existingSavedView(for request: SavedViewEditorRequest) -> BeadSavedView? {
         guard case .edit(let id) = request.mode else { return nil }
-        return workspace.savedViews.first { $0.id == id }
+        return workspace.savedViews.first { $0.id == id && !$0.isFolder }
     }
 
     // Keep `IssueListView` in a single, stable structural slot (HSplitView[0]) across

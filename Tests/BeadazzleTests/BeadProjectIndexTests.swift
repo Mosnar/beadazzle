@@ -546,6 +546,47 @@ final class BeadProjectIndexTests: XCTestCase {
         })
     }
 
+    func testFolderScopeFiltersOneThousandOrderedIDsInsideTenThousandIssueProject() {
+        let issues = (0..<10_000).map { offset in
+            issue(
+                "bd-\(offset)",
+                title: offset.isMultiple(of: 2) ? "Cleanup \(offset)" : "Feature \(offset)",
+                status: offset.isMultiple(of: 3) ? "closed" : "open",
+                type: offset.isMultiple(of: 5) ? "epic" : "task",
+                priority: offset % 4,
+                labels: [offset.isMultiple(of: 2) ? "cleanup" : "feature"]
+            )
+        }
+        let projectIndex = BeadProjectIndex(
+            issues: issues,
+            dependencies: [],
+            semantics: semantics()
+        )
+        let orderedFolderIDs = (9_000..<10_000).reversed().map { "bd-\($0)" }
+
+        let result = projectIndex.filteredIssueIDsAndCounts(
+            within: orderedFolderIDs,
+            statusFilters: ["open"],
+            typeFilters: ["task"],
+            priorityFilters: [0, 2],
+            labelFilters: ["cleanup"],
+            searchText: "cleanup"
+        )
+        let expected = orderedFolderIDs.filter { id in
+            let offset = Int(id.dropFirst(3))!
+            return !offset.isMultiple(of: 3)
+                && !offset.isMultiple(of: 5)
+                && (offset % 4 == 0 || offset % 4 == 2)
+                && offset.isMultiple(of: 2)
+        }
+
+        XCTAssertEqual(result.matchingIDs, expected)
+        XCTAssertEqual(result.counts.statusCounts.reduce(0) { $0 + $1.1 }, 1_000)
+        XCTAssertEqual(result.counts.typeCounts.reduce(0) { $0 + $1.1 }, 1_000)
+        XCTAssertEqual(result.counts.priorityCounts.reduce(0) { $0 + $1.1 }, 1_000)
+        XCTAssertEqual(Set(result.matchingIDs).count, result.matchingIDs.count)
+    }
+
     func testLargeDatasetPartitionsSystemRecordsOnceDuringIndexing() {
         let userIssues = (0..<5_000).map { offset in
             issue("bd-\(offset)", title: "Work \(offset)", status: "open", type: "task")

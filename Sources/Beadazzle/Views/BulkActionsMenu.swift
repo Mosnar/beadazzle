@@ -11,8 +11,14 @@ struct BulkActionsMenu: View {
     var body: some View {
         let statusOptions = store.statusChangeOptions(forIssueIDs: workspace.selectedIDs)
         let propertySections = BulkEditPropertySections(store: store)
+        let orderedSelectedIDs = store.orderedIssueIDsForCurrentRows(workspace.selectedIDs)
 
         Menu {
+            if store.canCreateSavedView {
+                FolderActionsMenu(issueIDs: orderedSelectedIDs)
+                Divider()
+            }
+
             Button("Add Labels…") {
                 requestBulkEdit(.addLabels)
             }

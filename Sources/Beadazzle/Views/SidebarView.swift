@@ -5,6 +5,7 @@ struct SidebarView: View {
     private var project: BeadProjectStore { store.project }
     private var workspace: BeadWorkspaceStore { store.workspace }
     let onSaveBookmark: () -> Void
+    let onNewFolder: () -> Void
     let onEditBookmark: (UUID) -> Void
     @State private var isConfirmingBookmarkReset = false
 
@@ -35,48 +36,41 @@ struct SidebarView: View {
                         onReset: { isConfirmingBookmarkReset = true }
                     )
                 }
-                if workspace.savedViewTree.isEmpty, workspace.savedViewPersistenceState == .ready {
-                    Text("No bookmarks yet")
+                if workspace.savedViews.isEmpty, workspace.savedViewPersistenceState == .ready {
+                    Text("No bookmarks or folders yet")
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("No saved bookmarks")
-                } else if !workspace.savedViewTree.isEmpty {
-                    if workspace.savedViewTree.containsFolders {
-                        ForEach(workspace.savedViews) { savedView in
-                            SavedViewRow(
-                                view: savedView,
-                                count: store.count(forSavedViewID: savedView.id),
-                                countIsLoading: workspace.isRebuildingSavedViewCounts,
-                                onEdit: { onEditBookmark(savedView.id) }
-                            )
+                        .accessibilityLabel("No saved bookmarks or folders")
+                } else if !workspace.savedViews.isEmpty {
+                    ForEach(workspace.savedViews) { savedView in
+                        SavedViewRow(
+                            view: savedView,
+                            count: store.count(forSavedViewID: savedView.id),
+                            countIsLoading: workspace.isRebuildingSavedViewCounts,
+                            onEdit: { onEditBookmark(savedView.id) }
+                        )
                             .tag(BeadSidebarSelection.savedView(savedView.id))
-                        }
-                    } else {
-                        ForEach(workspace.savedViews) { savedView in
-                            SavedViewRow(
-                                view: savedView,
-                                count: store.count(forSavedViewID: savedView.id),
-                                countIsLoading: workspace.isRebuildingSavedViewCounts,
-                                onEdit: { onEditBookmark(savedView.id) }
-                            )
-                                .tag(BeadSidebarSelection.savedView(savedView.id))
-                        }
-                        .onMove(perform: store.moveSavedViews)
                     }
+                    .onMove(perform: store.moveSavedViews)
                 }
             } header: {
                 HStack {
                     Text("Bookmarks")
                     Spacer()
-                    Button(action: onSaveBookmark) {
+                    Menu {
+                        Button("Save Smart Bookmark…", action: onSaveBookmark)
+                            .disabled(!store.canSaveCurrentViewAsSmartBookmark)
+                        Button("New Folder…", action: onNewFolder)
+                    } label: {
                         Image(systemName: "plus")
                             .frame(width: 28, height: 28)
                             .contentShape(.rect)
                     }
-                    .buttonStyle(.plain)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .padding(.trailing, 4)
                     .disabled(!store.canCreateSavedView)
-                    .help("Save Current View as Bookmark")
-                    .accessibilityLabel("Save current view as bookmark")
+                    .help("Add Bookmark or Folder")
+                    .accessibilityLabel("Add bookmark or folder")
                 }
             }
         }

@@ -5,6 +5,9 @@ struct BeadWorkspaceSnapshot: Equatable, Sendable {
     var activeSavedViewID: UUID?
     var sourceSavedViewID: UUID? = nil
     var savedViewOrdering: BeadSavedViewOrdering? = nil
+    var listOrdering: BeadListOrdering = .sorted(
+        BeadSavedViewSort(field: .priority, direction: .ascending)
+    )
     var selectedIDs: Set<String>
     var fullPageDetailIssueID: String?
     var searchText: String
