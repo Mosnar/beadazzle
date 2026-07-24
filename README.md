@@ -40,6 +40,9 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 - Dedicated gate queue with approve/reject workflows, gate-aware blockers, and guarded close/reopen actions.
 - Parent and sub-issue workflows with breadcrumbs, inline child creation, child-close confirmation, and hierarchy safety checks.
 - Fast relationship pickers with search, filters, outline mode, and quick-create flows.
+- Per-project sidebar bookmarks (saved views) with multi-select filters, nested boolean rules, custom names and icons, counts, live previews, reordering, and duplication.
+- Bookmark folders for collecting beads from any list by drag and drop or bead menus, arranging them manually, and copying their IDs for handoff.
+- Restores each project's workspace when reopened: last view or bookmark, search and filters, sort, list mode, outline expansion, selection, and open detail.
 - Project settings for storage, Dolt remote health and manual sync, snapshot freshness, readable export health, optional hooks, backups, and Ready workflow preferences.
 - CRUD, bulk actions, comments, dependencies, gates, and workflow mutations routed through the `bd` CLI.
 - Context-aware JSONL snapshot reads, including redirected and worktree tracker directories.
@@ -82,24 +85,20 @@ Generally not implemented in v1:
 
 ## Build, Test, and Run
 
-Repo-local `rtk` commands are the preferred entrypoints in this project:
-
 ```bash
-rtk swift build
-rtk swift test
-rtk ./script/build_and_run.sh
+swift build
+swift test
+./script/build_and_run.sh
 ```
 
 Useful launch modes:
 
 ```bash
-rtk ./script/build_and_run.sh --verify
-rtk ./script/build_and_run.sh --logs
-rtk ./script/build_and_run.sh --telemetry
-rtk ./script/build_and_run.sh --debug
+./script/build_and_run.sh --verify     # Launch and confirm the process stays up
+./script/build_and_run.sh --logs       # Launch and stream unified logs for the process
+./script/build_and_run.sh --telemetry  # Launch and stream only the app's own log subsystem
+./script/build_and_run.sh --debug      # Launch the staged binary under lldb
 ```
-
-If you are not using `rtk`, the equivalent raw commands are `swift build`, `swift test`, and `./script/build_and_run.sh`.
 
 `script/build_and_run.sh` remains the single local build/run entrypoint. It builds the SwiftPM executable, stages `dist/Beadazzle.app`, applies an ad-hoc signature for local launch, and opens the app through LaunchServices.
 
@@ -152,7 +151,7 @@ Beadazzle is designed around local repository data.
 
 Close reason dialog:
 
-- Launch with `rtk ./script/build_and_run.sh --verify`.
+- Launch with `./script/build_and_run.sh --verify`.
 - Open a Beads project, close one bead from the row context menu, and confirm the reason field is focused.
 - Cancel the dialog and confirm the bead remains open.
 - Close one bead with a blank reason and confirm the app refreshes without an error.
@@ -166,6 +165,6 @@ Close reason dialog:
 - `Sources/Beadazzle/Stores`: app state, filtering, selection, history, and mutation coordination.
 - `Sources/Beadazzle/Services`: context-aware JSONL snapshot reads, live source monitoring, `bd` command execution, and native panels.
 - `Sources/Beadazzle/Views`: SwiftUI surfaces for sidebar, list, detail, editor, dependencies, and bulk actions.
-- `Sources/Beadazzle/Support`: formatting, notifications, performance signposts, and visual styling helpers.
+- `Sources/Beadazzle/Support`: formatting, menu commands, drag-and-drop, workspace history, performance signposts, and visual styling helpers.
 
-Reads are optimized for UI responsiveness: Beadazzle discovers one local source, loads a full snapshot off the main thread, builds an immutable project index, and keeps views querying that in-memory index. Writes go through `bd` instead of direct database mutation so Beads semantics, hooks, history, and validation remain intact.
+Reads are optimized for UI responsiveness: Beadazzle resolves the tracker directory once per project through `bd context`, loads a full snapshot off the main thread, builds an immutable project index, and keeps views querying that in-memory index. Filtering and sorting also run off the main actor, so large projects stay responsive while typing or switching views. Writes go through `bd` instead of direct database mutation so Beads semantics, hooks, history, and validation remain intact, and they are serialized behind a write queue so optimistic UI updates never reorder `bd` invocations.

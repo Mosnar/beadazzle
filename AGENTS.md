@@ -4,9 +4,8 @@ Beadazzle is a SwiftPM native macOS app. Prefer small, focused SwiftUI files and
 
 ## Build and Run
 
-- Build with `rtk swift build`.
-- Launch with `rtk ./script/build_and_run.sh`.
-- Verify launch with `rtk ./script/build_and_run.sh --verify`.
+- Build with `swift build`, test with `swift test`.
+- Launch with `./script/build_and_run.sh`; verify launch with `./script/build_and_run.sh --verify`.
 - The Codex Run action points at `./script/build_and_run.sh`.
 
 ## Xcode MCP and Warnings
@@ -32,8 +31,10 @@ Beadazzle is a SwiftPM native macOS app. Prefer small, focused SwiftUI files and
 
 ## Beads Data Model
 
-- Read issues quickly from `.beads/beads.db` when populated.
-- Fall back to `.beads/issues.jsonl` for embedded projects whose SQLite `issues` table is empty.
+- Only current Dolt-backed projects are supported, in embedded, server, or shared-server mode. Legacy SQLite (`.beads/beads.db`) projects are intentionally unsupported and there is no SQLite read path left in the app.
+- Ask `bd context --json` for the effective tracker directory before reading, so worktree redirects and explicitly routed `.beads` paths stay on the same source `bd` writes.
+- Read issues from the JSONL snapshot in that directory (`issues.jsonl`, `beads.jsonl`, or `beads.base.jsonl`).
+- Beadazzle produces that snapshot itself by running `bd export` — when a project opens with no snapshot, after mutations, and on manual refresh — so users do not need `bd` auto-export configured.
 - Do not write directly to Beads internals unless the user explicitly asks for a low-level repair.
 - Route creates, updates, deletes, close actions, bulk changes, and dependency changes through the `bd` CLI.
 

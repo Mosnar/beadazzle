@@ -2,17 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Beadazzle is a native macOS SwiftUI app (SwiftPM, macOS 14+) that provides a fast desktop UI for [Beads](https://github.com/) issue trackers, especially repos using Beads in embedded mode. See `README.md` for the feature list and `AGENTS.md` for repo boundaries.
+Beadazzle is a native macOS SwiftUI app (SwiftPM, macOS 14+) that provides a fast desktop UI for [Beads](https://github.com/gastownhall/beads) issue trackers, especially repos using Beads in embedded mode. See `README.md` for the feature list and `AGENTS.md` for repo boundaries.
 
 ## Commands
 
 ```bash
-swift build                        # Build the executable target
-swift test                         # Run the full test suite
+swift build                            # Build the executable target
+swift test                             # Run the full test suite
 swift test --filter BeadStoreOutlineExpansionTests   # Run one test class (or ...Tests/testMethod)
-./script/build_and_run.sh          # Build, stage dist/Beadazzle.app, ad-hoc sign, launch via LaunchServices
-./script/build_and_run.sh --verify # Launch and confirm the process stays up (used for smoke checks)
-./script/build_and_run.sh --logs   # Launch + stream os_log for the process
+./script/build_and_run.sh              # Build, stage dist/Beadazzle.app, ad-hoc sign, launch via LaunchServices
+./script/build_and_run.sh --verify     # Launch and confirm the process stays up (used for smoke checks)
+./script/build_and_run.sh --logs       # Launch + stream os_log for the process
+./script/build_and_run.sh --telemetry  # Launch + stream only the app's own subsystem
+./script/build_and_run.sh --debug      # Launch the staged binary under lldb
 ```
 
 `build_and_run.sh` is the single build/run entrypoint — do not add alternate launch paths. Generated output (`.build/`, `.swiftpm/`, `dist/`) is gitignored; never edit it. Keep `.codex/environments/environment.toml` separate from app source.
@@ -21,15 +23,21 @@ swift test --filter BeadStoreOutlineExpansionTests   # Run one test class (or ..
 
 The read and write paths are deliberately separate:
 
-**Reads (snapshot → immutable index → in-memory queries).** `BeadProjectLoader.loadProject` reads one local data source off the main thread and builds an immutable `BeadProjectIndex`; views query that in-memory index rather than hitting disk on navigation. Source resolution order (`BeadsSnapshotReader` / `BeadsDataSourceDiscovery`): a populated SQLite `.beads/beads.db` first, then a JSONL fallback (`issues.jsonl` / `beads.jsonl` / `beads.base.jsonl`) — used for embedded projects whose SQLite `issues` table is empty. `BeadsDataSourceMonitor` watches the source for local changes and triggers live reloads.
+**Project environment (resolved first, cached).** `BeadProjectLoader.resolveEnvironment` asks `bd context --json` and builds a `BeadsProjectEnvironment`. Only current Dolt-backed projects are supported: a non-`dolt` backend or an unrecognized Dolt mode throws `BeadError.unsupportedProjectMode`; recognized modes are embedded, server, and shared-server. The environment also carries the effective tracker directory, so worktree redirects and explicitly routed `.beads` paths read the same source `bd` writes. It is resolved once per open and reused by routine reloads, so navigation never re-spawns capability probes.
 
-**Writes (always through the `bd` CLI).** All mutations — create, update, close, delete, bulk update, dependency add/remove, comments, custom status/type definitions — route through `BeadsCommandService` (conforms to `BeadsCommanding`), which shells out to `bd`. Never write to `.beads/beads.db` or the JSONL files directly; going through `bd` preserves Beads semantics, hooks, history, and validation. `BeadsCLI.executable()` resolves the `bd` binary: configured pref path → `BEADAZZLE_BD_PATH` env → `PATH` → common fallback dirs (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). After writes, `BeadsCommandService` re-exports a readable JSONL snapshot so the next read reflects the change.
+**Reads (JSONL snapshot → immutable index → in-memory queries).** `BeadsDataSourceDiscovery` looks only for a JSONL snapshot in the tracker directory (`issues.jsonl` / `beads.jsonl` / `beads.base.jsonl`) — there is no SQLite read path; legacy `.beads/beads.db` projects are intentionally unsupported. `BeadProjectLoader` reads that snapshot off the main thread and builds an immutable `BeadProjectIndex`; views query that index rather than hitting disk on navigation. Beadazzle produces the snapshot itself rather than requiring `bd` auto-export: `exportAndLoadProject` runs `bd export` when no snapshot exists (`BeadStore+Project.swift` recovers from `projectMissingDataSource` this way), `refreshSnapshotAndLoadProject` re-exports before post-mutation reconciles and manual refreshes, and server/shared-server projects also export on open and app activation. `BeadsDataSourceMonitor` watches the snapshot with `DispatchSource` file-system events — no polling of idle projects — and triggers live reloads.
 
-**State: `BeadStore` (`Sources/Beadazzle/Stores/`).** A single `@Observable @MainActor` object holding essentially all UI state — project readiness, issues, filter/sort/selection state, dependencies, comments, preferences. It is the central hub; most views take it via `.environment(store)`. Note the pattern: filter/sort/preference properties use `didSet` observers that call `filterStateDidChange` / `sortStateDidChange` / rebuild methods and persist to `UserDefaults`. When adding UI state, follow that pattern rather than scattering derived recomputation. `BeadIssueListQuery` handles filtering/sorting into the displayed row list.
+**Writes (always through the `bd` CLI).** All mutations — create, update, close, delete, bulk update, dependency add/remove, comments, gates, custom status/type definitions, Dolt pull/push — route through `BeadsCommandService` (conforms to `BeadsCommanding`), which shells out to `bd`. Never write to Dolt tables or the JSONL snapshot directly; going through `bd` preserves Beads semantics, hooks, history, and validation. `BeadMutationWriteQueue` serializes those writes so optimistic UI state can be applied immediately without reordering `bd` invocations, and a failed write does not poison the queue. `BeadsCLI.executable()` resolves the `bd` binary: configured pref path → `BEADAZZLE_BD_PATH` env → `PATH` (searched together with fallback dirs `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) → `/usr/bin/env bd`. `exportReadableSnapshot` writes `bd export` output to a temp file, validates it, and atomically installs it as the tracker directory's `issues.jsonl`, so the next read reflects the change.
 
-**App wiring (`Sources/Beadazzle/App/BeadazzleApp.swift`).** Menu commands reach the key window via focused scene values: `ContentView` publishes `WorkspaceCommandActions` with `.focusedSceneValue` and the `WorkspaceCommands`/`BeadSaveCommands` command groups consume them (`Support/WorkspaceCommands.swift`, `Support/BeadSaveCommands.swift`), so commands scope to the focused scene and disable when no window provides them. The app has three scenes: main window, Settings, and a `URL`-parameterized Project Settings window.
+**State: `BeadStore` (`Sources/Beadazzle/Stores/`).** `BeadStore` is the `@Observable @MainActor` composition root and the single dependency views need; install it with `.beadStoreEnvironment(store)` (`Support/BeadStoreEnvironment.swift`), not a bare `.environment`. It owns narrower observable domains declared alongside it in `BeadStore.swift` — `BeadProjectStore` (readiness, index, environment), `BeadWorkspaceStore` (filters, sort, selection, outline), `BeadDetailStore`, `BeadMutationStore` (optimistic metadata state) — and its behavior is split across ~20 `BeadStore+*.swift` extensions by concern (Project, WorkspaceQuery, Mutations, Folders, Gates, Semantics, ProjectHealth, …). Put new work in the matching extension rather than growing `BeadStore.swift`.
 
-**Directory roles:** `Models/` (data types), `Stores/` (state + query logic), `Services/` (source discovery, snapshot readers, monitor, `bd` execution, native panels), `Views/` (SwiftUI surfaces), `Support/` (formatters, notifications, visual style, menu commands).
+Note the state pattern: filter/sort/preference properties use `didSet` observers that guard on `oldValue`, then call `filterStateDidChange` (with `debounce: true` for search text) / `sortStateDidChange` / rebuild methods, persist to `UserDefaults`, and sync the per-project workspace snapshot. When adding UI state, follow that pattern rather than scattering derived recomputation.
+
+The query pipeline runs off the main actor: `BeadStore+WorkspaceQuery.swift` hands recompute requests to detached workers that call `BeadIssueListQuery` (filter/sort into the displayed row list) and evaluate saved-view predicates through `CompiledBeadFilter`, an immutable precompiled form of a `BeadFilterGroup`. Keep filtering and sorting out of view bodies so large projects stay responsive.
+
+**App wiring (`Sources/Beadazzle/App/BeadazzleApp.swift`).** Menu commands reach the key window via focused scene values: `ContentView` publishes `WorkspaceCommandActions` with `.focusedSceneValue` and the command groups in `Support/` consume them — `WorkspaceCommands`, `BeadSaveCommands`, `AppSettingsCommands`, `ProjectSettingsCommands` — so commands scope to the focused scene and disable when no window provides them. The Navigate menu is declared inline in the app body from `BeadNavigationDirection` (`Support/BeadNavigationCommands.swift`). The app has three scenes: the main `WindowGroup`, a `Window` for app Settings, and a `URL`-parameterized Project Settings `WindowGroup`.
+
+**Directory roles:** `Models/` (data types), `Stores/` (state + query logic), `Services/` (source discovery, snapshot readers, monitor, `bd` execution, native panels), `Views/` (SwiftUI surfaces), `Support/` (formatters, visual style, menu commands, drag-and-drop, workspace history, performance signposts).
 
 ## Conventions
 

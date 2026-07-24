@@ -69,9 +69,9 @@ You can validate most of the pipeline locally before pushing a tag.
 ### Standard app checks
 
 ```bash
-rtk swift build
-rtk swift test
-rtk ./script/build_and_run.sh --verify
+swift build
+swift test
+./script/build_and_run.sh --verify
 ```
 
 ### Build a signed app bundle
