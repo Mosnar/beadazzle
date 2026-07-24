@@ -62,7 +62,7 @@ final class BeadSavedViewQueryEvaluatorTests: XCTestCase {
 
         let decoded = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: JSONEncoder().encode(payload))
 
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, BeadSavedViewsPayload.currentVersion)
         XCTAssertEqual(decoded.views, [view])
     }
 

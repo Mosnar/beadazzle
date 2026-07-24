@@ -614,6 +614,8 @@ extension BeadStore {
         value rawValue: String,
         reason: String? = nil,
         expectedProjectURL: URL? = nil,
+        reportsFeedback: Bool = true,
+        cancellationRequested: (@MainActor @Sendable () -> Bool)? = nil,
         progress reportProgress: ((BulkMutationProgress) -> Void)? = nil
     ) async -> BulkMutationResult {
         guard let projectURL else {
@@ -705,7 +707,7 @@ extension BeadStore {
         var outcome = BulkMutationOutcome.completed
         var settlementIsValid = true
         while nextIssueIndex < targetIDs.count {
-            if Task.isCancelled {
+            if Task.isCancelled || cancellationRequested?() == true {
                 outcome = .cancelled
                 break
             }
@@ -791,7 +793,7 @@ extension BeadStore {
             reconcileState.request(.mutation)
         }
 
-        if mutationProgress.succeededCount > 0 {
+        if reportsFeedback, mutationProgress.succeededCount > 0 {
             announceCompletion(
                 mutationProgress.succeededCount == 1
                     ? "Set \(dimension) on 1 bead"
@@ -799,7 +801,7 @@ extension BeadStore {
             )
         }
         let failedIDs = failures.failedIssueIDs
-        if !failures.isEmpty {
+        if reportsFeedback, !failures.isEmpty {
             let baseline = retryBaseline(for: failedIDs)
             reportBulkMutationFailure(
                 failures,

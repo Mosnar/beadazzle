@@ -18,6 +18,10 @@ struct InspectorLabelsRow: View {
 struct LabelEditorPopover: View {
     @Binding var labels: [String]
     let availableLabels: [String]
+    var title = "Labels"
+    var allowsCreatingLabels = true
+    var managedStateDimensions: Set<String> = []
+    var excludedLabels: Set<String> = []
     @State private var query = ""
 
     private var trimmedQuery: String {
@@ -33,7 +37,7 @@ struct LabelEditorPopover: View {
         let suggestions = suggestions(for: trimmedQuery)
 
         VStack(alignment: .leading, spacing: 12) {
-            Text("Labels")
+            Text(title)
                 .font(.headline)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -87,7 +91,10 @@ struct LabelEditorPopover: View {
     }
 
     private func addQueryLabels() {
-        let nextLabels = IssueDraft.normalizedLabels(query)
+        let nextLabels = IssueDraft.normalizedLabels(query).filter { label in
+            !excludedLabels.contains(label)
+                && BeadStateLabel.dimension(of: label).map(managedStateDimensions.contains) != true
+        }
         guard !nextLabels.isEmpty else { return }
         for label in nextLabels {
             add(label)
@@ -105,7 +112,10 @@ struct LabelEditorPopover: View {
 
     private func add(_ label: String) {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !labels.contains(trimmed) else { return }
+        guard !trimmed.isEmpty,
+              !labels.contains(trimmed),
+              !excludedLabels.contains(trimmed)
+        else { return }
         labels.append(trimmed)
         labels = uniqueLabels(labels)
     }
@@ -119,7 +129,10 @@ struct LabelEditorPopover: View {
         let visibleLabels = query.isEmpty
             ? candidates
             : candidates.filter { $0.localizedStandardContains(query) }
-        let canCreateQuery = !query.isEmpty
+        let canCreateQuery = allowsCreatingLabels
+            && !query.isEmpty
+            && !excludedLabels.contains(query)
+            && BeadStateLabel.dimension(of: query).map(managedStateDimensions.contains) != true
             && !candidates.contains { $0.caseInsensitiveCompare(query) == .orderedSame }
         let rowCount = visibleLabels.isEmpty && !canCreateQuery
             ? 1
@@ -136,7 +149,10 @@ struct LabelEditorPopover: View {
     /// Reuse that storage in the common case; only sort when the draft contains
     /// a newly created label that is not in the project catalog yet.
     private func candidateLabels() -> [String] {
-        var candidates = availableLabels
+        var candidates = availableLabels.filter { label in
+            !excludedLabels.contains(label)
+                && BeadStateLabel.dimension(of: label).map(managedStateDimensions.contains) != true
+        }
         var appendedNewLabel = false
         for label in labels where !candidates.contains(label) {
             candidates.append(label)

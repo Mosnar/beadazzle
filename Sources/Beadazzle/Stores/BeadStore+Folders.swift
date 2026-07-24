@@ -107,23 +107,67 @@ extension BeadStore {
     func createFolder(
         name: String,
         symbolName: String = "folder",
-        issueIDs: [String] = []
+        issueIDs: [String] = [],
+        automation: BeadFolderAutomation = BeadFolderAutomation()
     ) -> UUID? {
         guard hasReadableProject, canMutateSavedViews else { return nil }
+        let automationValidation = folderAutomationValidation(automation)
+        guard automationValidation.isValid else {
+            lastError = automationValidation.message
+            return nil
+        }
         let folderID = UUID()
+        let eligibleIssueIDs = eligibleFolderIssueIDs(issueIDs)
         let view = normalizedSavedView(BeadSavedView(
             id: folderID,
             name: uniqueSavedViewName(name),
             symbolName: symbolName,
             content: .folder(BeadFolderBookmark(
-                orderedIssueIDs: eligibleFolderIssueIDs(issueIDs)
+                orderedIssueIDs: eligibleIssueIDs,
+                automation: automationValidation.automation
             ))
         ))
         _savedViews.append(view)
         persistSavedViews()
         scheduleSavedViewCountRebuild(for: [folderID])
         applySavedView(id: folderID)
+        if let folder = view.folder {
+            scheduleFolderAutomation(
+                folderID: folderID,
+                folderName: view.name,
+                automation: folder.automation,
+                issueIDs: eligibleIssueIDs
+            )
+        }
         return folderID
+    }
+
+    @discardableResult
+    func updateFolder(
+        id: UUID,
+        name: String,
+        symbolName: String,
+        automation: BeadFolderAutomation
+    ) -> Bool {
+        guard canMutateSavedViews,
+              let viewIndex = savedViews.firstIndex(where: { $0.id == id }),
+              var folder = savedViews[viewIndex].folder
+        else { return false }
+
+        let automationValidation = folderAutomationValidation(automation)
+        guard automationValidation.isValid else {
+            lastError = automationValidation.message
+            return false
+        }
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        folder.automation = automationValidation.automation
+        var views = savedViews
+        views[viewIndex].name = normalizedName.isEmpty ? views[viewIndex].name : normalizedName
+        views[viewIndex].symbolName = symbolName
+        views[viewIndex].content = .folder(folder)
+        _savedViews = views
+        persistSavedViews()
+        return true
     }
 
     @discardableResult
@@ -147,6 +191,12 @@ extension BeadStore {
             applyFilters()
             syncCurrentWorkspaceSnapshotIfNeeded()
         }
+        scheduleFolderAutomation(
+            folderID: id,
+            folderName: views[viewIndex].name,
+            automation: folder.automation,
+            issueIDs: additions
+        )
         announceCompletion(
             additions.count == 1
                 ? "Added \(additions[0]) to \(views[viewIndex].name)"
@@ -294,7 +344,7 @@ extension BeadStore {
         return true
     }
 
-    private func eligibleFolderIssueIDs(_ issueIDs: [String]) -> [String] {
+    func eligibleFolderIssueIDs(_ issueIDs: [String]) -> [String] {
         var seen: Set<String> = []
         return issueIDs.compactMap { rawID in
             let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)

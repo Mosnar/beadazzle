@@ -99,6 +99,15 @@ struct BulkMutationFailureCollection: Sendable {
         guard details.count < Self.maximumDetailedFailures else { return }
         details.append(BulkMutationFailureDetail(issueIDs: issueIDs, error: error))
     }
+
+    mutating func merge(_ result: BulkMutationResult) {
+        commandCount += result.failureCount
+        issueIDs.formUnion(result.failedIssueIDs)
+        guard details.count < Self.maximumDetailedFailures else { return }
+        details.append(
+            contentsOf: result.failures.prefix(Self.maximumDetailedFailures - details.count)
+        )
+    }
 }
 
 struct BulkMutationResult: Equatable, Sendable {

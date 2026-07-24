@@ -102,6 +102,7 @@ struct StateValuePickerPopover: View {
     let currentValue: String?
     private let candidateValues: [BeadStateValuePresentation]
     private let unavailableValues: [BeadStateValuePresentation]
+    private let showsReasonField: Bool
     let commit: (String?, String?) -> Void
     @State private var query = ""
     @State private var reason = ""
@@ -111,6 +112,7 @@ struct StateValuePickerPopover: View {
         currentValue: String?,
         currentPresentation: BeadStateValuePresentation?,
         catalog: BeadStateValueCatalog,
+        showsReasonField: Bool = true,
         commit: @escaping (String?, String?) -> Void
     ) {
         self.displayName = displayName
@@ -124,6 +126,7 @@ struct StateValuePickerPopover: View {
         }
         candidateValues = candidates
         unavailableValues = unavailable
+        self.showsReasonField = showsReasonField
         self.commit = commit
     }
 
@@ -180,21 +183,23 @@ struct StateValuePickerPopover: View {
             }
             .frame(height: suggestions.listHeight)
 
-            VStack(alignment: .leading, spacing: 4) {
-                TextField("Reason (optional)", text: $reason)
-                    .textFieldStyle(.plain)
-                    .font(.callout)
-                    .padding(.horizontal, 9)
-                    .frame(height: 30)
-                    .background(InspectorChrome.searchFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(InspectorChrome.sectionStroke, lineWidth: 1)
-                    }
+            if showsReasonField {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Reason (optional)", text: $reason)
+                        .textFieldStyle(.plain)
+                        .font(.callout)
+                        .padding(.horizontal, 9)
+                        .frame(height: 30)
+                        .background(InspectorChrome.searchFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(InspectorChrome.sectionStroke, lineWidth: 1)
+                        }
 
-                Text("Recorded in the bead's activity history.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    Text("Recorded in the bead's activity history.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(16)

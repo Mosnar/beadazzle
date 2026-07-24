@@ -147,7 +147,7 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
 
         let migratedData = try XCTUnwrap(defaults.data(forKey: key))
         let migrated = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: migratedData)
-        XCTAssertEqual(migrated.version, 2)
+        XCTAssertEqual(migrated.version, BeadSavedViewsPayload.currentVersion)
         XCTAssertEqual(migrated.views, result.views)
     }
 

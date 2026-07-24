@@ -9,6 +9,20 @@ struct BeadsAddLabelsBatch: Equatable, Sendable {
     }
 }
 
+struct BeadsLabelMutationBatch: Equatable, Sendable {
+    let issueIDs: [String]
+    let labelsToAdd: [String]
+    let labelsToRemove: [String]
+
+    var arguments: [String] {
+        BeadsCommandArguments.updateLabels(
+            ids: issueIDs,
+            adding: labelsToAdd,
+            removing: labelsToRemove
+        )
+    }
+}
+
 protocol BeadsCommanding: Sendable {
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws
     func exportReadableSnapshot(projectURL: URL) async throws
@@ -36,6 +50,12 @@ protocol BeadsCommanding: Sendable {
     ) async throws
     func addLabels(projectURL: URL, ids: [String], labels: [String]) async throws
     func addLabelsBatch(projectURL: URL, ids: [String], labels: [String]) async throws
+    func updateLabelsBatch(
+        projectURL: URL,
+        ids: [String],
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String]
+    ) async throws
     func setParent(projectURL: URL, issueID: String, parentID: String?) async throws
     func setState(projectURL: URL, issueID: String, dimension: String, value: String, reason: String?) async throws
     func clearState(projectURL: URL, issueID: String, dimension: String, currentValue: String, reason: String?) async throws
@@ -180,6 +200,21 @@ extension BeadsCommanding {
         try await addLabels(projectURL: projectURL, ids: ids, labels: labels)
     }
 
+    func updateLabelsBatch(
+        projectURL: URL,
+        ids: [String],
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String]
+    ) async throws {
+        guard labelsToRemove.isEmpty else {
+            throw BeadError.commandFailed(
+                command: "bd update --remove-label",
+                output: "Bulk label removal is not supported by this command service."
+            )
+        }
+        try await addLabelsBatch(projectURL: projectURL, ids: ids, labels: labelsToAdd)
+    }
+
     func bulkUpdate(projectURL: URL, ids: [String], status: String?, type: String?, priority: Int?) async throws {
         try await bulkUpdate(
             projectURL: projectURL,
@@ -322,6 +357,23 @@ struct BeadsCommandService {
         try await run(
             projectURL: projectURL,
             arguments: BeadsCommandArguments.addLabels(ids: ids, labels: labels)
+        )
+    }
+
+    func updateLabelsBatch(
+        projectURL: URL,
+        ids: [String],
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String]
+    ) async throws {
+        guard !ids.isEmpty, !labelsToAdd.isEmpty || !labelsToRemove.isEmpty else { return }
+        try await run(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.updateLabels(
+                ids: ids,
+                adding: labelsToAdd,
+                removing: labelsToRemove
+            )
         )
     }
 
@@ -1285,6 +1337,104 @@ enum BeadsCommandArguments {
         ["update"] + Array(Set(ids)).sorted() + addLabelArguments(labels)
     }
 
+    static func updateLabels(
+        ids: [String],
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String]
+    ) -> [String] {
+        let additions = normalizedUniqueLabels(labelsToAdd)
+        let additionSet = Set(additions)
+        let removals = normalizedUniqueLabels(labelsToRemove).filter {
+            !additionSet.contains($0)
+        }
+        return ["update"] + Array(Set(ids)).sorted()
+            + labelMutationArguments(adding: additions, removing: removals)
+    }
+
+    static func labelMutationBatchPlans(
+        ids: [String],
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String],
+        maximumArgumentBytes: Int = safeBulkArgumentByteLimit
+    ) -> [BeadsLabelMutationBatch] {
+        let ids = Array(Set(ids)).sorted()
+        let additions = normalizedUniqueLabels(labelsToAdd)
+        let additionSet = Set(additions)
+        let removals = normalizedUniqueLabels(labelsToRemove).filter {
+            !additionSet.contains($0)
+        }
+        let operations = additions.map { LabelMutationArgument(kind: .add, label: $0) }
+            + removals.map { LabelMutationArgument(kind: .remove, label: $0) }
+        guard !ids.isEmpty, !operations.isEmpty else { return [] }
+
+        let unchunkedArguments = ["update"] + ids + operations.flatMap(\.arguments)
+        if estimatedArgumentBytes(unchunkedArguments) <= maximumArgumentBytes {
+            return [BeadsLabelMutationBatch(
+                issueIDs: ids,
+                labelsToAdd: additions,
+                labelsToRemove: removals
+            )]
+        }
+
+        let commandByteCount = estimatedArgumentBytes(["update"])
+        let longestIDByteCount = ids.map { estimatedArgumentBytes([$0]) }.max() ?? 0
+        let largestOperationByteCount = operations
+            .map(\.arguments)
+            .map(estimatedArgumentBytes)
+            .max() ?? 0
+        let availableOperationByteCount = max(
+            1,
+            maximumArgumentBytes - commandByteCount - longestIDByteCount
+        )
+        let balancedOperationByteCount = max(
+            1,
+            (maximumArgumentBytes - commandByteCount) / 2
+        )
+        let operationBatchByteLimit = min(
+            availableOperationByteCount,
+            max(balancedOperationByteCount, largestOperationByteCount)
+        )
+        let operationBatches = chunkLabelMutationArguments(
+            operations,
+            maximumArgumentBytes: operationBatchByteLimit
+        )
+
+        let largestOperationBatchByteCount = operationBatches.map {
+            estimatedArgumentBytes($0.flatMap(\.arguments))
+        }.max() ?? 0
+        let fixedByteCount = commandByteCount + largestOperationBatchByteCount
+        var idBatches: [[String]] = []
+        var batchIDs: [String] = []
+        var batchByteCount = fixedByteCount
+        for id in ids {
+            let idByteCount = estimatedArgumentBytes([id])
+            if !batchIDs.isEmpty, batchByteCount + idByteCount > maximumArgumentBytes {
+                idBatches.append(batchIDs)
+                batchIDs = []
+                batchByteCount = fixedByteCount
+            }
+            batchIDs.append(id)
+            batchByteCount += idByteCount
+        }
+        if !batchIDs.isEmpty {
+            idBatches.append(batchIDs)
+        }
+
+        return idBatches.flatMap { idBatch in
+            operationBatches.map { operationBatch in
+                BeadsLabelMutationBatch(
+                    issueIDs: idBatch,
+                    labelsToAdd: operationBatch.compactMap {
+                        $0.kind == .add ? $0.label : nil
+                    },
+                    labelsToRemove: operationBatch.compactMap {
+                        $0.kind == .remove ? $0.label : nil
+                    }
+                )
+            }
+        }
+    }
+
     static func addLabelBatches(
         ids: [String],
         labels: [String],
@@ -1397,6 +1547,41 @@ enum BeadsCommandArguments {
         return normalizedLabels.filter { seen.insert($0).inserted }
     }
 
+    private static func labelMutationArguments(
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String]
+    ) -> [String] {
+        labelsToAdd.flatMap {
+            ["--add-label", IssueDraft.normalizedLabelText([$0])]
+        } + labelsToRemove.flatMap {
+            ["--remove-label", IssueDraft.normalizedLabelText([$0])]
+        }
+    }
+
+    private static func chunkLabelMutationArguments(
+        _ operations: [LabelMutationArgument],
+        maximumArgumentBytes: Int
+    ) -> [[LabelMutationArgument]] {
+        var batches: [[LabelMutationArgument]] = []
+        var batch: [LabelMutationArgument] = []
+        var batchByteCount = 0
+        for operation in operations {
+            let operationByteCount = estimatedArgumentBytes(operation.arguments)
+            if !batch.isEmpty,
+               batchByteCount + operationByteCount > maximumArgumentBytes {
+                batches.append(batch)
+                batch = []
+                batchByteCount = 0
+            }
+            batch.append(operation)
+            batchByteCount += operationByteCount
+        }
+        if !batch.isEmpty {
+            batches.append(batch)
+        }
+        return batches
+    }
+
     private static func chunkLabels(
         _ labels: [String],
         maximumArgumentBytes: Int
@@ -1423,6 +1608,23 @@ enum BeadsCommandArguments {
 
     private static func estimatedArgumentBytes(_ arguments: [String]) -> Int {
         arguments.reduce(0) { $0 + $1.utf8.count + 1 }
+    }
+
+    private struct LabelMutationArgument {
+        enum Kind: Equatable {
+            case add
+            case remove
+        }
+
+        let kind: Kind
+        let label: String
+
+        var arguments: [String] {
+            [
+                kind == .add ? "--add-label" : "--remove-label",
+                IssueDraft.normalizedLabelText([label])
+            ]
+        }
     }
 
     static func setParent(issueID: String, parentID: String?) -> [String] {

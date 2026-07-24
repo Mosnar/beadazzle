@@ -433,6 +433,45 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         }
     }
 
+    func testLabelMutationBatchPlansCoverEveryAddAndRemovePair() {
+        let ids = (0..<12).map { "project-item-\($0)" }
+        let additions = (0..<8).map { "add-\($0)" }
+        let removals = (0..<8).map { "remove-\($0)" }
+        let plans = BeadsCommandArguments.labelMutationBatchPlans(
+            ids: ids,
+            adding: additions,
+            removing: removals,
+            maximumArgumentBytes: 120
+        )
+
+        XCTAssertGreaterThan(plans.count, 1)
+        var observedAdditions: Set<String> = []
+        var observedRemovals: Set<String> = []
+        for plan in plans {
+            XCTAssertLessThanOrEqual(
+                plan.arguments.reduce(0) { $0 + $1.utf8.count + 1 },
+                120
+            )
+            for id in plan.issueIDs {
+                for label in plan.labelsToAdd {
+                    XCTAssertTrue(observedAdditions.insert("\(id)\u{0}\(label)").inserted)
+                }
+                for label in plan.labelsToRemove {
+                    XCTAssertTrue(observedRemovals.insert("\(id)\u{0}\(label)").inserted)
+                }
+            }
+        }
+
+        XCTAssertEqual(
+            observedAdditions,
+            Set(ids.flatMap { id in additions.map { "\(id)\u{0}\($0)" } })
+        )
+        XCTAssertEqual(
+            observedRemovals,
+            Set(ids.flatMap { id in removals.map { "\(id)\u{0}\($0)" } })
+        )
+    }
+
     func testMetadataUpdateArgumentsClearLabelsFromOriginalIssue() throws {
         let arguments = try XCTUnwrap(BeadsCommandArguments.updateMetadata(
             issueID: "bd-1",

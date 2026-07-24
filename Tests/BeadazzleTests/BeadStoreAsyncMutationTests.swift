@@ -75,6 +75,347 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.first?.ids, ["bd-2"])
     }
 
+    func testFolderAutomationRunsQueuedBatchActionsForEachAddition() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","labels":["stale","workflow:todo"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","labels":["stale"]}
+            {"_type":"issue","id":"bd-catalog","title":"Catalog","status":"blocked","priority":1,"issue_type":"task"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-catalog") != nil }
+
+        let folderID = try XCTUnwrap(store.createFolder(
+            name: "Triage",
+            issueIDs: ["bd-1"],
+            automation: BeadFolderAutomation(
+                labelsToAdd: ["urgent"],
+                labelsToRemove: ["stale"],
+                status: "blocked",
+                propertyAssignments: [
+                    BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
+                ]
+            )
+        ))
+
+        XCTAssertTrue(store.addIssueIDs(["bd-2"], toFolder: folderID))
+        XCTAssertEqual(store.folderIssueIDs(id: folderID), ["bd-1", "bd-2"])
+
+        await store.waitForPendingFolderAutomation()
+
+        let labelCalls = await commands.labelUpdateCalls
+        XCTAssertEqual(labelCalls.map(\.ids), [["bd-1"], ["bd-2"]])
+        XCTAssertEqual(labelCalls.map(\.adding), [["urgent"], ["urgent"]])
+        XCTAssertEqual(labelCalls.map(\.removing), [["stale"], ["stale"]])
+
+        let statusCalls = await commands.bulkUpdateCalls.filter { $0.status == "blocked" }
+        XCTAssertEqual(statusCalls.map(\.ids), [["bd-1"], ["bd-2"]])
+
+        let propertyCalls = await commands.setStateCalls
+        XCTAssertEqual(propertyCalls.map(\.issueID), ["bd-1", "bd-2"])
+        XCTAssertEqual(propertyCalls.map(\.dimension), ["workflow", "workflow"])
+        XCTAssertEqual(propertyCalls.map(\.value), ["review", "review"])
+        XCTAssertEqual(
+            propertyCalls.map(\.reason),
+            ["Folder automation: Triage", "Folder automation: Triage"]
+        )
+        let mutationEvents = await commands.mutationEvents
+        XCTAssertEqual(
+            mutationEvents,
+            [
+                "labels:bd-1",
+                "bulk:bd-1",
+                "state:bd-1:workflow=review",
+                "labels:bd-2",
+                "bulk:bd-2",
+                "state:bd-2:workflow=review"
+            ]
+        )
+    }
+
+    func testEditingFolderAutomationIsNotRetroactiveUntilApplyNow() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let folderID = try XCTUnwrap(store.createFolder(
+            name: "Existing",
+            issueIDs: ["bd-1"]
+        ))
+        await store.waitForPendingFolderAutomation()
+        var labelCalls = await commands.labelUpdateCalls
+        XCTAssertTrue(labelCalls.isEmpty)
+
+        XCTAssertTrue(store.updateFolder(
+            id: folderID,
+            name: "Existing",
+            symbolName: "folder",
+            automation: BeadFolderAutomation(labelsToAdd: ["triaged"])
+        ))
+        await store.waitForPendingFolderAutomation()
+        labelCalls = await commands.labelUpdateCalls
+        XCTAssertTrue(labelCalls.isEmpty)
+
+        store.applyFolderAutomationNow(folderID: folderID)
+        await store.waitForPendingFolderAutomation()
+        labelCalls = await commands.labelUpdateCalls
+        XCTAssertEqual(labelCalls.map(\.ids), [["bd-1"]])
+        XCTAssertEqual(labelCalls.map(\.adding), [["triaged"]])
+    }
+
+    func testFolderAutomationRetriesOnlyFailedWork() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            \(issueLine(id: "bd-2", title: "Two"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setAddLabelsErrors([
+            BeadError.commandFailed(
+                command: "bd update bd-1 --add-label urgent",
+                output: "first automation failed"
+            ),
+            nil,
+            nil
+        ])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let folderID = try XCTUnwrap(store.createFolder(
+            name: "Retry",
+            issueIDs: ["bd-1"],
+            automation: BeadFolderAutomation(labelsToAdd: ["urgent"])
+        ))
+        XCTAssertTrue(store.addIssueIDs(["bd-2"], toFolder: folderID))
+        await store.waitForPendingFolderAutomation()
+
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't finish Retry automation")
+        var calls = await commands.labelUpdateCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"], ["bd-2"]])
+
+        store.retryCurrentFailure()
+        try await waitUntilAsync {
+            await commands.labelUpdateCalls.count == 3
+        }
+        await store.waitForPendingFolderAutomation()
+
+        calls = await commands.labelUpdateCalls
+        XCTAssertEqual(calls.map(\.ids), [["bd-1"], ["bd-2"], ["bd-1"]])
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testFolderAutomationDropsRetryAfterFolderConfigurationChanges() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setAddLabelsError(
+            BeadError.commandFailed(
+                command: "bd update bd-1 --add-label urgent",
+                output: "automation failed"
+            )
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let folderID = try XCTUnwrap(store.createFolder(
+            name: "Changing",
+            issueIDs: ["bd-1"],
+            automation: BeadFolderAutomation(labelsToAdd: ["urgent"])
+        ))
+        await store.waitForPendingFolderAutomation()
+        XCTAssertNotNil(store.currentFailure)
+        XCTAssertTrue(store.folderAutomationSummary?.contains("1 bead need retry") == true)
+
+        XCTAssertTrue(store.updateFolder(
+            id: folderID,
+            name: "Changing",
+            symbolName: "folder",
+            automation: BeadFolderAutomation(labelsToAdd: ["triaged"])
+        ))
+        store.retryCurrentFailure()
+        try await Task.sleep(for: .milliseconds(100))
+
+        let calls = await commands.labelUpdateCalls
+        XCTAssertEqual(calls.map(\.adding), [["urgent"]])
+        XCTAssertNil(store.currentFailure)
+    }
+
+    func testFolderAutomationSkipsUnsafeStatusButContinuesOtherActions() async throws {
+        let projectURL = try makeProject(
+            """
+            \(closedIssueLine(id: "bd-parent", title: "Closed Parent"))
+            \(closedIssueLine(id: "bd-child", title: "Closed Child", parentID: "bd-parent"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-child") != nil }
+
+        _ = try XCTUnwrap(store.createFolder(
+            name: "Safe",
+            issueIDs: ["bd-child"],
+            automation: BeadFolderAutomation(
+                labelsToAdd: ["urgent"],
+                status: "blocked",
+                propertyAssignments: [
+                    BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
+                ]
+            )
+        ))
+        await store.waitForPendingFolderAutomation()
+
+        let labelCalls = await commands.labelUpdateCalls
+        let statusCalls = await commands.bulkUpdateCalls
+        let propertyCalls = await commands.setStateCalls
+        XCTAssertEqual(labelCalls.map(\.ids), [["bd-child"]])
+        XCTAssertTrue(statusCalls.isEmpty)
+        XCTAssertEqual(propertyCalls.map(\.issueID), ["bd-child"])
+        XCTAssertTrue(store.folderAutomationSummary?.contains("status skipped for 1 bead") == true)
+    }
+
+    func testFolderAutomationValidationRejectsConflictsAndUnsafeStatuses() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            {"_type":"issue","id":"bd-catalog","title":"Catalog","status":"open","priority":1,"issue_type":"task","labels":["phase:todo"]}
+            """
+        )
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: RecordingBeadsCommands()
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-catalog") != nil }
+
+        XCTAssertFalse(store.folderAutomationValidation(BeadFolderAutomation(
+            labelsToAdd: ["urgent"],
+            labelsToRemove: ["urgent"]
+        )).isValid)
+        XCTAssertFalse(store.folderAutomationValidation(BeadFolderAutomation(
+            status: "closed"
+        )).isValid)
+        XCTAssertFalse(store.folderAutomationValidation(BeadFolderAutomation(
+            labelsToAdd: ["phase:todo"],
+            propertyAssignments: [
+                BeadFolderPropertyAssignment(dimension: "phase", value: "review")
+            ]
+        )).isValid)
+        XCTAssertNil(store.createFolder(
+            name: "Invalid",
+            issueIDs: ["bd-1"],
+            automation: BeadFolderAutomation(status: "closed")
+        ))
+        XCTAssertTrue(store.lastError?.contains("not an available non-closing status") == true)
+    }
+
+    func testFolderAutomationCanBeCancelledBetweenPropertyCommands() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            \(issueLine(id: "bd-2", title: "Two"))
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let commandGate = AsyncTestGate()
+        await commands.setSetStateGate(commandGate)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        _ = try XCTUnwrap(store.createFolder(
+            name: "Cancellable",
+            issueIDs: ["bd-1", "bd-2"],
+            automation: BeadFolderAutomation(propertyAssignments: [
+                BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
+            ])
+        ))
+        try await waitUntilAsync {
+            await commands.setStateCalls.count == 1
+        }
+        try await waitUntil { store.folderAutomationProgress != nil }
+
+        store.cancelCurrentFolderAutomation()
+        await commandGate.open()
+        await store.waitForPendingFolderAutomation()
+
+        let propertyCalls = await commands.setStateCalls
+        XCTAssertEqual(propertyCalls.map(\.issueID), ["bd-1"])
+        XCTAssertNil(store.folderAutomationProgress)
+        XCTAssertTrue(store.folderAutomationSummary?.hasPrefix("Cancelled Cancellable automation") == true)
+    }
+
+    func testProjectSwitchCancelsFolderAutomationAndClearsProgress() async throws {
+        let projectURL = try makeProject(
+            """
+            \(issueLine(id: "bd-1", title: "One"))
+            \(issueLine(id: "bd-2", title: "Two"))
+            """
+        )
+        let otherProjectURL = try makeProject(issueLine(id: "other-1", title: "Other"))
+        let commands = RecordingBeadsCommands()
+        let commandGate = AsyncTestGate()
+        await commands.setSetStateGate(commandGate)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        _ = try XCTUnwrap(store.createFolder(
+            name: "Switching",
+            issueIDs: ["bd-1", "bd-2"],
+            automation: BeadFolderAutomation(propertyAssignments: [
+                BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
+            ])
+        ))
+        try await waitUntilAsync {
+            await commands.setStateCalls.count == 1
+        }
+        try await waitUntil { store.folderAutomationProgress != nil }
+
+        store.openProject(otherProjectURL)
+        XCTAssertNil(store.folderAutomationProgress)
+        XCTAssertNil(store.folderAutomationSummary)
+        await commandGate.open()
+        try await waitUntil { !store.isLoading && store.issue(with: "other-1") != nil }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let propertyCalls = await commands.setStateCalls
+        XCTAssertEqual(propertyCalls.map(\.issueID), ["bd-1"])
+        XCTAssertNil(store.folderAutomationProgress)
+        XCTAssertNil(store.folderAutomationSummary)
+    }
+
+    func testFolderAutomationBoundsLargeLabelUpdatesIntoResponsiveChunks() async throws {
+        let issueCount = 251
+        let projectURL = try makeProject(
+            (1...issueCount)
+                .map { issueLine(id: "bd-\($0)", title: "Issue \($0)") }
+                .joined(separator: "\n")
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-\(issueCount)") != nil }
+
+        _ = try XCTUnwrap(store.createFolder(
+            name: "Large",
+            issueIDs: (1...issueCount).map { "bd-\($0)" },
+            automation: BeadFolderAutomation(labelsToAdd: ["triaged"])
+        ))
+        await store.waitForPendingFolderAutomation()
+
+        let calls = await commands.labelUpdateCalls
+        XCTAssertEqual(calls.map { $0.ids.count }, [250, 1])
+        XCTAssertTrue(calls.allSatisfy { $0.adding == ["triaged"] })
+    }
+
     func testCompletionActionTitlesUseReopenForClosedSelections() async throws {
         let projectURL = try makeProject(
             """
@@ -4308,6 +4649,9 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         (projectURL: URL, issueID: String, dimension: String, currentValue: String, reason: String?)
     ] = []
     private(set) var addLabelsCalls: [(projectURL: URL, ids: [String], labels: [String])] = []
+    private(set) var labelUpdateCalls: [
+        (projectURL: URL, ids: [String], adding: [String], removing: [String])
+    ] = []
     private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var mutationEvents: [String] = []
     private(set) var loadGateDetailCalls: [(projectURL: URL, id: String)] = []
@@ -4682,6 +5026,30 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func addLabels(projectURL: URL, ids: [String], labels: [String]) async throws {
         addLabelsCalls.append((projectURL: projectURL, ids: ids, labels: labels))
+        if !addLabelsDelays.isEmpty, let delay = addLabelsDelays.removeFirst() {
+            try await Task.sleep(for: delay)
+        }
+        if !addLabelsErrors.isEmpty, let error = addLabelsErrors.removeFirst() {
+            throw error
+        }
+        mutationEvents.append("labels:\(ids.joined(separator: ","))")
+    }
+
+    func updateLabelsBatch(
+        projectURL: URL,
+        ids: [String],
+        adding labelsToAdd: [String],
+        removing labelsToRemove: [String]
+    ) async throws {
+        labelUpdateCalls.append((
+            projectURL: projectURL,
+            ids: ids,
+            adding: labelsToAdd,
+            removing: labelsToRemove
+        ))
+        if labelsToRemove.isEmpty {
+            addLabelsCalls.append((projectURL: projectURL, ids: ids, labels: labelsToAdd))
+        }
         if !addLabelsDelays.isEmpty, let delay = addLabelsDelays.removeFirst() {
             try await Task.sleep(for: delay)
         }

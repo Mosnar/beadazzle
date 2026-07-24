@@ -312,6 +312,7 @@ enum BeadLabelMutation: Sendable {
     case replace([String])
     case replaceOrdinary([String], preservingDimensions: [String])
     case add([String])
+    case update(adding: [String], removing: [String])
     case setState(dimension: String, value: String)
     case clearState(dimension: String)
 
@@ -326,19 +327,22 @@ enum BeadLabelMutation: Sendable {
     func applying(to labels: [String]) -> [String] {
         switch self {
         case .replace(let replacement):
-            replacement
+            return replacement
         case .replaceOrdinary(let ordinaryLabels, let dimensions):
-            BeadStateLabel.replacingOrdinaryLabels(
+            return BeadStateLabel.replacingOrdinaryLabels(
                 in: labels,
                 with: ordinaryLabels,
                 preserving: dimensions
             )
         case .add(let additions):
-            Self.uniqueLabels(labels + additions)
+            return Self.uniqueLabels(labels + additions)
+        case .update(let additions, let removals):
+            let removalSet = Set(removals)
+            return Self.uniqueLabels(labels.filter { !removalSet.contains($0) } + additions)
         case .setState(let dimension, let value):
-            BeadStateLabel.applying(dimension: dimension, value: value, to: labels)
+            return BeadStateLabel.applying(dimension: dimension, value: value, to: labels)
         case .clearState(let dimension):
-            BeadStateLabel.excluding(dimensions: [dimension], from: labels)
+            return BeadStateLabel.excluding(dimensions: [dimension], from: labels)
         }
     }
 
@@ -418,6 +422,14 @@ struct BeadMetadataMutationPatch {
         updatesAssignee = false
         assignee = nil
         labelMutation = .add(labels)
+        dueAt = .unchanged
+        deferUntil = .unchanged
+    }
+
+    init(addingLabels labelsToAdd: [String], removingLabels labelsToRemove: [String]) {
+        updatesAssignee = false
+        assignee = nil
+        labelMutation = .update(adding: labelsToAdd, removing: labelsToRemove)
         dueAt = .unchanged
         deferUntil = .unchanged
     }
@@ -605,6 +617,8 @@ final class BeadMutationStore {
     // rollbacks cannot revive a result from an older writer.
     private var metadataSettlementsByIssue: [String: BeadMetadataSettlementState] = [:]
     var projection = BeadMutationProjection()
+    var folderAutomationTail: Task<Void, Never>?
+    var cancelledFolderAutomationIDs: Set<UUID> = []
 
     func possiblyPersistedLabels(for issueID: String) -> [String] {
         possiblyPersistedLabelsByIssue[issueID, default: []]
@@ -708,6 +722,9 @@ final class BeadMutationStore {
     }
 
     func resetMetadataMutations() {
+        folderAutomationTail?.cancel()
+        folderAutomationTail = nil
+        cancelledFolderAutomationIDs = []
         metadataMutationGeneration &+= 1
         activeMutationCount = 0
         optimisticMutationRevision = 0
@@ -856,6 +873,8 @@ final class BeadStore {
             filterStateDidChange(debounce: true)
         }
     }
+    var folderAutomationSummary: String?
+    var folderAutomationProgress: BeadFolderAutomationProgress?
     var statusFilters: Set<String> = [] {
         didSet {
             guard oldValue != statusFilters else { return }

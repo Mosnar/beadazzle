@@ -1,7 +1,7 @@
 import Foundation
 
 /// Version 1 bookmark organization retained only for loss-tolerant migration.
-/// Runtime bookmark and folder state is the flat version 2 `[BeadSavedView]` model.
+/// Runtime bookmark and folder state uses the flat `[BeadSavedView]` model.
 struct BeadSavedViewFolder: Codable, Sendable {
     var id: UUID
     var name: String

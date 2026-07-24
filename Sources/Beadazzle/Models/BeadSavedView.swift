@@ -117,6 +117,35 @@ struct BeadSmartBookmark: Hashable, Codable, Sendable {
 
 struct BeadFolderBookmark: Hashable, Codable, Sendable {
     var orderedIssueIDs: [String]
+    var automation: BeadFolderAutomation
+
+    init(
+        orderedIssueIDs: [String],
+        automation: BeadFolderAutomation = BeadFolderAutomation()
+    ) {
+        self.orderedIssueIDs = orderedIssueIDs
+        self.automation = automation
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case orderedIssueIDs
+        case automation
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        orderedIssueIDs = try container.decode([String].self, forKey: .orderedIssueIDs)
+        automation = try container.decodeIfPresent(
+            BeadFolderAutomation.self,
+            forKey: .automation
+        ) ?? BeadFolderAutomation()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(orderedIssueIDs, forKey: .orderedIssueIDs)
+        try container.encode(automation, forKey: .automation)
+    }
 }
 
 enum BeadSavedViewContent: Hashable, Codable, Sendable {
@@ -723,7 +752,7 @@ enum BeadSavedViewSymbols {
 }
 
 struct BeadSavedViewsPayload: Codable, Sendable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var version = currentVersion
     var views: [BeadSavedView]

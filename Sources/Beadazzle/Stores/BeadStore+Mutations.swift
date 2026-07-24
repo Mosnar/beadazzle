@@ -1036,6 +1036,30 @@ extension BeadStore {
         maximumCommandArgumentBytes: Int = BeadsCommandArguments.safeBulkArgumentByteLimit,
         progress reportProgress: ((BulkMutationProgress) -> Void)? = nil
     ) async -> BulkMutationResult {
+        await updateLabels(
+            issueIDs: issueIDs,
+            adding: rawLabels,
+            removing: [],
+            expectedProjectURL: expectedProjectURL,
+            maximumCommandArgumentBytes: maximumCommandArgumentBytes,
+            progress: reportProgress
+        )
+    }
+
+    /// Applies additive and subtractive ordinary-label changes in one chunked
+    /// coordinator. Callers that aggregate several automation actions can suppress
+    /// per-action feedback and present one combined result.
+    @discardableResult
+    func updateLabels(
+        issueIDs: [String],
+        adding rawLabelsToAdd: [String],
+        removing rawLabelsToRemove: [String],
+        expectedProjectURL: URL? = nil,
+        maximumCommandArgumentBytes: Int = BeadsCommandArguments.safeBulkArgumentByteLimit,
+        reportsFeedback: Bool = true,
+        cancellationRequested: (@MainActor @Sendable () -> Bool)? = nil,
+        progress reportProgress: ((BulkMutationProgress) -> Void)? = nil
+    ) async -> BulkMutationResult {
         guard let projectURL else {
             return BulkMutationResult(
                 progress: BulkMutationProgress(totalCount: 0),
@@ -1051,8 +1075,13 @@ extension BeadStore {
             )
         }
 
-        let labels = IssueDraft.normalizedLabels(IssueDraft.normalizedLabelText(rawLabels))
-        guard !labels.isEmpty else {
+        let automation = BeadFolderAutomation(
+            labelsToAdd: rawLabelsToAdd,
+            labelsToRemove: rawLabelsToRemove
+        ).normalized
+        let labels = automation.labelsToAdd
+        let labelsToRemove = automation.labelsToRemove
+        guard !labels.isEmpty || !labelsToRemove.isEmpty else {
             return BulkMutationResult(
                 progress: BulkMutationProgress(totalCount: 0),
                 outcome: .completed,
@@ -1090,7 +1119,9 @@ extension BeadStore {
         }
         let requestedIDs = requestedIssues.map(\.id)
         let managedDimensions = stateDimensionsManagedForLabelEditing(issueIDs: requestedIDs)
-        if let propertyDimension = labels.lazy.compactMap(BeadStateLabel.dimension(of:)).first(
+        if let propertyDimension = (labels + labelsToRemove).lazy
+            .compactMap(BeadStateLabel.dimension(of:))
+            .first(
             where: managedDimensions.contains
         ) {
             lastError = "\(stateDimensionDisplayName(for: propertyDimension)) is managed as a property. Use Set Property so the change is recorded in Activity."
@@ -1100,9 +1131,12 @@ extension BeadStore {
                 failures: []
             )
         }
-        let labelSet = Set(labels)
+        let patch = BeadMetadataMutationPatch(
+            addingLabels: labels,
+            removingLabels: labelsToRemove
+        )
         let targetIssues = requestedIssues.filter { issue in
-            !labelSet.isSubset(of: Set(issue.labels))
+            patch.changes(issue)
         }
         guard !targetIssues.isEmpty else {
             return BulkMutationResult(
@@ -1114,15 +1148,19 @@ extension BeadStore {
 
         let targetIDs = targetIssues.map(\.id)
         let targetIDSet = Set(targetIDs)
-        let plans = BeadsCommandArguments.addLabelBatchPlans(
+        let plans = BeadsCommandArguments.labelMutationBatchPlans(
             ids: targetIDs,
-            labels: labels,
+            adding: labels,
+            removing: labelsToRemove,
             maximumArgumentBytes: maximumCommandArgumentBytes
         )
         var mutationHandlesByPlan: [[String: MetadataMutationHandle]] = []
         mutationHandlesByPlan.reserveCapacity(plans.count)
         for plan in plans {
-            let patch = BeadMetadataMutationPatch(addingLabels: plan.labels)
+            let patch = BeadMetadataMutationPatch(
+                addingLabels: plan.labelsToAdd,
+                removingLabels: plan.labelsToRemove
+            )
             var handles: [String: MetadataMutationHandle] = [:]
             for issueID in plan.issueIDs {
                 guard let issue = issue(with: issueID) else { continue }
@@ -1185,7 +1223,7 @@ extension BeadStore {
         var settlementIsValid = true
 
         while nextPlanIndex < plans.count {
-            if Task.isCancelled {
+            if Task.isCancelled || cancellationRequested?() == true {
                 outcome = .cancelled
                 break
             }
@@ -1210,10 +1248,11 @@ extension BeadStore {
             var succeeded = false
             do {
                 try await enqueueMutationWrite {
-                    try await commands.addLabelsBatch(
+                    try await commands.updateLabelsBatch(
                         projectURL: projectURL,
                         ids: plan.issueIDs,
-                        labels: plan.labels
+                        adding: plan.labelsToAdd,
+                        removing: plan.labelsToRemove
                     )
                 }
                 succeeded = true
@@ -1302,26 +1341,29 @@ extension BeadStore {
             reconcileState.request(.mutation)
         }
 
-        if mutationProgress.succeededCount > 0 {
+        if reportsFeedback, mutationProgress.succeededCount > 0 {
+            let action = labelsToRemove.isEmpty ? "Added labels to" : "Updated labels on"
             announceCompletion(
                 mutationProgress.succeededCount == 1
-                    ? "Added labels to 1 bead"
-                    : "Added labels to \(mutationProgress.succeededCount) beads"
+                    ? "\(action) 1 bead"
+                    : "\(action) \(mutationProgress.succeededCount) beads"
             )
         }
         let failedIssueIDs = failures.failedIssueIDs
-        if !failures.isEmpty {
+        if reportsFeedback, !failures.isEmpty {
             let baseline = retryBaseline(for: failedIssueIDs)
+            let action = labelsToRemove.isEmpty ? "add labels to" : "update labels on"
             reportBulkMutationFailure(
                 failures,
                 title: failedIssueIDs.count == 1
-                    ? "Couldn't add labels to 1 bead"
-                    : "Couldn't add labels to \(failedIssueIDs.count) beads",
+                    ? "Couldn't \(action) 1 bead"
+                    : "Couldn't \(action) \(failedIssueIDs.count) beads",
                 retry: { [weak self] in
                     guard let self, self.retryBaselineHolds(baseline) else { return }
-                    _ = await self.addLabels(
+                    _ = await self.updateLabels(
                         issueIDs: failedIssueIDs,
-                        labels: labels,
+                        adding: labels,
+                        removing: labelsToRemove,
                         expectedProjectURL: projectURL,
                         maximumCommandArgumentBytes: maximumCommandArgumentBytes
                     )
@@ -1346,19 +1388,62 @@ extension BeadStore {
         deferUntil: IssueMetadataDateUpdate = .unchanged,
         reopeningAncestorIssueIDs ancestorIssueIDs: [String] = []
     ) async -> Bool {
-        guard let projectURL else { return false }
+        await bulkSetResult(
+            issueIDs: issueIDs,
+            status: status,
+            type: type,
+            priority: priority,
+            deferUntil: deferUntil,
+            reopeningAncestorIssueIDs: ancestorIssueIDs
+        ).isSuccessful
+    }
+
+    @discardableResult
+    func bulkSetResult(
+        issueIDs: [String],
+        status: String? = nil,
+        type: String? = nil,
+        priority: Int? = nil,
+        deferUntil: IssueMetadataDateUpdate = .unchanged,
+        reopeningAncestorIssueIDs ancestorIssueIDs: [String] = [],
+        expectedProjectURL: URL? = nil,
+        reportsFeedback: Bool = true
+    ) async -> BulkMutationResult {
+        let rejected = BulkMutationResult(
+            progress: BulkMutationProgress(totalCount: 0),
+            outcome: .rejected,
+            failures: []
+        )
+        guard let projectURL else { return rejected }
+        guard expectedProjectURL == nil || expectedProjectURL == projectURL else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .superseded,
+                failures: []
+            )
+        }
         let mutationGeneration = mutations.metadataMutationGeneration
         let optimisticMutationQueue = mutations.optimisticMutationQueue(for: mutationGeneration)
         await optimisticMutationQueue.acquire()
         defer { optimisticMutationQueue.release() }
         guard ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-            return false
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .superseded,
+                failures: []
+            )
         }
         let ids = Array(Set(issueIDs)).sorted()
-        guard !ids.isEmpty else { return false }
+        guard !ids.isEmpty else {
+            return BulkMutationResult(
+                progress: BulkMutationProgress(totalCount: 0),
+                outcome: .completed,
+                failures: []
+            )
+        }
         guard ids.allSatisfy({ issue(with: $0)?.isSystemRecord != true }) else {
             lastError = BeadIssueWorkflowPolicy.systemRecordIssueTypeError
-            return false
+            return rejected
         }
         if let type {
             guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(type),
@@ -1367,7 +1452,7 @@ extension BeadStore {
                       return !issue.isGate
                   }) else {
                 lastError = BeadIssueWorkflowPolicy.normalMutationTypeError(for: type)
-                return false
+                return rejected
             }
         }
 
@@ -1375,20 +1460,22 @@ extension BeadStore {
         let ancestorIDs = Array(Set(ancestorIssueIDs).subtracting(ids)).sorted()
         let ancestorReopenStatus: String?
         if let status, statusClosesBeads(status) {
-            guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else { return false }
+            guard guardHierarchyAllowsCompletion(issueIDs: ids, includedIssueIDs: ids) else {
+                return rejected
+            }
             ancestorReopenStatus = nil
         } else if status != nil {
             guard guardHierarchyAllowsUncompletion(
                 issueIDs: ids,
                 includedIssueIDs: ids + ancestorIDs
-            ) else { return false }
+            ) else { return rejected }
             if ancestorIDs.isEmpty {
                 ancestorReopenStatus = nil
             } else if let reopenStatusName {
                 ancestorReopenStatus = reopenStatusName
             } else {
                 lastError = "No active status is configured for reopened beads."
-                return false
+                return rejected
             }
         } else {
             ancestorReopenStatus = nil
@@ -1482,23 +1569,59 @@ extension BeadStore {
                       metadataMutationsByIssueID,
                       succeeded: true
                   )
-            else { return rejectStaleMutation(targeting: projectURL) }
+            else {
+                _ = rejectStaleMutation(targeting: projectURL)
+                return BulkMutationResult(
+                    progress: BulkMutationProgress(totalCount: ids.count),
+                    outcome: .superseded,
+                    failures: []
+                )
+            }
             settleOptimisticProjection(id: projectionID, succeeded: true)
             reconcileState.request(.mutation)
-            return true
+            return BulkMutationResult(
+                progress: BulkMutationProgress(
+                    completedCount: ids.count,
+                    totalCount: ids.count,
+                    succeededCount: ids.count
+                ),
+                outcome: .completed,
+                failures: []
+            )
         } catch {
             guard ownsMutation(projectURL: projectURL, generation: mutationGeneration),
                   settleMetadataMutations(
-                    metadataMutationsByIssueID,
-                    succeeded: false
+                      metadataMutationsByIssueID,
+                      succeeded: false
                   )
-            else { return rejectStaleMutation(targeting: projectURL) }
+            else {
+                _ = rejectStaleMutation(targeting: projectURL)
+                return BulkMutationResult(
+                    progress: BulkMutationProgress(totalCount: ids.count),
+                    outcome: .superseded,
+                    failures: []
+                )
+            }
             settleOptimisticProjection(id: projectionID, succeeded: false)
             if attemptedWrite {
                 reconcileState.request(.mutation)
             }
-            reportMutationFailure(error, title: "Couldn't update beads")
-            return false
+            var failures = BulkMutationFailureCollection()
+            failures.record(issueIDs: ids, error: error)
+            if reportsFeedback {
+                reportMutationFailure(error, title: "Couldn't update beads")
+            }
+            return BulkMutationResult(
+                progress: BulkMutationProgress(
+                    completedCount: ids.count,
+                    totalCount: ids.count,
+                    failedCount: ids.count
+                ),
+                outcome: .completed,
+                failures: failures.details,
+                failedIssueIDs: failures.failedIssueIDs,
+                failureCount: failures.commandCount
+            )
         }
     }
 

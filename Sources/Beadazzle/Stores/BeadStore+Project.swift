@@ -17,6 +17,8 @@ extension BeadStore {
         project.cancelLifecycleWork()
         mutations.writeQueue.invalidatePending()
         mutations.resetMetadataMutations()
+        folderAutomationSummary = nil
+        folderAutomationProgress = nil
         workspace.cancelQueryWork()
         detail.cancelSelectionWork()
         if let outgoingProjectURL, outgoingProjectURL != url {

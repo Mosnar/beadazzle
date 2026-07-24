@@ -86,7 +86,7 @@ final class BeadSavedViewTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(BeadSavedView.self, from: encoded))
     }
 
-    func testVersionTwoPayloadRoundTripsSmartBookmarksAndFolders() throws {
+    func testCurrentPayloadRoundTripsSmartBookmarksAndFolders() throws {
         let smartView = makeSavedView(
             ordering: .sorted(BeadSavedViewSort(field: .updated, direction: .descending))
         )
@@ -100,7 +100,7 @@ final class BeadSavedViewTests: XCTestCase {
         let data = try JSONEncoder().encode(payload)
 
         let decoded = try JSONDecoder().decode(BeadSavedViewsPayload.self, from: data)
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, BeadSavedViewsPayload.currentVersion)
         XCTAssertEqual(decoded.views, payload.views)
 
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -112,6 +112,51 @@ final class BeadSavedViewTests: XCTestCase {
         XCTAssertEqual(folderContent["kind"] as? String, "folder")
         XCTAssertNil(views[0]["query"])
         XCTAssertNil(views[0]["ordering"])
+    }
+
+    func testFolderAutomationRoundTripsAndOlderFolderDefaultsToNoActions() throws {
+        let automation = BeadFolderAutomation(
+            labelsToAdd: ["urgent", "urgent"],
+            labelsToRemove: ["stale", "urgent"],
+            status: "blocked",
+            propertyAssignments: [
+                BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
+            ]
+        ).normalized
+        let folder = BeadFolderBookmark(
+            orderedIssueIDs: ["bd-2", "bd-1"],
+            automation: automation
+        )
+
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                BeadFolderBookmark.self,
+                from: JSONEncoder().encode(folder)
+            ),
+            folder
+        )
+        XCTAssertEqual(automation.labelsToAdd, ["urgent"])
+        XCTAssertEqual(automation.labelsToRemove, ["stale"])
+
+        let legacyData = Data(#"{"orderedIssueIDs":["bd-1"]}"#.utf8)
+        let legacy = try JSONDecoder().decode(BeadFolderBookmark.self, from: legacyData)
+        XCTAssertEqual(legacy.orderedIssueIDs, ["bd-1"])
+        XCTAssertTrue(legacy.automation.isEmpty)
+    }
+
+    func testFolderAutomationDraftDistinguishesAbsentAndIncompleteActions() {
+        var draft = BeadFolderAutomationDraft()
+
+        XCTAssertFalse(draft.hasConfiguredAction)
+        XCTAssertNil(draft.incompleteActionMessage)
+
+        draft.labelsToAdd = []
+        XCTAssertTrue(draft.hasConfiguredAction)
+        XCTAssertEqual(draft.incompleteActionMessage, "Choose at least one label to add.")
+
+        draft.labelsToAdd = ["urgent"]
+        XCTAssertNil(draft.incompleteActionMessage)
+        XCTAssertEqual(draft.automation.labelsToAdd, ["urgent"])
     }
 
     private func makeSavedView(

@@ -6,6 +6,69 @@ extension BeadStore {
         optionStatusDefinitions.map(\.name)
     }
 
+    var folderAutomationStatusOptions: [String] {
+        let candidates = availableStatuses.isEmpty
+            ? index.semantics.statusNames
+            : availableStatuses
+        return candidates.filter { !statusClosesBeads($0) && !isDeferredStatus($0) }
+    }
+
+    func folderAutomationValidation(
+        _ rawAutomation: BeadFolderAutomation
+    ) -> BeadFolderAutomationValidation {
+        let additions = BeadFolderAutomation(
+            labelsToAdd: rawAutomation.labelsToAdd
+        ).normalized.labelsToAdd
+        let removals = BeadFolderAutomation(
+            labelsToRemove: rawAutomation.labelsToRemove
+        ).normalized.labelsToRemove
+        let overlappingLabels = Set(additions).intersection(removals).sorted()
+        if !overlappingLabels.isEmpty {
+            return BeadFolderAutomationValidation(
+                automation: rawAutomation.normalized,
+                message: "A label cannot be both added and removed: \(overlappingLabels.joined(separator: ", "))."
+            )
+        }
+
+        let normalizedDimensions = rawAutomation.propertyAssignments.compactMap {
+            BeadStateLabel.normalizedDimensionInput($0.dimension)
+        }
+        guard normalizedDimensions.count == rawAutomation.propertyAssignments.count,
+              Set(normalizedDimensions).count == normalizedDimensions.count,
+              rawAutomation.propertyAssignments.allSatisfy({
+                  BeadStateLabel.normalizedValueInput($0.value) != nil
+              })
+        else {
+            return BeadFolderAutomationValidation(
+                automation: rawAutomation.normalized,
+                message: "Every property action needs a unique property and a valid value."
+            )
+        }
+
+        let automation = rawAutomation.normalized
+        let managedDimensions = Set(pinnedStateDimensions)
+            .union(automation.propertyAssignments.map(\.dimension))
+        let conflictingLabels = (additions + removals).filter { label in
+            BeadStateLabel.dimension(of: label).map(managedDimensions.contains) == true
+        }
+        if !conflictingLabels.isEmpty {
+            return BeadFolderAutomationValidation(
+                automation: automation,
+                message: "Property-managed labels must use Update Property instead: \(Array(Set(conflictingLabels)).sorted().joined(separator: ", "))."
+            )
+        }
+
+        if let status = automation.status,
+           !folderAutomationStatusOptions.contains(status) {
+            return BeadFolderAutomationValidation(
+                automation: automation,
+                message: "\(status) is not an available non-closing status for folder automation."
+            )
+        }
+
+        return BeadFolderAutomationValidation(automation: automation, message: nil)
+    }
+
     var gateRejectionStatusOptions: [String] {
         options(availableStatuses, including: defaultGateRejectionStatus, fallback: index.semantics.statusNames)
     }

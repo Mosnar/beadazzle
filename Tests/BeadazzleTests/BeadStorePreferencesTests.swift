@@ -1007,6 +1007,44 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(store.updateWouldReplaceAdvancedRules(id: id))
     }
 
+    func testVersionTwoFoldersMigrateToVersionThreeWithoutAutomation() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let folderID = UUID()
+        let payload = Data(
+            """
+            {
+              "version": 2,
+              "views": [{
+                "id": "\(folderID.uuidString)",
+                "name": "Legacy Folder",
+                "symbolName": "folder",
+                "content": {
+                  "kind": "folder",
+                  "folder": { "orderedIssueIDs": ["bd-1"] }
+                }
+              }]
+            }
+            """.utf8
+        )
+        let key = BeadazzlePreferenceKeys.savedViews(projectURL: projectURL)
+        defaults.set(payload, forKey: key)
+
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(store.savedViews.map(\.id), [folderID])
+        XCTAssertTrue(store.savedViews.first?.folder?.automation.isEmpty == true)
+        XCTAssertEqual(defaults.data(forKey: "\(key).Recovery"), payload)
+        let migrated = try JSONDecoder().decode(
+            BeadSavedViewsPayload.self,
+            from: try XCTUnwrap(defaults.data(forKey: key))
+        )
+        XCTAssertEqual(migrated.version, 3)
+        XCTAssertTrue(migrated.views.first?.folder?.automation.isEmpty == true)
+    }
+
     func testSavedViewLoadingSkipsMalformedSibling() async throws {
         let defaults = makeUserDefaults()
         let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))

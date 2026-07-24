@@ -88,6 +88,13 @@ struct SavedViewRow: View {
         )
         .contextMenu {
             if view.isFolder {
+                Button("Edit Folder...", action: onEdit)
+                Button("Apply Automation Now") {
+                    store.applyFolderAutomationNow(folderID: view.id)
+                }
+                .disabled(view.folder?.automation.isEmpty != false
+                    || store.folderIssueIDs(id: view.id).isEmpty)
+                Divider()
                 Button("Copy All Bead IDs") {
                     IssueClipboard.copyIssueID(
                         store.folderIssueIDs(id: view.id).joined(separator: "\n")

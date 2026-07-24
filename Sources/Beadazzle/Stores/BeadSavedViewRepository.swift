@@ -33,6 +33,8 @@ final class BeadSavedViewRepository {
         switch header.version {
         case 1:
             return migrateVersionOne(data, key: key, projectURL: projectURL)
+        case 2:
+            return migrateVersionTwo(data, key: key, projectURL: projectURL)
         case BeadSavedViewsPayload.currentVersion:
             return loadCurrentVersion(data, key: key)
         default:
@@ -47,7 +49,9 @@ final class BeadSavedViewRepository {
     }
 
     private func loadCurrentVersion(_ data: Data, key: String) -> BeadSavedViewLoadResult {
-        guard let decoded = try? RecoveringSavedViewsPayload.decode(from: data) else {
+        guard let decoded = try? RecoveringSavedViewsPayload.decode(from: data),
+              decoded.version == BeadSavedViewsPayload.currentVersion
+        else {
             preserveRecoveryData(data, key: key)
             return BeadSavedViewLoadResult(persistenceState: .readOnly(
                 reason: .corrupt,
@@ -75,6 +79,33 @@ final class BeadSavedViewRepository {
         )
     }
 
+    private func migrateVersionTwo(
+        _ data: Data,
+        key: String,
+        projectURL: URL
+    ) -> BeadSavedViewLoadResult {
+        guard let decoded = try? RecoveringSavedViewsPayload.decode(from: data),
+              decoded.version == 2
+        else {
+            preserveRecoveryData(data, key: key)
+            return BeadSavedViewLoadResult(persistenceState: .readOnly(
+                reason: .corrupt,
+                message: "Bookmarks could not be migrated. The original data was preserved for recovery."
+            ))
+        }
+
+        let normalized = Self.normalizedRecovering(
+            decoded.views.map(Self.normalized),
+            initialIssueCount: decoded.recoveryIssueCount
+        )
+        return finishMigration(
+            normalized,
+            sourceData: data,
+            key: key,
+            projectURL: projectURL
+        )
+    }
+
     private func migrateVersionOne(
         _ data: Data,
         key: String,
@@ -93,7 +124,21 @@ final class BeadSavedViewRepository {
             recovered.tree.savedViews,
             initialIssueCount: recovered.recoveryIssueCount
         )
-        preserveMigrationRecoveryData(data, key: key)
+        return finishMigration(
+            normalized,
+            sourceData: data,
+            key: key,
+            projectURL: projectURL
+        )
+    }
+
+    private func finishMigration(
+        _ normalized: (views: [BeadSavedView], recoveryIssueCount: Int),
+        sourceData: Data,
+        key: String,
+        projectURL: URL
+    ) -> BeadSavedViewLoadResult {
+        preserveMigrationRecoveryData(sourceData, key: key)
         guard save(normalized.views, projectURL: projectURL) else {
             return BeadSavedViewLoadResult(persistenceState: .readOnly(
                 reason: .corrupt,
@@ -149,6 +194,7 @@ final class BeadSavedViewRepository {
                 guard !normalized.isEmpty, seenIssueIDs.insert(normalized).inserted else { return nil }
                 return normalized
             }
+            folder.automation = folder.automation.normalized
             view.content = .folder(folder)
         }
         return view
@@ -204,6 +250,7 @@ private struct PayloadHeader: Decodable {
 }
 
 private struct RecoveringSavedViewsPayload: Decodable {
+    var version: Int
     var views: [BeadSavedView]
     var recoveryIssueCount: Int
 
@@ -215,13 +262,7 @@ private struct RecoveringSavedViewsPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        guard try container.decode(Int.self, forKey: .version) == BeadSavedViewsPayload.currentVersion else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .version,
-                in: container,
-                debugDescription: "Unexpected saved-view payload version"
-            )
-        }
+        version = try container.decode(Int.self, forKey: .version)
 
         var viewsContainer = try container.nestedUnkeyedContainer(forKey: .views)
         var decodedViews: [BeadSavedView] = []

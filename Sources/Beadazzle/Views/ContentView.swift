@@ -21,6 +21,9 @@ struct ContentView: View {
         @Bindable var store = store
 
         workspaceView(searchText: $store.searchText)
+        .overlay(alignment: .bottom) {
+            FolderAutomationStatusOverlay()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
@@ -88,7 +91,10 @@ struct ContentView: View {
         .sheet(item: $folderEditorRequest) { request in
             FolderBookmarkSheet(
                 initialIssueIDs: request.initialIssueIDs,
-                suggestedName: store.suggestedFolderName
+                suggestedName: store.suggestedFolderName,
+                existing: request.folderID.flatMap { id in
+                    workspace.savedViews.first { $0.id == id && $0.isFolder }
+                }
             )
         }
         .sheet(item: $bulkEditRequest) { request in
@@ -144,7 +150,13 @@ struct ContentView: View {
             SidebarView(
                 onSaveBookmark: presentSaveBookmark,
                 onNewFolder: { store.requestNewFolder() },
-                onEditBookmark: { id in savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id)) }
+                onEditBookmark: { id in
+                    if workspace.savedViews.first(where: { $0.id == id })?.isFolder == true {
+                        folderEditorRequest = FolderBookmarkEditorRequest(folderID: id)
+                    } else {
+                        savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
+                    }
+                }
             )
                 .navigationSplitViewColumnWidth(
                     min: ContentLayout.sidebarMinWidth,
@@ -477,6 +489,62 @@ struct ContentView: View {
         }
     }
 
+}
+
+private struct FolderAutomationStatusOverlay: View {
+    @Environment(BeadStore.self) private var store
+
+    var body: some View {
+        if let progress = store.folderAutomationProgress {
+            HStack(spacing: 10) {
+                Image(systemName: "bolt.fill")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(progress.folderName) automation")
+                        .font(.callout.weight(.medium))
+                    Text(progress.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ProgressView(value: progress.fractionCompleted)
+                        .frame(width: 220)
+                        .accessibilityLabel("\(progress.folderName) automation progress")
+                        .accessibilityValue(
+                            "\(progress.completedUnitCount) of \(progress.totalUnitCount) actions"
+                        )
+                }
+
+                Button(
+                    progress.isCancelling ? "Cancelling Automation" : "Cancel Automation",
+                    systemImage: "xmark.circle"
+                ) {
+                    store.cancelCurrentFolderAutomation()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .disabled(progress.isCancelling)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+            .shadow(radius: 4, y: 2)
+            .padding(.bottom, 12)
+            .accessibilityElement(children: .contain)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let summary = store.folderAutomationSummary {
+            Label(summary, systemImage: "bolt.fill")
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(radius: 4, y: 2)
+                .padding(.bottom, 12)
+                .allowsHitTesting(false)
+                .accessibilityElement(children: .combine)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
 }
 
 private enum ContentHierarchySheetRequest: Identifiable, Equatable {
