@@ -33,12 +33,15 @@ final class IssueListDragSourceTests: XCTestCase {
             try JSONDecoder().decode(BeadDragPayload.self, from: data),
             payload
         )
-        XCTAssertNil(writer.data(forType: .init(UTType.json.identifier)))
+        XCTAssertEqual(writer.data(forType: .beadazzleBeadDragJSON), data)
         XCTAssertNil(dataSource.tableView(tableView, pasteboardWriterForRow: 1))
     }
 
-    func testFolderDropsAdvertiseOnlyTheAppSpecificPayloadType() {
-        XCTAssertEqual(BeadFolderDropHandler.contentTypes, [.beadazzleBeadDrag])
+    func testFolderDropsAdvertiseTheAppPayloadAndSwiftUIJSONBridge() {
+        XCTAssertEqual(
+            BeadFolderDropHandler.contentTypes,
+            [.beadazzleBeadDrag, .json]
+        )
     }
 
     func testFolderDropCollectorRejectsIncompleteBatchWithoutPartialAcceptance() {

@@ -33,5 +33,6 @@ struct BeadDragPayload: Codable, Hashable, Sendable, Transferable {
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .beadazzleBeadDrag)
+        CodableRepresentation(contentType: .json)
     }
 }

@@ -3,20 +3,27 @@ import UniformTypeIdentifiers
 
 @MainActor
 enum BeadFolderDropHandler {
-    static let contentTypes: [UTType] = [.beadazzleBeadDrag]
+    // SwiftUI's drop target does not reliably activate for the custom type emitted by
+    // the AppKit table. JSON is the transport bridge; decoded payloads are still
+    // validated as Beadazzle drags before the store accepts them.
+    static let contentTypes: [UTType] = [.beadazzleBeadDrag, .json]
 
     static func accept(
         _ providers: [NSItemProvider],
         into folderID: UUID,
         store: BeadStore
     ) -> Bool {
-        guard !providers.isEmpty,
-              providers.allSatisfy({
-                  $0.hasItemConformingToTypeIdentifier(UTType.beadazzleBeadDrag.identifier)
-              })
-        else { return false }
+        let supportedProviders = providers.compactMap { provider -> (NSItemProvider, String)? in
+            let typeIdentifier = contentTypes
+                .map(\.identifier)
+                .first(where: provider.hasItemConformingToTypeIdentifier)
+            return typeIdentifier.map { (provider, $0) }
+        }
+        guard !providers.isEmpty, supportedProviders.count == providers.count else {
+            return false
+        }
 
-        let collector = BeadFolderDropPayloadCollector(count: providers.count) { payloads in
+        let collector = BeadFolderDropPayloadCollector(count: supportedProviders.count) { payloads in
             guard let payloads else {
                 store.lastError = "The dragged beads could not be read."
                 return
@@ -28,9 +35,9 @@ enum BeadFolderDropHandler {
             _ = store.addBeadDragPayloads(payloads, toFolder: folderID)
         }
 
-        for (index, provider) in providers.enumerated() {
+        for (index, (provider, typeIdentifier)) in supportedProviders.enumerated() {
             provider.loadDataRepresentation(
-                forTypeIdentifier: UTType.beadazzleBeadDrag.identifier
+                forTypeIdentifier: typeIdentifier
             ) { data, _ in
                 let payload = data.flatMap {
                     try? JSONDecoder().decode(BeadDragPayload.self, from: $0)
