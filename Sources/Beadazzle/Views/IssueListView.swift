@@ -89,6 +89,12 @@ struct IssueListView: View {
         .task(id: RelativeFilterClockTaskID(hasRelativeRules: store.hasRelativeSavedViewFilters)) {
             await runRelativeFilterClockIfNeeded()
         }
+        .task(id: TimeSensitiveBookmarkClockTaskID(
+            bookmark: workspace.selectedBookmark,
+            contentRevision: project.contentRevision
+        )) {
+            await runTimeSensitiveBookmarkClockIfNeeded()
+        }
     }
 
     @MainActor
@@ -106,6 +112,23 @@ struct IssueListView: View {
 
     private var usesGateClock: Bool {
         workspace.selectedBookmark == .gates || workspace.selectedBookmark == .blocked
+    }
+
+    @MainActor
+    private func runTimeSensitiveBookmarkClockIfNeeded() async {
+        guard workspace.selectedBookmark == .ready || workspace.selectedBookmark == .stale else { return }
+        while !Task.isCancelled,
+              (workspace.selectedBookmark == .ready || workspace.selectedBookmark == .stale) {
+            guard let boundary = store.index.nextTimeSensitiveBookmarkBoundary(
+                for: workspace.selectedBookmark
+            ) else {
+                return
+            }
+            let delay = max(1, boundary.timeIntervalSinceNow)
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await store.refreshTimeSensitiveBookmarkMembership(at: Date())
+        }
     }
 
     @MainActor
@@ -132,6 +155,11 @@ private struct GateClockTaskID: Hashable {
 
 private struct RelativeFilterClockTaskID: Hashable {
     var hasRelativeRules: Bool
+}
+
+private struct TimeSensitiveBookmarkClockTaskID: Hashable {
+    var bookmark: BeadBookmark
+    var contentRevision: Int
 }
 
 enum IssueListMetrics {

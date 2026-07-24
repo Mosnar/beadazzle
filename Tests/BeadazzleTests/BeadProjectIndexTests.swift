@@ -237,11 +237,27 @@ final class BeadProjectIndexTests: XCTestCase {
     func testStaleBookmarkIncludesCliDefaultAndCustomNonDoneIssuesOlderThanTwoWeeks() {
         let old = Date().addingTimeInterval(-15 * 24 * 60 * 60)
         let recent = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        let expiredDeferral = Date().addingTimeInterval(-24 * 60 * 60)
+        let futureDeferral = Date().addingTimeInterval(24 * 60 * 60)
         let issues = [
             issue("bd-open-stale", status: "open", type: "task", updatedAt: old),
             issue("bd-review-stale", status: "review", type: "task", updatedAt: old),
             issue("bd-blocked-stale", status: "blocked", type: "task", updatedAt: old),
             issue("bd-deferred-stale", status: "deferred", type: "task", updatedAt: old),
+            issue(
+                "bd-expired-deferred-stale",
+                status: "deferred",
+                type: "task",
+                updatedAt: old,
+                deferUntil: expiredDeferral
+            ),
+            issue(
+                "bd-future-deferred",
+                status: "deferred",
+                type: "task",
+                updatedAt: old,
+                deferUntil: futureDeferral
+            ),
             issue("bd-pinned-stale", status: "pinned", type: "task", updatedAt: old),
             issue("bd-hooked-stale", status: "hooked", type: "task", updatedAt: old),
             issue("bd-created-fallback", status: "open", type: "task", createdAt: old),
@@ -257,6 +273,7 @@ final class BeadProjectIndexTests: XCTestCase {
             "bd-review-stale",
             "bd-blocked-stale",
             "bd-deferred-stale",
+            "bd-expired-deferred-stale",
             "bd-created-fallback"
         ])
     }
@@ -283,6 +300,50 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(staleIDs(cutoffDays: 7), ["bd-stale-7"])
         XCTAssertEqual(staleIDs(cutoffDays: 14), ["bd-stale-14"])
         XCTAssertEqual(staleIDs(cutoffDays: 30), ["bd-stale-30"])
+    }
+
+    func testStaleBoundaryWaitsForBothCutoffAndFutureDeferral() {
+        let secondsPerDay: TimeInterval = 24 * 60 * 60
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let deferUntil = now.addingTimeInterval(30 * secondsPerDay)
+        let index = BeadProjectIndex(
+            issues: [
+                issue(
+                    "bd-deferred",
+                    status: "open",
+                    type: "task",
+                    updatedAt: now.addingTimeInterval(-20 * secondsPerDay),
+                    deferUntil: deferUntil
+                )
+            ],
+            dependencies: [],
+            semantics: staleSemantics(),
+            bookmarkEvaluationDate: now
+        )
+
+        XCTAssertEqual(index.nextTimeSensitiveBookmarkBoundary(for: .stale), deferUntil)
+    }
+
+    func testReadyBoundaryUsesFutureDeferralAndOtherBookmarksHaveNoBoundary() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let deferUntil = now.addingTimeInterval(3_600)
+        let index = BeadProjectIndex(
+            issues: [
+                issue(
+                    "bd-deferred",
+                    status: "open",
+                    type: "task",
+                    updatedAt: now,
+                    deferUntil: deferUntil
+                )
+            ],
+            dependencies: [],
+            semantics: staleSemantics(),
+            bookmarkEvaluationDate: now
+        )
+
+        XCTAssertEqual(index.nextTimeSensitiveBookmarkBoundary(for: .ready), deferUntil)
+        XCTAssertNil(index.nextTimeSensitiveBookmarkBoundary(for: .open))
     }
 
     func testReadyBookmarkIncludesOpenIssuesWithoutActiveBlockers() {

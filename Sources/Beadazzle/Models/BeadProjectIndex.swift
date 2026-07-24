@@ -112,6 +112,7 @@ struct BeadProjectIndex: Sendable {
     let baseFilterCountsByBookmark: [BeadBookmark: BeadFilterCounts]
 
     private let issueIDsByBookmark: [BeadBookmark: Set<String>]
+    private let nextTimeSensitiveBookmarkBoundaryByBookmark: [BeadBookmark: Date]
     private let systemRecordIDsByParentID: [String: [String]]
     private let recordedStateChangesByParentID: [String: [BeadRecordedStateChange]]
 
@@ -125,6 +126,7 @@ struct BeadProjectIndex: Sendable {
         semantics: BeadProjectSemantics,
         staleCutoffDays: Int = Self.defaultStaleCutoffDays,
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
+        bookmarkEvaluationDate: Date = Date(),
         reusingSearchTextFrom previousIndex: BeadProjectIndex? = nil
     ) {
         let userFacingSemantics = semantics.excludingSystemRecordTypes
@@ -151,6 +153,10 @@ struct BeadProjectIndex: Sendable {
         var recordedStateValuesByDimension: [String: Set<String>] = [:]
         var recordedStateChangeByIssueID: [String: BeadRecordedStateChange] = [:]
         var ambiguousStateEventIndices: [Int] = []
+        let readyStatusNames = Set(BeadBookmark.ready.statusNames(in: userFacingSemantics) ?? [])
+        let staleStatusNames = Set(BeadBookmark.stale.statusNames(in: userFacingSemantics) ?? [])
+        var nextReadyBoundary: Date?
+        var nextStaleBoundary: Date?
         issueByID.reserveCapacity(issues.count)
         userFacingIssueOffsets.reserveCapacity(issues.count)
         userFacingIssueIDs.reserveCapacity(issues.count)
@@ -176,6 +182,25 @@ struct BeadProjectIndex: Sendable {
             issueIDsByStatusCategory[userFacingSemantics.category(forStatus: issue.status), default: []].insert(issue.id)
             issueIDsByType[issue.issueType, default: []].insert(issue.id)
             issueIDsByPriority[issue.priority, default: []].insert(issue.id)
+            if readyStatusNames.contains(issue.status),
+               !issue.isGate,
+               let deferUntil = issue.deferUntil,
+               deferUntil > bookmarkEvaluationDate,
+               nextReadyBoundary.map({ deferUntil < $0 }) ?? true {
+                nextReadyBoundary = deferUntil
+            }
+            if staleStatusNames.contains(issue.status),
+               !userFacingSemantics.isDone(issue),
+               let activityDate = issue.updatedAt ?? issue.createdAt {
+                let staleAt = activityDate.addingTimeInterval(
+                    TimeInterval(normalizedStaleCutoffDays) * Self.secondsPerDay
+                )
+                let eligibleAt = max(staleAt, issue.deferUntil ?? staleAt)
+                if eligibleAt > bookmarkEvaluationDate,
+                   nextStaleBoundary.map({ eligibleAt < $0 }) ?? true {
+                    nextStaleBoundary = eligibleAt
+                }
+            }
             if let previousIndex,
                let priorIssue = previousIndex.issueByID[issue.id],
                let priorBytes = previousIndex.foldedSearchBytesByID[issue.id],
@@ -327,12 +352,17 @@ struct BeadProjectIndex: Sendable {
                     dependenciesByIssueID: dependenciesByIssueID,
                     childIDsByParentID: childIDsByParentID,
                     hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-                    staleCutoffDays: normalizedStaleCutoffDays
+                    staleCutoffDays: normalizedStaleCutoffDays,
+                    now: bookmarkEvaluationDate
                 )
                 return (bookmark, ids)
             }
         )
         self.issueIDsByBookmark = issueIDsByBookmark
+        nextTimeSensitiveBookmarkBoundaryByBookmark = [
+            .ready: nextReadyBoundary,
+            .stale: nextStaleBoundary,
+        ].compactMapValues { $0 }
         baseFilterCountsByBookmark = Dictionary(
             uniqueKeysWithValues: BeadBookmark.allCases.map { bookmark in
                 let ids = issueIDsByBookmark[bookmark, default: []]
@@ -503,6 +533,13 @@ struct BeadProjectIndex: Sendable {
 
     func issueIDs(for bookmark: BeadBookmark) -> Set<String> {
         issueIDsByBookmark[bookmark, default: []]
+    }
+
+    /// The next instant when time alone can change membership in Ready or Stale.
+    /// Callers can sleep until this boundary instead of polling or rebuilding the
+    /// project index on a fixed cadence.
+    func nextTimeSensitiveBookmarkBoundary(for bookmark: BeadBookmark) -> Date? {
+        nextTimeSensitiveBookmarkBoundaryByBookmark[bookmark]
     }
 
     func filteredIssueIDs(
@@ -1186,7 +1223,8 @@ struct BeadProjectIndex: Sendable {
         dependenciesByIssueID: [String: [BeadDependency]],
         childIDsByParentID: [String: [String]],
         hidesParentsWithOnlyBlockedChildrenInReady: Bool,
-        staleCutoffDays: Int
+        staleCutoffDays: Int,
+        now: Date
     ) -> Set<String> {
         if bookmark == .gates {
             return openGateIssueIDs(issueIDsByType: issueIDsByType, issueByID: issueByID, semantics: semantics)
@@ -1202,7 +1240,8 @@ struct BeadProjectIndex: Sendable {
                 from: statusIDs,
                 issueByID: issueByID,
                 semantics: semantics,
-                staleCutoffDays: staleCutoffDays
+                staleCutoffDays: staleCutoffDays,
+                now: now
             )
         }
         guard bookmark == .ready else {
@@ -1214,7 +1253,8 @@ struct BeadProjectIndex: Sendable {
             dependenciesByIssueID: dependenciesByIssueID,
             childIDsByParentID: childIDsByParentID,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-            semantics: semantics
+            semantics: semantics,
+            now: now
         )
     }
 
@@ -1236,11 +1276,13 @@ struct BeadProjectIndex: Sendable {
         from candidateIDs: Set<String>,
         issueByID: [String: BeadIssue],
         semantics: BeadProjectSemantics,
-        staleCutoffDays: Int
+        staleCutoffDays: Int,
+        now: Date
     ) -> Set<String> {
-        let cutoff = Date().addingTimeInterval(-TimeInterval(max(1, staleCutoffDays)) * secondsPerDay)
+        let cutoff = now.addingTimeInterval(-TimeInterval(max(1, staleCutoffDays)) * secondsPerDay)
         return candidateIDs.filter { issueID in
             guard let issue = issueByID[issueID], !semantics.isDone(issue) else { return false }
+            guard !isDeferred(issue, relativeTo: now) else { return false }
             guard let activityDate = issue.updatedAt ?? issue.createdAt else { return false }
             return activityDate <= cutoff
         }
@@ -1252,9 +1294,9 @@ struct BeadProjectIndex: Sendable {
         dependenciesByIssueID: [String: [BeadDependency]],
         childIDsByParentID: [String: [String]],
         hidesParentsWithOnlyBlockedChildrenInReady: Bool,
-        semantics: BeadProjectSemantics
+        semantics: BeadProjectSemantics,
+        now: Date
     ) -> Set<String> {
-        let now = Date()
         return candidateIDs.filter { issueID in
             guard let issue = issueByID[issueID] else { return false }
             guard !issue.isGate else { return false }

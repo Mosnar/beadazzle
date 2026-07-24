@@ -207,6 +207,221 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(metadataCalls.isEmpty)
     }
 
+    func testFutureDeferralRemovesStaleBeadBeforeMetadataCommandCompletes() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "deferred")
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.applyBookmark(.stale)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1"])
+
+        let deferUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
+        let task = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(deferUntil))
+        }
+
+        try await waitUntil {
+            store.issue(with: "bd-1")?.deferUntil == deferUntil
+                && store.filteredIssueIDs.isEmpty
+        }
+        let callsBeforeCommandCompletes = await commands.metadataUpdateCalls
+        XCTAssertTrue(callsBeforeCommandCompletes.isEmpty)
+        let succeeded = await task.value
+        XCTAssertTrue(succeeded)
+    }
+
+    func testSparseFutureDeferralRemovesOneOfTenThousandStaleIDsBeforeMaterialization() async {
+        let now = Date()
+        let old = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        let issues = (0..<10_000).map { offset in
+            deferredIssue(id: "bd-\(offset)", updatedAt: old)
+        }
+        let index = BeadProjectIndex(
+            issues: issues,
+            dependencies: [],
+            semantics: staleTestSemantics(),
+            bookmarkEvaluationDate: now
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.authoritativeIndex = index
+        store.index = index
+        store._selectedBookmark = .stale
+        store._filteredIssueIDs = issues.map(\.id)
+        let targetID = "bd-9999"
+        let deferUntil = now.addingTimeInterval(30 * 24 * 60 * 60)
+
+        _ = store.applyOptimisticProjection(
+            BeadMutationProjectionEntry(
+                issueChanges: [
+                    targetID: .update(BeadIssueMutationPatch(deferUntil: .set(deferUntil)))
+                ]
+            )
+        )
+
+        XCTAssertEqual(store.filteredIssueIDs.count, 9_999)
+        XCTAssertFalse(store.filteredIssueIDs.contains(targetID))
+        XCTAssertNil(store.index.issue(with: targetID)?.deferUntil)
+        XCTAssertEqual(store.issue(with: targetID)?.deferUntil, deferUntil)
+        XCTAssertNotNil(store.projectionMaterializationTask)
+        await store.waitForPendingProjectionMaterialization()
+    }
+
+    func testFailedFutureDeferralRestoresBeadToStale() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "deferred")
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        await commands.setUpdateError(NSError(domain: "BeadStoreAsyncMutationTests", code: 1))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.applyBookmark(.stale)
+        await store.waitForPendingQueryRecompute()
+        let deferUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
+
+        let task = Task { @MainActor in
+            await store.updateMetadata(issueID: "bd-1", deferUntil: .set(deferUntil))
+        }
+        try await waitUntil { store.filteredIssueIDs.isEmpty }
+        let succeeded = await task.value
+        await store.waitForPendingProjectionMaterialization()
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1"])
+        XCTAssertNil(store.issue(with: "bd-1")?.deferUntil)
+    }
+
+    func testBulkFutureDeferralRemovesStaleBeadBeforeCommandCompletes() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "deferred")
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.applyBookmark(.stale)
+        await store.waitForPendingQueryRecompute()
+        let deferUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
+
+        let task = Task { @MainActor in
+            await store.bulkSet(issueIDs: ["bd-1"], deferUntil: .set(deferUntil))
+        }
+        try await waitUntil {
+            store.issue(with: "bd-1")?.deferUntil == deferUntil
+                && store.filteredIssueIDs.isEmpty
+        }
+        let callsBeforeCommandCompletes = await commands.bulkUpdateCalls
+        XCTAssertTrue(callsBeforeCommandCompletes.isEmpty)
+        let succeeded = await task.value
+        XCTAssertTrue(succeeded)
+    }
+
+    func testGateRejectionFutureDeferralRemovesStaleBeadBeforeBulkCommandCompletes() async throws {
+        let projectURL = try makeProject(
+            gateProjectJSONL(
+                gateUpdatedAt: "2026-07-03T20:58:35Z",
+                awaitType: "human",
+                taskStatus: "blocked"
+            )
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setBulkUpdateDelay(.milliseconds(400))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-task") != nil }
+        store.applyBookmark(.stale)
+        await store.waitForPendingQueryRecompute()
+        XCTAssertTrue(store.filteredIssueIDs.contains("bd-task"))
+        let deferUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
+
+        let task = Task { @MainActor in
+            await store.rejectGate(
+                id: "bd-gate",
+                reason: "not ready",
+                targetStatus: "deferred",
+                deferUntil: .set(deferUntil)
+            )
+        }
+        try await waitUntil {
+            store.issue(with: "bd-task")?.deferUntil == deferUntil
+                && !store.filteredIssueIDs.contains("bd-task")
+        }
+        let callsBeforeCommandCompletes = await commands.bulkUpdateCalls
+        XCTAssertTrue(callsBeforeCommandCompletes.isEmpty)
+        let succeeded = await task.value
+        XCTAssertTrue(succeeded)
+    }
+
+    func testExpiredDeferralReentersStaleAfterTimeBoundaryRefresh() async {
+        let beforeExpiry = Date(timeIntervalSince1970: 2_000_000_000)
+        let deferUntil = beforeExpiry.addingTimeInterval(3_600)
+        let issue = deferredIssue(
+            id: "bd-1",
+            status: "open",
+            updatedAt: beforeExpiry.addingTimeInterval(-30 * 24 * 60 * 60),
+            deferUntil: deferUntil
+        )
+        let index = BeadProjectIndex(
+            issues: [issue],
+            dependencies: [],
+            semantics: staleTestSemantics(),
+            bookmarkEvaluationDate: beforeExpiry
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.authoritativeIndex = index
+        store.index = index
+        store._selectedBookmark = .stale
+        store.applyFilters()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertTrue(store.filteredIssueIDs.isEmpty)
+
+        await store.refreshTimeSensitiveBookmarkMembership(
+            at: deferUntil.addingTimeInterval(1)
+        )
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1"])
+    }
+
+    func testExpiredDeferralReentersReadyAfterTimeBoundaryRefresh() async {
+        let beforeExpiry = Date(timeIntervalSince1970: 2_000_000_000)
+        let deferUntil = beforeExpiry.addingTimeInterval(3_600)
+        let issue = deferredIssue(
+            id: "bd-1",
+            status: "open",
+            updatedAt: beforeExpiry,
+            deferUntil: deferUntil
+        )
+        let index = BeadProjectIndex(
+            issues: [issue],
+            dependencies: [],
+            semantics: staleTestSemantics(),
+            bookmarkEvaluationDate: beforeExpiry
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.authoritativeIndex = index
+        store.index = index
+        store._selectedBookmark = .ready
+        store.applyFilters()
+        await store.waitForPendingQueryRecompute()
+        XCTAssertTrue(store.filteredIssueIDs.isEmpty)
+
+        await store.refreshTimeSensitiveBookmarkMembership(
+            at: deferUntil.addingTimeInterval(1)
+        )
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.filteredIssueIDs, ["bd-1"])
+    }
+
     func testBulkSetDeferredStatusCanClearExistingDeferredDate() async throws {
         let projectURL = try makeProject(
             """
@@ -3873,6 +4088,65 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             try? FileManager.default.removeItem(at: projectURL)
         }
         return projectURL
+    }
+
+    private func deferredIssue(
+        id: String,
+        status: String = "deferred",
+        updatedAt: Date,
+        deferUntil: Date? = nil
+    ) -> BeadIssue {
+        BeadIssue(
+            id: id,
+            title: id,
+            description: "",
+            design: "",
+            acceptanceCriteria: "",
+            notes: "",
+            status: status,
+            priority: 1,
+            issueType: "task",
+            assignee: nil,
+            owner: nil,
+            createdAt: nil,
+            updatedAt: updatedAt,
+            closedAt: nil,
+            dueAt: nil,
+            deferUntil: deferUntil,
+            externalRef: nil,
+            parentID: nil,
+            labels: [],
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
+        )
+    }
+
+    private func staleTestSemantics() -> BeadProjectSemantics {
+        BeadProjectSemantics(
+            statuses: [
+                BeadStatusDefinition(
+                    name: "open",
+                    category: .active,
+                    icon: nil,
+                    description: nil,
+                    isBuiltIn: true
+                ),
+                BeadStatusDefinition(
+                    name: "deferred",
+                    category: .frozen,
+                    icon: nil,
+                    description: nil,
+                    isBuiltIn: true
+                )
+            ],
+            types: [
+                BeadTypeDefinition(name: "task", description: nil)
+            ]
+        )
     }
 
     private func issueLine(

@@ -14,6 +14,7 @@ for users, not for the commit log.
 ## [Unreleased]
 
 - Added per-project bookmark folders for collecting beads from any list by drag and drop or bead menus, arranging them manually, filtering or sorting them temporarily, and copying their IDs for handoff without slowing normal list selection.
+- Deferred beads scheduled for the future now leave Stale immediately, return when their deferral expires, and no longer wait for a full project refresh.
 
 ## [1.4.0] - 2026-07-21
 

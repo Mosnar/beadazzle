@@ -294,6 +294,36 @@ extension BeadStore {
         ))
     }
 
+    /// Future deferrals cannot belong to Ready or Stale. Remove touched rows from
+    /// the active result set synchronously so a one-bead edit never waits for a
+    /// tracker-sized index rebuild. The normal projection materialization that
+    /// follows remains authoritative for counts, sorting, filters, and rollback.
+    internal func removeActivelyDeferredIssuesFromCurrentList(issueIDs: Set<String>, now: Date = Date()) {
+        guard selectedBookmark == .ready || selectedBookmark == .stale,
+              !issueIDs.isEmpty,
+              !filteredIssueIDs.isEmpty else {
+            return
+        }
+        let deferredIssueIDs = issueIDs.reduce(into: Set<String>()) { ids, issueID in
+            guard let deferUntil = issue(with: issueID)?.deferUntil,
+                  deferUntil > now else {
+                return
+            }
+            ids.insert(issueID)
+        }
+        guard !deferredIssueIDs.isEmpty,
+              filteredIssueIDs.contains(where: deferredIssueIDs.contains) else {
+            return
+        }
+
+        _filteredIssueIDs = filteredIssueIDs.filter { !deferredIssueIDs.contains($0) }
+        if effectiveIssueListMode == .flat {
+            _issueListRows = issueListRows.filter { !deferredIssueIDs.contains($0.issueID) }
+        } else {
+            rebuildIssueListRows()
+        }
+    }
+
     func applySortOnly() {
         scheduleQueryRecompute(BeadQueryRecomputeRequest(
             scope: .resort,

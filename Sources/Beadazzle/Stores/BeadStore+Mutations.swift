@@ -47,6 +47,7 @@ extension BeadStore {
         }
         syncFullPageDetailWithSelection()
         syncCommentsForSelectionFromCache()
+        removeActivelyDeferredIssuesFromCurrentList(issueIDs: Set(entry.issueChanges.keys))
         scheduleProjectionMaterialization()
         return entry.id
     }
@@ -66,7 +67,7 @@ extension BeadStore {
         scheduleProjectionMaterialization()
     }
 
-    internal func scheduleProjectionMaterialization() {
+    internal func scheduleProjectionMaterialization(bookmarkEvaluationDate: Date = Date()) {
         projectionGeneration &+= 1
         let generation = projectionGeneration
         projectionMaterializationTask?.cancel()
@@ -94,7 +95,8 @@ extension BeadStore {
                 over: base,
                 previousIndex: previousIndex,
                 staleCutoffDays: staleCutoffDays,
-                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
+                hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+                bookmarkEvaluationDate: bookmarkEvaluationDate
             )
             guard !Task.isCancelled,
                   let self,
@@ -115,6 +117,15 @@ extension BeadStore {
             self.syncCommentsForSelectionFromCache()
             self.pruneGateDetailsForCurrentSnapshot()
         }
+    }
+
+    /// Re-evaluates Ready/Stale when the next cached time boundary arrives. The
+    /// index rebuild remains off-main and uses the current optimistic projection,
+    /// so an expiry cannot discard an in-flight edit.
+    internal func refreshTimeSensitiveBookmarkMembership(at now: Date = Date()) async {
+        guard selectedBookmark == .ready || selectedBookmark == .stale else { return }
+        scheduleProjectionMaterialization(bookmarkEvaluationDate: now)
+        await waitForPendingProjectionMaterialization()
     }
 
     func waitForPendingProjectionMaterialization() async {

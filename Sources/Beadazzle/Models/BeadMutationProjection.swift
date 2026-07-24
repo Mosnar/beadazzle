@@ -362,7 +362,8 @@ actor BeadProjectionMaterializer {
         over base: BeadProjectIndex,
         previousIndex: BeadProjectIndex,
         staleCutoffDays: Int,
-        hidesParentsWithOnlyBlockedChildrenInReady: Bool
+        hidesParentsWithOnlyBlockedChildrenInReady: Bool,
+        bookmarkEvaluationDate: Date
     ) -> BeadProjectIndex? {
         guard !Task.isCancelled,
               let materialized = projection.materialized(
@@ -378,6 +379,7 @@ actor BeadProjectionMaterializer {
             semantics: base.semantics,
             staleCutoffDays: staleCutoffDays,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+            bookmarkEvaluationDate: bookmarkEvaluationDate,
             reusingSearchTextFrom: previousIndex
         )
     }
