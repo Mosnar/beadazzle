@@ -49,6 +49,15 @@ struct ContentView: View {
                 )
                 .disabled(!store.hasReadableProject)
             }
+
+            if showsIssueListToolbarControls {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    FilterMenu()
+                        .disabled(store.isGlobalSearchActive)
+                    IssueListSortMenu()
+                    IssueListViewOptionsMenu()
+                }
+            }
         }
         .confirmationDialog(
             pendingDeleteRequest?.dialogTitle ?? "Delete selected beads?",
@@ -85,7 +94,7 @@ struct ContentView: View {
                 initialQuery: store.currentSavedViewQuery,
                 initialOrdering: store.currentSavedViewOrdering,
                 suggestedName: store.suggestedSavedViewName,
-                initialSymbolName: workspace.selectedBookmark.systemImage
+                initialSymbolName: store.effectiveIssueListBookmark.systemImage
             )
         }
         .sheet(item: $folderEditorRequest) { request in
@@ -112,9 +121,12 @@ struct ContentView: View {
             openProject: openProject,
             refresh: canRefresh ? { store.refresh() } : nil,
             find: store.hasReadableProject ? { searchPresented = true } : nil,
+            searchCoverageTitle: searchCoverageCommandTitle,
+            toggleSearchCoverage: searchCoverageCommand,
             saveCurrentViewAsBookmark: store.canSaveCurrentViewAsSmartBookmark ? presentSaveBookmark : nil
         ))
         .onChange(of: project.projectURL) {
+            searchPresented = false
             pendingDeleteRequest = nil
             hierarchySheetRequest = nil
             deferredStatusRequest = nil
@@ -179,7 +191,12 @@ struct ContentView: View {
                 showsSidebar: shouldShowSidebar(for: workspaceWidth)
             )
         }
-        .searchable(text: searchText, isPresented: $searchPresented, placement: .toolbar, prompt: "Search beads")
+        .searchable(
+            text: searchText,
+            isPresented: $searchPresented,
+            placement: .toolbar,
+            prompt: Text(store.searchFieldPrompt)
+        )
         .background {
             WorkspaceMouseNavigationBridge(
                 canGoBack: workspace.canGoBack,
@@ -285,6 +302,33 @@ struct ContentView: View {
             hasUnavailableProject: project.projectReadiness.unavailableProject != nil,
             hasUnsupportedProject: project.projectReadiness.unsupportedProject != nil
         )
+    }
+
+    private var showsIssueListToolbarControls: Bool {
+        ContentLayout.showsIssueListToolbarControls(
+            presentation: workspacePresentation,
+            bookmark: store.effectiveIssueListBookmark
+        )
+    }
+
+    private var searchCoverageCommand: (() -> Void)? {
+        if store.canExpandCurrentSearchToAllBeads {
+            return store.searchAllBeadsUsingCurrentSearchText
+        }
+        if store.canReturnSearchToCurrentView {
+            return store.searchCurrentViewUsingCurrentSearchText
+        }
+        return nil
+    }
+
+    private var searchCoverageCommandTitle: String? {
+        if store.canExpandCurrentSearchToAllBeads {
+            return "Search All Beads"
+        }
+        if store.canReturnSearchToCurrentView {
+            return "Search Current View"
+        }
+        return nil
     }
 
     private func shouldShowSidebar(for width: CGFloat) -> Bool {
@@ -677,5 +721,12 @@ enum ContentLayout {
 
         let breakpoint = presentation.showsDetail ? detailSidebarCollapseBreakpoint : listOnlySidebarCollapseBreakpoint
         return width >= breakpoint
+    }
+
+    static func showsIssueListToolbarControls(
+        presentation: WorkspacePresentation,
+        bookmark: BeadBookmark
+    ) -> Bool {
+        presentation.showsIssueList && bookmark != .gates
     }
 }

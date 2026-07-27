@@ -41,6 +41,6 @@ Beadazzle is a SwiftPM native macOS app. Prefer small, focused SwiftUI files and
 ## UI Direction
 
 - Preserve native macOS source-list behavior in the sidebar.
-- Keep filters in the sidebar and list-specific controls, such as sorting, near the issue list.
+- Keep filters and list-specific controls together in the window toolbar while the issue list is visible.
 - Favor compact, stable metadata over wrapped badges or card-heavy layouts.
 - Keep selection changes and search responsive; avoid disk reads on simple navigation.

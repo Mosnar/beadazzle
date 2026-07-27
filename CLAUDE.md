@@ -42,7 +42,7 @@ The query pipeline runs off the main actor: `BeadStore+WorkspaceQuery.swift` han
 ## Conventions
 
 - SwiftUI first; use AppKit interop only for narrow platform edges (panels, window behavior). Keep files small and focused.
-- Preserve native macOS source-list behavior in the sidebar. Keep filters in the sidebar and list-specific controls (e.g. sorting) near the issue list. Favor compact, stable metadata over wrapped badges or card-heavy layouts.
+- Preserve native macOS source-list behavior in the sidebar. Keep filters and list-specific controls together in the window toolbar while the issue list is visible. Favor compact, stable metadata over wrapped badges or card-heavy layouts.
 - Keep navigation/search responsive — avoid disk reads on simple selection; that's what the in-memory index is for.
 - Record user-facing changes in `CHANGELOG.md` under `## [Unreleased]` as you make them (features, behavior changes, notable fixes) — written for users, not as commit summaries. Skip internal-only churn a user wouldn't notice. The release workflow reads the tag's section for the GitHub release notes and the in-app Sparkle update dialog, and fails if it's missing; see `docs/AUTO_UPDATES.md`.
 

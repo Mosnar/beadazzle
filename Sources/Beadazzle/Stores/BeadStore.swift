@@ -196,6 +196,7 @@ final class BeadWorkspaceStore {
     fileprivate(set) var selectedIDs: Set<String> = []
     fileprivate(set) var fullPageDetailIssueID: String?
     fileprivate(set) var selectedBookmark: BeadBookmark = .ready
+    fileprivate(set) var searchCoverage: BeadSearchCoverage = .currentView
     fileprivate(set) var savedViews: [BeadSavedView] = []
     fileprivate(set) var activeSavedViewID: UUID?
     fileprivate(set) var sourceSavedViewID: UUID?
@@ -225,6 +226,7 @@ final class BeadWorkspaceStore {
     @ObservationIgnored fileprivate(set) var isRestoringWorkspace = false
     @ObservationIgnored fileprivate(set) var suppressesHistoryRecording = false
     @ObservationIgnored fileprivate(set) var suppressesFilterUpdates = false
+    @ObservationIgnored fileprivate(set) var searchCoverageSourceSort: BeadSavedViewSort?
 
     func cancelQueryWork() {
         filterTask?.cancel()
@@ -800,6 +802,15 @@ final class BeadStore {
     internal var _fullPageDetailIssueID: String? { get { workspace.fullPageDetailIssueID } set { workspace.fullPageDetailIssueID = newValue } }
     var selectedBookmark: BeadBookmark { workspace.selectedBookmark }
     internal var _selectedBookmark: BeadBookmark { get { workspace.selectedBookmark } set { workspace.selectedBookmark = newValue } }
+    var searchCoverage: BeadSearchCoverage { workspace.searchCoverage }
+    internal var _searchCoverage: BeadSearchCoverage {
+        get { workspace.searchCoverage }
+        set { workspace.searchCoverage = newValue }
+    }
+    internal var _searchCoverageSourceSort: BeadSavedViewSort? {
+        get { workspace.searchCoverageSourceSort }
+        set { workspace.searchCoverageSourceSort = newValue }
+    }
     var savedViews: [BeadSavedView] { workspace.savedViews }
     internal var _savedViews: [BeadSavedView] { get { workspace.savedViews } set { workspace.savedViews = newValue } }
     var activeSavedViewID: UUID? { workspace.activeSavedViewID }
@@ -867,10 +878,15 @@ final class BeadStore {
         get { workspace.requestedFolderIssueIDs }
         set { workspace.requestedFolderIssueIDs = newValue }
     }
+    private(set) var trimmedSearchText = ""
     var searchText = "" {
         didSet {
             guard oldValue != searchText else { return }
-            filterStateDidChange(debounce: true)
+            trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedSearchText.isEmpty {
+                resetSearchCoverageToCurrentView()
+            }
+            filterStateDidChange(debounce: !trimmedSearchText.isEmpty)
         }
     }
     var folderAutomationSummary: String?

@@ -9,6 +9,8 @@ struct WorkspaceCommandActions {
     var openProject: () -> Void
     var refresh: (() -> Void)?
     var find: (() -> Void)?
+    var searchCoverageTitle: String?
+    var toggleSearchCoverage: (() -> Void)?
     var saveCurrentViewAsBookmark: (() -> Void)?
 }
 
@@ -55,6 +57,12 @@ struct WorkspaceCommands: Commands {
             }
             .keyboardShortcut("f")
             .disabled(actions?.find == nil)
+
+            Button(actions?.searchCoverageTitle ?? "Search All Beads") {
+                actions?.toggleSearchCoverage?()
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(actions?.toggleSearchCoverage == nil)
         }
 
         CommandGroup(after: .saveItem) {

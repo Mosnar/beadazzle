@@ -467,7 +467,7 @@ struct IssueListTableView: NSViewRepresentable {
             operation: NSTableView.DropOperation
         ) -> NSDragOperation {
             guard parent.store.canReorderActiveFolder,
-                  let folderID = parent.store.activeFolderSavedView?.id,
+                  let folderID = parent.store.activeIssueListFolderSavedView?.id,
                   operation == .above,
                   let payloads = dragPayloads(from: info),
                   parent.store.canAcceptBeadDragPayloads(payloads),
@@ -482,7 +482,7 @@ struct IssueListTableView: NSViewRepresentable {
             operation: NSTableView.DropOperation
         ) -> Bool {
             guard validateDrop(info, row: row, operation: operation) == .move,
-                  let folderID = parent.store.activeFolderSavedView?.id,
+                  let folderID = parent.store.activeIssueListFolderSavedView?.id,
                   let payloads = dragPayloads(from: info)
             else { return false }
             return parent.store.moveIssueIDs(
@@ -619,7 +619,7 @@ struct IssueListTableView: NSViewRepresentable {
                 menu.addItem(addToFolderItem)
                 menu.setSubmenu(addToFolderMenu, for: addToFolderItem)
 
-                if let folderID = parent.store.activeFolderSavedView?.id {
+                if let folderID = parent.store.activeIssueListFolderSavedView?.id {
                     menu.addItem(contextMenuItem(
                         title: "Remove from Folder",
                         action: #selector(removeContextBeadsFromFolder(_:)),

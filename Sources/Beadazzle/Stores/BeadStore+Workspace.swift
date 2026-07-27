@@ -267,6 +267,7 @@ extension BeadStore {
     }
 
     func applyBookmark(_ bookmark: BeadBookmark) {
+        let clearedGlobalSearch = resetSearchCoverageToCurrentView()
         let wasShowingFolder = isShowingFolder
         let changedSelectionIdentity = activeSavedViewID != nil
         let clearedAdvancedPredicate = activeAdvancedPredicate != nil
@@ -275,7 +276,7 @@ extension BeadStore {
         _listOrdering = .sorted(BeadSavedViewSort(field: sort, direction: sortDirection))
         _activeAdvancedPredicate = nil
         guard selectedBookmark != bookmark else {
-            if clearedAdvancedPredicate || wasShowingFolder {
+            if clearedAdvancedPredicate || wasShowingFolder || clearedGlobalSearch {
                 applyFilters()
             }
             if changedSelectionIdentity || clearedAdvancedPredicate {
@@ -350,7 +351,9 @@ extension BeadStore {
     }
 
     func saveCurrentViewAsBookmark(name: String, symbolName: String) {
-        guard !isShowingFolder, hasReadableProject, canMutateSavedViews else { return }
+        guard !isShowingFolderInIssueList,
+              hasReadableProject,
+              canMutateSavedViews else { return }
         let view = normalizedSavedView(BeadSavedView(
             id: UUID(),
             name: name,
@@ -411,9 +414,8 @@ extension BeadStore {
 
     var suggestedSavedViewName: String {
         let baseName: String
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedSearch.isEmpty {
-            baseName = "Search: \(trimmedSearch)"
+        if !trimmedSearchText.isEmpty {
+            baseName = "Search: \(trimmedSearchText)"
         } else if hasActiveFilters {
             baseName = "\(selectedBookmark.title) — Filtered"
         } else {
@@ -423,12 +425,15 @@ extension BeadStore {
     }
 
     var currentSavedViewSummary: String {
+        if isGlobalSearchActive {
+            return "\(BeadBookmark.all.title) · search text · \(sort.rawValue), \(sortDirection.rawValue.lowercased())"
+        }
         var parts = [selectedBookmark.title]
         if !statusFilters.isEmpty { parts.append("\(statusFilters.count) status filter\(statusFilters.count == 1 ? "" : "s")") }
         if !typeFilters.isEmpty { parts.append("\(typeFilters.count) type filter\(typeFilters.count == 1 ? "" : "s")") }
         if !priorityFilters.isEmpty { parts.append("\(priorityFilters.count) priorit\(priorityFilters.count == 1 ? "y" : "ies")") }
         if !labelFilters.isEmpty { parts.append("\(labelFilters.count) label\(labelFilters.count == 1 ? "" : "s")") }
-        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append("search text") }
+        if !trimmedSearchText.isEmpty { parts.append("search text") }
         parts.append("\(sort.rawValue), \(sortDirection.rawValue.lowercased())")
         return parts.joined(separator: " · ")
     }
@@ -454,6 +459,7 @@ extension BeadStore {
             return
         }
 
+        resetSearchCoverageToCurrentView()
         suppressesFilterUpdates = true
         switch view.content {
         case .smart(let smart):
@@ -684,7 +690,18 @@ extension BeadStore {
     }
 
     private func makeCurrentSavedViewQuery() -> BeadSavedViewQuery {
-        BeadSavedViewQuery(
+        if isGlobalSearchActive {
+            return BeadSavedViewQuery(
+                basePreset: .all,
+                statusFilters: [],
+                typeFilters: [],
+                priorityFilters: [],
+                labelFilters: [],
+                searchText: searchText,
+                advancedPredicate: nil
+            )
+        }
+        return BeadSavedViewQuery(
             basePreset: BeadBookmarkToken(selectedBookmark),
             statusFilters: statusFilters,
             typeFilters: typeFilters,

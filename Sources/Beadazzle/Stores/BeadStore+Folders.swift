@@ -19,12 +19,18 @@ extension BeadStore {
         activeFolderSavedView != nil
     }
 
+    var isShowingFolderInIssueList: Bool {
+        activeIssueListFolderSavedView != nil
+    }
+
     var effectiveIssueListMode: IssueListMode {
-        isShowingFolder ? .flat : issueListMode
+        // Search results stay flat so a collapsed ancestor can never hide a matching bead.
+        // The user's underlying outline mode remains untouched for when search is dismissed.
+        isGlobalSearchActive || isShowingFolderInIssueList ? .flat : issueListMode
     }
 
     var canSaveCurrentViewAsSmartBookmark: Bool {
-        canCreateSavedView && !isShowingFolder
+        canCreateSavedView && !isShowingFolderInIssueList
     }
 
     var suggestedFolderName: String {
@@ -32,11 +38,11 @@ extension BeadStore {
     }
 
     var canReorderActiveFolder: Bool {
-        isShowingFolder
+        isShowingFolderInIssueList
             && effectiveIssueListMode == .flat
             && listOrdering.isManual
             && !hasActiveFilters
-            && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && trimmedSearchText.isEmpty
             && activeAdvancedPredicate == nil
     }
 
@@ -58,7 +64,7 @@ extension BeadStore {
         return BeadDragPayload(
             projectIdentity: projectIdentity,
             issueIDs: issueIDs,
-            sourceFolderID: activeFolderSavedView?.id
+            sourceFolderID: activeIssueListFolderSavedView?.id
         )
     }
 
@@ -286,15 +292,23 @@ extension BeadStore {
     }
 
     func selectManualFolderOrdering() {
-        guard isShowingFolder, !listOrdering.isManual else { return }
+        guard isShowingFolderInIssueList, !listOrdering.isManual else { return }
         _listOrdering = .manual
         applyFilters()
         syncCurrentWorkspaceSnapshotIfNeeded()
     }
 
     func selectListSort(_ selectedSort: IssueSort) {
+        if isGlobalSearchActive {
+            suppressesFilterUpdates = true
+            sort = selectedSort
+            suppressesFilterUpdates = false
+            applySortOnly()
+            syncCurrentWorkspaceSnapshotIfNeeded()
+            return
+        }
         let savedSort = BeadSavedViewSort(field: selectedSort, direction: sortDirection)
-        if isShowingFolder {
+        if isShowingFolderInIssueList {
             _listOrdering = .sorted(savedSort)
         }
         if sort == selectedSort {
@@ -306,8 +320,16 @@ extension BeadStore {
     }
 
     func selectListSortDirection(_ selectedDirection: SortDirection) {
+        if isGlobalSearchActive {
+            suppressesFilterUpdates = true
+            sortDirection = selectedDirection
+            suppressesFilterUpdates = false
+            applySortOnly()
+            syncCurrentWorkspaceSnapshotIfNeeded()
+            return
+        }
         let savedSort = BeadSavedViewSort(field: sort, direction: selectedDirection)
-        if isShowingFolder {
+        if isShowingFolderInIssueList {
             _listOrdering = .sorted(savedSort)
         }
         if sortDirection == selectedDirection {

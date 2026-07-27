@@ -7,7 +7,7 @@ struct FolderActionsMenu: View {
     var body: some View {
         AddToFolderMenu(issueIDs: issueIDs)
 
-        if let folderID = store.activeFolderSavedView?.id {
+        if let folderID = store.activeIssueListFolderSavedView?.id {
             Button("Remove from Folder") {
                 store.removeIssueIDs(Set(issueIDs), fromFolder: folderID)
             }

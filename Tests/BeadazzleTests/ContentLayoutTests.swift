@@ -66,6 +66,96 @@ final class ContentLayoutTests: XCTestCase {
         XCTAssertFalse(WorkspacePresentation.unsupportedProject.showsIssueList)
     }
 
+    func testIssueListToolbarControlsFollowListVisibilityAndHideForGates() {
+        XCTAssertTrue(
+            ContentLayout.showsIssueListToolbarControls(
+                presentation: .listOnly,
+                bookmark: .ready
+            )
+        )
+        XCTAssertTrue(
+            ContentLayout.showsIssueListToolbarControls(
+                presentation: .splitDetail,
+                bookmark: .all
+            )
+        )
+        XCTAssertFalse(
+            ContentLayout.showsIssueListToolbarControls(
+                presentation: .fullPageDetail,
+                bookmark: .ready
+            )
+        )
+        XCTAssertFalse(
+            ContentLayout.showsIssueListToolbarControls(
+                presentation: .listOnly,
+                bookmark: .gates
+            )
+        )
+    }
+
+    func testGatesHeaderAppearsOnlyWhileSearching() {
+        XCTAssertFalse(
+            IssueListSurfacePolicy.showsHeader(
+                bookmark: .gates,
+                hasSearchText: false
+            )
+        )
+        XCTAssertTrue(
+            IssueListSurfacePolicy.showsHeader(
+                bookmark: .gates,
+                hasSearchText: true
+            )
+        )
+        XCTAssertTrue(
+            IssueListSurfacePolicy.showsHeader(
+                bookmark: .ready,
+                hasSearchText: false
+            )
+        )
+    }
+
+    func testEmptyFolderPlaceholderYieldsToSearchResults() {
+        XCTAssertTrue(
+            IssueListSurfacePolicy.showsEmptyFolderPlaceholder(
+                folderIsEmpty: true,
+                hasSearchText: false
+            )
+        )
+        XCTAssertFalse(
+            IssueListSurfacePolicy.showsEmptyFolderPlaceholder(
+                folderIsEmpty: true,
+                hasSearchText: true
+            )
+        )
+        XCTAssertFalse(
+            IssueListSurfacePolicy.showsEmptyFolderPlaceholder(
+                folderIsEmpty: false,
+                hasSearchText: false
+            )
+        )
+    }
+
+    func testEmptyFolderRemainsADropTargetDuringCurrentViewSearch() {
+        XCTAssertTrue(
+            IssueListSurfacePolicy.showsEmptyFolderDropTarget(
+                folderIsEmpty: true,
+                isGlobalSearchActive: false
+            )
+        )
+        XCTAssertFalse(
+            IssueListSurfacePolicy.showsEmptyFolderDropTarget(
+                folderIsEmpty: true,
+                isGlobalSearchActive: true
+            )
+        )
+        XCTAssertFalse(
+            IssueListSurfacePolicy.showsEmptyFolderDropTarget(
+                folderIsEmpty: false,
+                isGlobalSearchActive: false
+            )
+        )
+    }
+
     func testPresentationDerivesWorkspaceState() {
         XCTAssertEqual(
             ContentLayout.presentation(

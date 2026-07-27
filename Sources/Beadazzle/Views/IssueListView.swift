@@ -14,7 +14,10 @@ struct IssueListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if workspace.selectedBookmark != .gates {
+            if IssueListSurfacePolicy.showsHeader(
+                bookmark: store.effectiveIssueListBookmark,
+                hasSearchText: !store.trimmedSearchText.isEmpty
+            ) {
                 IssueListHeader()
                 Divider()
             }
@@ -28,36 +31,20 @@ struct IssueListView: View {
                         systemImage: "circle.hexagongrid",
                         description: Text("Create a bead to start tracking work in this project.")
                     )
-                } else if store.isShowingFolder,
-                          let folder = store.activeFolderSavedView,
-                          folder.folder?.orderedIssueIDs.isEmpty == true {
+                } else if store.isShowingFolderInIssueList,
+                          let folder = store.activeIssueListFolderSavedView,
+                          IssueListSurfacePolicy.showsEmptyFolderPlaceholder(
+                              folderIsEmpty: folder.folder?.orderedIssueIDs.isEmpty == true,
+                              hasSearchText: !store.trimmedSearchText.isEmpty
+                          ) {
                     ContentUnavailableView(
                         "Folder is Empty",
                         systemImage: "folder",
                         description: Text("Drag beads here or use Add to Folder from any bead menu.")
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay {
-                        if emptyFolderIsDropTargeted {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(.tint, lineWidth: 2)
-                                .padding(12)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    .onDrop(
-                        of: BeadFolderDropHandler.contentTypes,
-                        isTargeted: $emptyFolderIsDropTargeted
-                    ) { providers in
-                        BeadFolderDropHandler.accept(
-                            providers,
-                            into: folder.id,
-                            store: store
-                        )
-                    }
                 } else if workspace.filteredIssueIDs.isEmpty {
-                    ContentUnavailableView("No Beads Match", systemImage: "line.3.horizontal.decrease.circle")
+                    noMatchesView
                 } else {
                     // Fixed-height NSTableView (see IssueListTableView): SwiftUI's List/Table
                     // measure every row's height via Auto Layout on any wholesale change,
@@ -66,7 +53,7 @@ struct IssueListView: View {
                         rows: workspace.issueListRows,
                         rowRevision: workspace.issueListRowsRevision,
                         selectedIDs: workspace.selectedIDs,
-                        bookmark: workspace.selectedBookmark,
+                        bookmark: store.effectiveIssueListBookmark,
                         mode: store.effectiveIssueListMode,
                         displayOptions: store.beadListDisplayOptions,
                         contentRevision: project.contentRevision,
@@ -81,20 +68,63 @@ struct IssueListView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .overlay {
+                if emptyFolderIsDropTargeted {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(.tint, lineWidth: 2)
+                        .padding(12)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .onDrop(
+                of: emptyFolderDropTarget == nil ? [] : BeadFolderDropHandler.contentTypes,
+                isTargeted: emptyFolderDropTargetBinding
+            ) { providers in
+                guard let folderID = emptyFolderDropTarget?.id else { return false }
+                return BeadFolderDropHandler.accept(
+                    providers,
+                    into: folderID,
+                    store: store
+                )
+            }
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
-        .task(id: GateClockTaskID(bookmark: workspace.selectedBookmark, contentRevision: project.contentRevision)) {
+        .task(id: GateClockTaskID(bookmark: store.effectiveIssueListBookmark, contentRevision: project.contentRevision)) {
             await runGateClockIfNeeded()
         }
         .task(id: RelativeFilterClockTaskID(hasRelativeRules: store.hasRelativeSavedViewFilters)) {
             await runRelativeFilterClockIfNeeded()
         }
         .task(id: TimeSensitiveBookmarkClockTaskID(
-            bookmark: workspace.selectedBookmark,
+            bookmark: store.effectiveIssueListBookmark,
             contentRevision: project.contentRevision
         )) {
             await runTimeSensitiveBookmarkClockIfNeeded()
         }
+        .onChange(of: emptyFolderDropTarget?.id) {
+            if emptyFolderDropTarget == nil {
+                emptyFolderIsDropTargeted = false
+            }
+        }
+    }
+
+    private var emptyFolderDropTarget: BeadSavedView? {
+        guard let folder = store.activeIssueListFolderSavedView,
+              IssueListSurfacePolicy.showsEmptyFolderDropTarget(
+                  folderIsEmpty: folder.folder?.orderedIssueIDs.isEmpty == true,
+                  isGlobalSearchActive: store.isGlobalSearchActive
+              ) else {
+            return nil
+        }
+        return folder
+    }
+
+    private var emptyFolderDropTargetBinding: Binding<Bool> {
+        Binding(
+            get: { emptyFolderIsDropTargeted },
+            set: { emptyFolderIsDropTargeted = emptyFolderDropTarget != nil && $0 }
+        )
     }
 
     @MainActor
@@ -111,16 +141,16 @@ struct IssueListView: View {
     }
 
     private var usesGateClock: Bool {
-        workspace.selectedBookmark == .gates || workspace.selectedBookmark == .blocked
+        store.effectiveIssueListBookmark == .gates || store.effectiveIssueListBookmark == .blocked
     }
 
     @MainActor
     private func runTimeSensitiveBookmarkClockIfNeeded() async {
-        guard workspace.selectedBookmark == .ready || workspace.selectedBookmark == .stale else { return }
+        guard store.effectiveIssueListBookmark == .ready || store.effectiveIssueListBookmark == .stale else { return }
         while !Task.isCancelled,
-              (workspace.selectedBookmark == .ready || workspace.selectedBookmark == .stale) {
+              (store.effectiveIssueListBookmark == .ready || store.effectiveIssueListBookmark == .stale) {
             guard let boundary = store.index.nextTimeSensitiveBookmarkBoundary(
-                for: workspace.selectedBookmark
+                for: store.effectiveIssueListBookmark
             ) else {
                 return
             }
@@ -144,6 +174,25 @@ struct IssueListView: View {
             try? await Task.sleep(for: .seconds(max(1, nextDay.timeIntervalSinceNow)))
             guard !Task.isCancelled else { return }
             store.refreshRelativeSavedViewFilters(now: Date())
+        }
+    }
+
+    @ViewBuilder
+    private var noMatchesView: some View {
+        let query = store.trimmedSearchText
+        if query.isEmpty {
+            ContentUnavailableView(
+                "No Beads Match",
+                systemImage: "line.3.horizontal.decrease.circle"
+            )
+        } else {
+            ContentUnavailableView {
+                Label("No Beads Match", systemImage: "magnifyingglass")
+            } description: {
+                Text("No beads match “\(query)” in \(store.activeSearchCoverageTitle).")
+            } actions: {
+                SearchCoverageActionButton()
+            }
         }
     }
 }
@@ -172,6 +221,23 @@ enum IssueListMetrics {
     static let focusOutlineLineWidth: CGFloat = 2
 }
 
+enum IssueListSurfacePolicy {
+    static func showsHeader(bookmark: BeadBookmark, hasSearchText: Bool) -> Bool {
+        bookmark != .gates || hasSearchText
+    }
+
+    static func showsEmptyFolderPlaceholder(folderIsEmpty: Bool, hasSearchText: Bool) -> Bool {
+        folderIsEmpty && !hasSearchText
+    }
+
+    static func showsEmptyFolderDropTarget(
+        folderIsEmpty: Bool,
+        isGlobalSearchActive: Bool
+    ) -> Bool {
+        folderIsEmpty && !isGlobalSearchActive
+    }
+}
+
 private struct IssueListHeader: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var workspace: BeadWorkspaceStore { store.workspace }
@@ -179,41 +245,41 @@ private struct IssueListHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
-                FilterMenu()
-                if store.advancedFilterCount > 0 || store.isSavedViewDrifted {
-                    Menu {
-                        if store.advancedFilterCount > 0 {
-                            Text("\(store.advancedFilterCount) saved-view rule\(store.advancedFilterCount == 1 ? "" : "s") active")
-                        }
-                        if store.isSavedViewDrifted {
-                            Text("Bookmark filters have been modified")
-                        }
-                        Divider()
-                        Button("Edit Bookmark...") {
-                            store.requestEditingActiveSavedView()
-                        }
-                        .disabled(workspace.sourceSavedViewID == nil)
-                        if store.isSavedViewDrifted {
-                            Button("Revert to Bookmark") {
-                                store.revertToSourceSavedView()
+                if !store.isGlobalSearchActive,
+                   store.effectiveIssueListBookmark != .gates {
+                    if store.advancedFilterCount > 0 || store.isSavedViewDrifted {
+                        Menu {
+                            if store.advancedFilterCount > 0 {
+                                Text("\(store.advancedFilterCount) saved-view rule\(store.advancedFilterCount == 1 ? "" : "s") active")
                             }
-                        }
-                        if store.advancedFilterCount > 0 {
-                            Button("Clear Advanced Filters", role: .destructive) {
-                                store.clearAdvancedFilters()
+                            if store.isSavedViewDrifted {
+                                Text("Bookmark filters have been modified")
                             }
+                            Divider()
+                            Button("Edit Bookmark...") {
+                                store.requestEditingActiveSavedView()
+                            }
+                            .disabled(workspace.sourceSavedViewID == nil)
+                            if store.isSavedViewDrifted {
+                                Button("Revert to Bookmark") {
+                                    store.revertToSourceSavedView()
+                                }
+                            }
+                            if store.advancedFilterCount > 0 {
+                                Button("Clear Advanced Filters", role: .destructive) {
+                                    store.clearAdvancedFilters()
+                                }
+                            }
+                        } label: {
+                            Label(
+                                store.isSavedViewDrifted ? "Modified" : "Advanced \(store.advancedFilterCount)",
+                                systemImage: "line.3.horizontal.decrease.circle.fill"
+                            )
                         }
-                    } label: {
-                        Label(
-                            store.isSavedViewDrifted ? "Modified" : "Advanced \(store.advancedFilterCount)",
-                            systemImage: "line.3.horizontal.decrease.circle.fill"
-                        )
+                        .menuStyle(.button)
+                        .help(store.isSavedViewDrifted ? "Bookmark filters have been modified" : "Advanced saved-view filters are active")
                     }
-                    .menuStyle(.button)
-                    .help(store.isSavedViewDrifted ? "Bookmark filters have been modified" : "Advanced saved-view filters are active")
                 }
-                SortMenu()
-                ViewOptionsMenu()
                 Text(summaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -221,18 +287,26 @@ private struct IssueListHeader: View {
                     .truncationMode(.tail)
                     .layoutPriority(1)
 
+                if showsSearchCoverageAction {
+                    searchCoverageAction
+                }
+
                 Spacer(minLength: 8)
 
                 // The Gates section always shows gate → blocked beads, so the flat/outline
                 // toggle has no meaning there.
-                if workspace.selectedBookmark != .gates, !store.isShowingFolder {
+                if !store.isGlobalSearchActive,
+                   store.effectiveIssueListBookmark != .gates,
+                   !store.isShowingFolderInIssueList {
                     IssueListModePicker()
                 }
             }
             .controlSize(.small)
             .frame(height: IssueListMetrics.headerControlHeight, alignment: .center)
 
-            if store.hasActiveFilters || store.advancedFilterCount > 0 {
+            if !store.isGlobalSearchActive,
+               store.effectiveIssueListBookmark != .gates,
+               (store.hasActiveFilters || store.advancedFilterCount > 0) {
                 ActiveFilterChipsView()
             }
         }
@@ -242,43 +316,54 @@ private struct IssueListHeader: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    private var showsSearchCoverageAction: Bool {
+        !store.trimmedSearchText.isEmpty
+            && store.filteredIssueCount > 0
+            && (store.canExpandCurrentSearchToAllBeads || store.canReturnSearchToCurrentView)
+    }
+
+    private var searchCoverageAction: some View {
+        SearchCoverageActionButton()
+            .buttonStyle(.link)
+            .fixedSize()
+    }
+
     private var summaryText: String {
-        let totalCount = store.activeFolderSavedView.map {
-            store.count(forSavedViewID: $0.id) ?? store.folderIssueIDs(id: $0.id).count
-        } ?? store.issues.count
-        let count = store.filteredIssueCount == totalCount
-            ? "\(totalCount.formatted()) beads"
-            : "\(store.filteredIssueCount.formatted()) of \(totalCount.formatted())"
+        let count: String
+        if !store.trimmedSearchText.isEmpty {
+            let noun = store.filteredIssueCount == 1 ? "match" : "matches"
+            count = "\(store.filteredIssueCount.formatted()) \(noun) in \(store.activeSearchCoverageTitle)"
+        } else {
+            let totalCount = store.activeIssueListFolderSavedView.map {
+                store.count(forSavedViewID: $0.id) ?? store.folderIssueIDs(id: $0.id).count
+            } ?? store.issues.count
+            count = store.filteredIssueCount == totalCount
+                ? "\(totalCount.formatted()) beads"
+                : "\(store.filteredIssueCount.formatted()) of \(totalCount.formatted())"
+        }
         guard !workspace.selectedIDs.isEmpty else { return count }
         return "\(count), \(workspace.selectedIDs.count.formatted()) selected"
     }
 }
 
-private struct ViewOptionsMenu: View {
+private struct SearchCoverageActionButton: View {
     @Environment(BeadStore.self) private var store: BeadStore
-    private var project: BeadProjectStore { store.project }
 
+    @ViewBuilder
     var body: some View {
-        @Bindable var store = store
-
-        Menu {
-            Section("Issue Rows") {
-                Toggle("Show owner", isOn: $store.showsOwnerInBeadList)
-                Toggle("Show assignee", isOn: $store.showsAssigneeInBeadList)
-                Toggle("Show due date", isOn: $store.showsDueDateInBeadList)
-                Toggle("Show comments", isOn: $store.showsCommentsInBeadList)
+        if store.canExpandCurrentSearchToAllBeads {
+            Button("Search All Beads") {
+                store.searchAllBeadsUsingCurrentSearchText()
             }
-        } label: {
-            Label("View", systemImage: "slider.horizontal.3")
-                .labelStyle(.titleAndIcon)
-                .lineLimit(1)
+            .help("Search the entire project")
+            .accessibilityHint("Keeps this search text and searches the entire project.")
+        } else if store.canReturnSearchToCurrentView {
+            Button("Back to \(store.currentViewSearchTitle)") {
+                store.searchCurrentViewUsingCurrentSearchText()
+            }
+            .help("Search only \(store.currentViewSearchTitle)")
+            .accessibilityHint("Searches only the selected view again.")
         }
-        .menuStyle(.button)
-        .controlSize(.small)
-        .fixedSize()
-        .disabled(project.projectURL == nil)
-        .help(project.projectURL == nil ? "Open a project to change view options" : "View Options")
-        .accessibilityLabel("View Options")
     }
 }
 
@@ -300,76 +385,6 @@ private struct IssueListModePicker: View {
         .controlSize(.small)
         .frame(width: 70, height: IssueListMetrics.headerControlHeight)
         .help("View as \(store.issueListMode.rawValue.lowercased())")
-    }
-}
-
-private struct SortMenu: View {
-    @Environment(BeadStore.self) private var store: BeadStore
-
-    var body: some View {
-        Menu {
-            Section("Sort By") {
-                if store.isShowingFolder {
-                    Button {
-                        store.selectManualFolderOrdering()
-                    } label: {
-                        if store.listOrdering.isManual {
-                            Label("Manual", systemImage: "checkmark")
-                        } else {
-                            Text("Manual")
-                        }
-                    }
-                    Divider()
-                }
-
-                ForEach(IssueSort.allCases) { sort in
-                    Button {
-                        store.selectListSort(sort)
-                    } label: {
-                        if !store.listOrdering.isManual, store.sort == sort {
-                            Label(sort.rawValue, systemImage: "checkmark")
-                        } else {
-                            Text(sort.rawValue)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                store.selectListSortDirection(.ascending)
-            } label: {
-                if store.sortDirection == .ascending {
-                    Label("Ascending", systemImage: "checkmark")
-                } else {
-                    Text("Ascending")
-                }
-            }
-            .disabled(store.isShowingFolder && store.listOrdering.isManual)
-
-            Button {
-                store.selectListSortDirection(.descending)
-            } label: {
-                if store.sortDirection == .descending {
-                    Label("Descending", systemImage: "checkmark")
-                } else {
-                    Text("Descending")
-                }
-            }
-            .disabled(store.isShowingFolder && store.listOrdering.isManual)
-        } label: {
-            Label(
-                store.isShowingFolder && store.listOrdering.isManual ? "Manual" : store.sort.rawValue,
-                systemImage: "arrow.up.arrow.down"
-            )
-                .labelStyle(.titleAndIcon)
-                .lineLimit(1)
-        }
-        .menuStyle(.button)
-        .controlSize(.small)
-        .fixedSize()
-        .help(store.isShowingFolder && store.listOrdering.isManual ? "Sort: Manual" : "Sort: \(store.sort.rawValue)")
     }
 }
 

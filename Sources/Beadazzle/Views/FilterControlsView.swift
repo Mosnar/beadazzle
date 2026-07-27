@@ -60,12 +60,12 @@ struct FilterMenu: View {
             }
         } label: {
             Label(filterTitle, systemImage: filterIcon)
-                .labelStyle(.titleAndIcon)
+                .labelStyle(.iconOnly)
                 .lineLimit(1)
         }
-        .menuStyle(.button)
-        .controlSize(.small)
-        .fixedSize()
+        .menuIndicator(.hidden)
+        .help(filterTitle)
+        .accessibilityLabel(filterTitle)
     }
 
     private var filterTitle: String {

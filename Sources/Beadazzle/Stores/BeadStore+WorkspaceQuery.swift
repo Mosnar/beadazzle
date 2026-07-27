@@ -3,6 +3,7 @@ import Foundation
 extension BeadStore {
     internal func resetWorkspaceQueryForProjectSwitch() {
         suppressesFilterUpdates = true
+        resetSearchCoverageToCurrentView()
         _selectedBookmark = .ready
         _activeSavedViewID = nil
         _sourceSavedViewID = nil
@@ -86,7 +87,10 @@ extension BeadStore {
     }
 
     private func makeWorkspaceSnapshot() -> BeadWorkspaceSnapshot {
-        BeadWorkspaceSnapshot(
+        let snapshotSort = isGlobalSearchActive
+            ? _searchCoverageSourceSort ?? BeadSavedViewSort(field: sort, direction: sortDirection)
+            : BeadSavedViewSort(field: sort, direction: sortDirection)
+        return BeadWorkspaceSnapshot(
             bookmark: selectedBookmark,
             activeSavedViewID: activeSavedViewID,
             sourceSavedViewID: sourceSavedViewID,
@@ -105,8 +109,8 @@ extension BeadStore {
             priorityFilters: priorityFilters,
             labelFilters: labelFilters,
             advancedPredicate: activeAdvancedPredicate,
-            sort: sort,
-            sortDirection: sortDirection,
+            sort: snapshotSort.field,
+            sortDirection: snapshotSort.direction,
             issueListMode: issueListMode,
             outlineState: outlineState,
             creationDraft: creationDraft
@@ -188,6 +192,7 @@ extension BeadStore {
 
         isRestoringWorkspace = true
         suppressesFilterUpdates = true
+        resetSearchCoverageToCurrentView()
         _selectedBookmark = snapshot.bookmark
         _activeSavedViewID = validatedSavedViewID(for: snapshot)
         _sourceSavedViewID = validatedSourceSavedViewID(for: snapshot)
@@ -289,7 +294,7 @@ extension BeadStore {
     internal func applyFilters() {
         scheduleQueryRecompute(BeadQueryRecomputeRequest(
             scope: .full,
-            recomputeCounts: true,
+            recomputeCounts: !isGlobalSearchActive,
             pruneExpansion: true
         ))
     }
@@ -299,7 +304,7 @@ extension BeadStore {
     /// tracker-sized index rebuild. The normal projection materialization that
     /// follows remains authoritative for counts, sorting, filters, and rollback.
     internal func removeActivelyDeferredIssuesFromCurrentList(issueIDs: Set<String>, now: Date = Date()) {
-        guard selectedBookmark == .ready || selectedBookmark == .stale,
+        guard effectiveIssueListBookmark == .ready || effectiveIssueListBookmark == .stale,
               !issueIDs.isEmpty,
               !filteredIssueIDs.isEmpty else {
             return
@@ -399,20 +404,20 @@ extension BeadStore {
         pendingQueryRecomputeRequest = request
 
         let index = index
-        let bookmark = selectedBookmark
-        let statusFilters = statusFilters
-        let typeFilters = typeFilters
-        let priorityFilters = priorityFilters
-        let labelFilters = labelFilters
-        let searchText = searchText
-        let advancedPredicate = activeAdvancedPredicate
-        let sort = sort
-        let direction = sortDirection
-        let listOrdering = listOrdering
-        let folderOrderedIssueIDs = activeSavedViewID.flatMap { id in
-            savedViews.first(where: { $0.id == id })?.folder?.orderedIssueIDs
-        }
-        let mode = effectiveIssueListMode
+        let queryContext = effectiveIssueListQueryContext
+        let bookmark = queryContext.bookmark
+        let statusFilters = queryContext.statusFilters
+        let typeFilters = queryContext.typeFilters
+        let priorityFilters = queryContext.priorityFilters
+        let labelFilters = queryContext.labelFilters
+        let searchText = queryContext.searchText
+        let advancedPredicate = queryContext.advancedPredicate
+        let sort = queryContext.sort
+        let direction = queryContext.direction
+        let listOrdering = queryContext.listOrdering
+        let folderOrderedIssueIDs = queryContext.folderOrderedIssueIDs
+        let mode = queryContext.mode
+        let isGlobalSearch = queryContext.isGlobalSearch
         let gateClock = gateClock
         let savedViewFilterClock = savedViewFilterClock
         let outlineSnapshot = outlineState
@@ -522,7 +527,9 @@ extension BeadStore {
                     bookmark: bookmark,
                     shouldCancel: { Task.isCancelled }
                 )
-                let didPruneExpansion = request.pruneExpansion && outlineState.prune(toVisibleRows: rows)
+                let didPruneExpansion = request.pruneExpansion
+                    && !isGlobalSearch
+                    && outlineState.prune(toVisibleRows: rows)
                 // Pruning only removes expansion IDs absent from these rows. Those IDs
                 // could not have affected this row build, so rebuilding it would be pure
                 // duplicate work.
