@@ -1,6 +1,6 @@
 import Foundation
 
-enum BeadStatusCategory: String, CaseIterable, Identifiable, Sendable {
+enum BeadStatusCategory: String, CaseIterable, Codable, Identifiable, Sendable {
     case active
     case wip
     case done
@@ -40,7 +40,7 @@ enum BeadStatusCategory: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum BeadDefinitionSource: String, Hashable, Sendable {
+enum BeadDefinitionSource: String, Codable, Hashable, Sendable {
     case builtIn
     case core
     case custom
@@ -60,7 +60,7 @@ enum BeadDefinitionSource: String, Hashable, Sendable {
     }
 }
 
-struct BeadStatusDefinition: Hashable, Identifiable, Sendable {
+struct BeadStatusDefinition: Codable, Hashable, Identifiable, Sendable {
     var id: String { name }
     var name: String
     var category: BeadStatusCategory
@@ -74,7 +74,7 @@ struct BeadStatusDefinition: Hashable, Identifiable, Sendable {
     }
 }
 
-struct BeadTypeDefinition: Hashable, Identifiable, Sendable {
+struct BeadTypeDefinition: Codable, Hashable, Identifiable, Sendable {
     var id: String { name }
     var name: String
     var description: String?

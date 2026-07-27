@@ -173,7 +173,7 @@ extension BeadStore {
             guard self.projectURL == projectURL else { return false }
             endMutation(generation: mutationLifetimeGeneration)
             mutationLifetimeEnded = true
-            cachedDefinitions = nil
+            invalidateSemanticDefinitionsCache()
             refresh(reason: .dataSourceChanged, showsLoadingIndicator: true)
             announceCompletion(kind == .compact ? "Database compacted" : "Database history flattened")
             return true
@@ -220,7 +220,7 @@ extension BeadStore {
             guard self.projectURL == projectURL else { return false }
             endMutation(generation: mutationLifetimeGeneration)
             mutationLifetimeEnded = true
-            cachedDefinitions = nil
+            invalidateSemanticDefinitionsCache()
             refresh(reason: .dataSourceChanged, showsLoadingIndicator: true)
             return true
         } catch ProjectIssuePullError.snapshotExportFailed(let message) {

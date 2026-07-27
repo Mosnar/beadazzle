@@ -4,11 +4,13 @@ struct BlockingRelationshipCountPopover: View {
     let direction: BlockingRelationshipDirection
     let items: [BlockingRelationshipItem]
     let openIssue: (String) -> Void
+    var allowsHoverPresentation = true
 
     var body: some View {
         HoverPersistentPopover(
             arrowEdge: .bottom,
-            fillsAvailableWidth: false
+            fillsAvailableWidth: false,
+            allowsHoverPresentation: allowsHoverPresentation
         ) { _ in
             Label(items.count.formatted(), systemImage: direction.systemImage)
                 .foregroundStyle(.secondary)
@@ -96,7 +98,7 @@ private struct BlockingRelationshipPreviewRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                Text(item.issue.title)
+                Text(item.title)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -113,8 +115,8 @@ private struct BlockingRelationshipPreviewRow: View {
         .focused($isFocused)
         .focusEffectDisabled()
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(item.issue.title), \(item.id)")
-        .accessibilityValue("Status: \(item.issue.status)")
+        .accessibilityLabel("\(item.title), \(item.id)")
+        .accessibilityValue("Status: \(item.status)")
         .accessibilityHint("Opens the bead")
     }
 }

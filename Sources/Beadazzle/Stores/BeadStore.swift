@@ -72,6 +72,11 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var dataSourceMonitor: BeadsDataSourceMonitor?
     @ObservationIgnored fileprivate(set) var monitoredSourceFingerprint: String?
     @ObservationIgnored fileprivate(set) var cachedDefinitions: BeadSemanticDefinitions?
+    @ObservationIgnored fileprivate(set) var cachedDefinitionsTrackerDirectoryURL: URL?
+    @ObservationIgnored fileprivate(set) var cachedDefinitionsLastCheckedAt: Date?
+    @ObservationIgnored fileprivate(set) var cachedDefinitionsNeedRefresh = false
+    @ObservationIgnored fileprivate(set) var semanticDefinitionsRefreshTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var semanticDefinitionsRefreshGeneration = 0
     @ObservationIgnored fileprivate(set) var lastServerActivationRefreshAt: Date?
     @ObservationIgnored fileprivate(set) var isLoadingProjectPreferences = false
     @ObservationIgnored fileprivate(set) var issueReferenceRevision = 0
@@ -104,9 +109,12 @@ final class BeadProjectStore {
         cancelReconciliationWork()
         projectHealthTask?.cancel()
         projectHealthTask = nil
+        semanticDefinitionsRefreshGeneration &+= 1
         projectionGeneration &+= 1
         projectionMaterializationTask?.cancel()
         projectionMaterializationTask = nil
+        semanticDefinitionsRefreshTask?.cancel()
+        semanticDefinitionsRefreshTask = nil
     }
 
     func cancelReconciliationWork() {
@@ -118,6 +126,10 @@ final class BeadProjectStore {
         refreshGeneration &+= 1
         refreshTask?.cancel()
         return refreshGeneration
+    }
+
+    var currentRefreshGeneration: Int {
+        refreshGeneration
     }
 
     func ownsRefresh(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
@@ -1102,6 +1114,7 @@ final class BeadStore {
     @ObservationIgnored internal let activityHistoryRepository: BeadActivityHistoryRepository
     @ObservationIgnored internal let savedViewRepository: BeadSavedViewRepository
     @ObservationIgnored internal let workspaceStateRepository: BeadWorkspaceStateRepository
+    @ObservationIgnored internal let semanticDefinitionsRepository: BeadSemanticDefinitionsRepository
     /// Set in `openProject` from the persisted payload and consumed once by `applyLoadedProject`
     /// after the index loads, so restoration runs a single time per open (not on live reloads).
     @ObservationIgnored internal var pendingRestoredWorkspaceSnapshot: BeadWorkspaceSnapshot?
@@ -1137,11 +1150,29 @@ final class BeadStore {
     internal var projectionMaterializer: BeadProjectionMaterializer { project.projectionMaterializer }
     internal var dataSourceMonitor: BeadsDataSourceMonitor? { get { project.dataSourceMonitor } set { project.dataSourceMonitor = newValue } }
     internal var monitoredSourceFingerprint: String? { get { project.monitoredSourceFingerprint } set { project.monitoredSourceFingerprint = newValue } }
-    /// Cached status/type definitions, reused across reloads so routine reloads don't
-    /// spawn two `bd --readonly` subprocesses. Reloaded on initial/manual refresh, and
-    /// after the app edits custom definitions (which set this back to `nil`). A `nil` cache
-    /// forces the next reload to re-read from `bd`, so a failed reload naturally retries.
+    /// Cached status/type definitions provide a fast first paint, then are verified in
+    /// the background against the resolved effective tracker directory.
     internal var cachedDefinitions: BeadSemanticDefinitions? { get { project.cachedDefinitions } set { project.cachedDefinitions = newValue } }
+    internal var cachedDefinitionsTrackerDirectoryURL: URL? {
+        get { project.cachedDefinitionsTrackerDirectoryURL }
+        set { project.cachedDefinitionsTrackerDirectoryURL = newValue }
+    }
+    internal var cachedDefinitionsLastCheckedAt: Date? {
+        get { project.cachedDefinitionsLastCheckedAt }
+        set { project.cachedDefinitionsLastCheckedAt = newValue }
+    }
+    internal var cachedDefinitionsNeedRefresh: Bool {
+        get { project.cachedDefinitionsNeedRefresh }
+        set { project.cachedDefinitionsNeedRefresh = newValue }
+    }
+    internal var semanticDefinitionsRefreshTask: Task<Void, Never>? {
+        get { project.semanticDefinitionsRefreshTask }
+        set { project.semanticDefinitionsRefreshTask = newValue }
+    }
+    internal var semanticDefinitionsRefreshGeneration: Int {
+        get { project.semanticDefinitionsRefreshGeneration }
+        set { project.semanticDefinitionsRefreshGeneration = newValue }
+    }
     internal var lastServerActivationRefreshAt: Date? {
         get { project.lastServerActivationRefreshAt }
         set { project.lastServerActivationRefreshAt = newValue }
@@ -1186,6 +1217,7 @@ final class BeadStore {
         self.activityHistoryRepository = activityHistoryRepository
         self.savedViewRepository = BeadSavedViewRepository(userDefaults: userDefaults)
         self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
+        self.semanticDefinitionsRepository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
         _recentProjects = Self.loadRecentProjects(from: userDefaults)
 

@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Large projects now open and switch faster, use less peak memory while reading snapshots, and keep scrolling smoother.
 - Bulk actions stay disabled until beads are selected.
 - Search any view, then expand it to all beads.
 - Folder automations can now add or remove labels, update safe statuses, and set multiple properties in the background whenever beads are added, with Apply Now, progress, cancellation, and targeted retries for existing folder contents.

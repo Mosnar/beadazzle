@@ -47,8 +47,15 @@ enum BlockingRelationshipDirection: String, CaseIterable, Sendable {
 }
 
 struct BlockingRelationshipItem: Identifiable, Hashable, Sendable {
-    var id: String { issue.id }
-
-    let issue: BeadIssue
+    let id: String
+    let title: String
+    let status: String
     let statusCategory: BeadStatusCategory
+
+    init(issue: BeadIssue, statusCategory: BeadStatusCategory) {
+        id = issue.id
+        title = issue.title
+        status = issue.status
+        self.statusCategory = statusCategory
+    }
 }

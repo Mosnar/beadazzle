@@ -1,5 +1,10 @@
 import Foundation
 
+private enum SemanticDefinitionsRefreshResult: Sendable {
+    case unchanged
+    case rebuilt(BeadProjectIndex)
+}
+
 extension BeadStore {
     func openDefaultProjectIfAvailable() {
         guard projectURL == nil else { return }
@@ -38,6 +43,14 @@ extension BeadStore {
             rememberRecentProject(url)
         }
         clearLoadedProjectData()
+        if let definitionsCache = semanticDefinitionsRepository.load(projectURL: url) {
+            cachedDefinitions = definitionsCache.entry.definitions
+            cachedDefinitionsTrackerDirectoryURL = definitionsCache.trackerDirectoryURL
+            cachedDefinitionsLastCheckedAt = definitionsCache.entry.refreshedAt
+        }
+        // The persisted value accelerates first paint only. Always verify it in the
+        // background after resolving the current tracker so relaunches see CLI edits.
+        cachedDefinitionsNeedRefresh = true
         loadProjectPreferences(for: url)
         resetWorkspaceQueryForProjectSwitch()
         // Stash the persisted snapshot; it can only be restored once the index has loaded
@@ -207,6 +220,9 @@ extension BeadStore {
         _projectEnvironment = nil
         _snapshotFreshness = .unknown
         cachedDefinitions = nil
+        cachedDefinitionsTrackerDirectoryURL = nil
+        cachedDefinitionsLastCheckedAt = nil
+        cachedDefinitionsNeedRefresh = false
         lastServerActivationRefreshAt = nil
         _selectedIDs.removeAll()
         _fullPageDetailIssueID = nil
@@ -251,6 +267,9 @@ extension BeadStore {
             queueRefreshAfterMutation(reason: reason)
             return
         }
+        if reason == .manual {
+            cancelSemanticDefinitionsRefresh()
+        }
         let refreshGeneration = project.beginRefresh()
         // A manual refresh or project (re)load reads authoritative state directly, so any
         // queued coalesced reconcile would just be a redundant reload — drop it.
@@ -265,6 +284,12 @@ extension BeadStore {
         if reason != .dataSourceChanged {
             lastError = nil
         }
+        if reason == .dataSourceChanged,
+           cachedDefinitionsLastCheckedAt.map({
+               Date().timeIntervalSince($0) >= 60
+           }) != false {
+            cachedDefinitionsNeedRefresh = true
+        }
         let projectLoader = projectLoader
         let staleCutoffDays = staleCutoffDays
         let hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
@@ -278,8 +303,14 @@ extension BeadStore {
         // subprocesses. Reuse the cache except when the user explicitly refreshes, on the
         // first load, or after the app edited definitions (which clears the cache) —
         // otherwise every routine reload would re-run `bd`.
-        let reloadsDefinitions = reason == .initial || reason == .manual || cachedDefinitions == nil
+        let usesProvisionalDefinitions = reason == .initial
+        let reloadsDefinitions = reason == .manual
+            || (!usesProvisionalDefinitions && cachedDefinitions == nil)
         let definitionsForLoad = reloadsDefinitions ? nil : cachedDefinitions
+        let definitionsTrackerForLoad = reloadsDefinitions
+            ? nil
+            : cachedDefinitionsTrackerDirectoryURL
+        let loadsDefinitionsIfMissing = !usesProvisionalDefinitions
         let reloadsEnvironment = reason == .initial || reason == .manual || projectEnvironment == nil
         let environmentForLoad = reloadsEnvironment ? nil : projectEnvironment
         let metadataBaseline = mutations.reloadBaseline()
@@ -302,7 +333,9 @@ extension BeadStore {
                             staleCutoffDays: staleCutoffDays,
                             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
                             cachedDefinitions: definitionsForLoad,
-                            cachedEnvironment: environmentForLoad
+                            cachedDefinitionsTrackerDirectoryURL: definitionsTrackerForLoad,
+                            cachedEnvironment: environmentForLoad,
+                            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
                         )
                     }
                     return try await projectLoader.loadProject(
@@ -310,7 +343,9 @@ extension BeadStore {
                         staleCutoffDays: staleCutoffDays,
                         hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
                         cachedDefinitions: definitionsForLoad,
-                        cachedEnvironment: environmentForLoad
+                        cachedDefinitionsTrackerDirectoryURL: definitionsTrackerForLoad,
+                        cachedEnvironment: environmentForLoad,
+                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
                     )
                 }
                 let loadedProject = try await withTaskCancellationHandler {
@@ -341,6 +376,7 @@ extension BeadStore {
                         beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
                         source: loadedProject.source
                     )
+                    self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
                     return
                 }
                 self.applyLoadedProject(
@@ -349,6 +385,7 @@ extension BeadStore {
                     queuesInitialExternalRefresh: reason == .initial,
                     metadataBaseline: metadataBaseline
                 )
+                self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
             } catch is CancellationError {
                 guard let self,
                       self.project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
@@ -366,7 +403,9 @@ extension BeadStore {
                         staleCutoffDays: self.staleCutoffDays,
                         hidesParentsWithOnlyBlockedChildrenInReady: self.hidesParentsWithOnlyBlockedChildrenInReady,
                         cachedDefinitions: definitionsForLoad,
-                        cachedEnvironment: environmentForLoad
+                        cachedDefinitionsTrackerDirectoryURL: definitionsTrackerForLoad,
+                        cachedEnvironment: environmentForLoad,
+                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
                     )
                 }
                 do {
@@ -394,6 +433,7 @@ extension BeadStore {
                         queuesInitialExternalRefresh: reason == .initial,
                         metadataBaseline: metadataBaseline
                     )
+                    self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
                 } catch is CancellationError {
                     guard self.project.ownsRefresh(
                         projectURL: projectURL,
@@ -441,7 +481,7 @@ extension BeadStore {
 
     private func queueRefreshAfterMutation(reason: RefreshReason) {
         if reason == .manual {
-            cachedDefinitions = nil
+            invalidateSemanticDefinitionsCache()
         }
         requestReconcile(
             trigger: reason == .dataSourceChanged ? .externalMarker : .mutation
@@ -478,8 +518,29 @@ extension BeadStore {
             pruneMissingFolderIssueIDs(validIssueIDs: refreshedAuthoritativeIndex.allIssueIDs)
         }
         scheduleSavedViewCountRebuild()
+        let trackerDirectoryURL = loadedProject.environment.beadsDirectoryURL.standardizedFileURL
+        if let cachedDefinitionsTrackerDirectoryURL,
+           cachedDefinitionsTrackerDirectoryURL.standardizedFileURL.path != trackerDirectoryURL.path {
+            cachedDefinitions = nil
+            cachedDefinitionsLastCheckedAt = nil
+            cachedDefinitionsNeedRefresh = true
+        }
         if let definitions = loadedProject.definitions {
             cachedDefinitions = definitions
+            cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
+            if loadedProject.definitionsLoadedFromCommands {
+                let refreshedAt = Date()
+                semanticDefinitionsRepository.save(
+                    definitions,
+                    projectURL: projectURL,
+                    trackerDirectoryURL: trackerDirectoryURL,
+                    refreshedAt: refreshedAt
+                )
+                cachedDefinitionsLastCheckedAt = refreshedAt
+                cachedDefinitionsNeedRefresh = false
+            }
+        } else if cachedDefinitions == nil {
+            cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
         }
         _projectEnvironment = loadedProject.environment
         _currentDataSource = loadedProject.source
@@ -539,6 +600,132 @@ extension BeadStore {
             scheduleProjectionMaterialization()
         }
         scheduleReconcileIfIdle()
+    }
+
+    internal func refreshSemanticDefinitionsIfNeeded(projectURL: URL) {
+        guard cachedDefinitionsNeedRefresh,
+              semanticDefinitionsRefreshTask == nil,
+              let trackerDirectoryURL = projectEnvironment?.beadsDirectoryURL.standardizedFileURL
+        else {
+            return
+        }
+        semanticDefinitionsRefreshGeneration &+= 1
+        let generation = semanticDefinitionsRefreshGeneration
+        let projectLoader = projectLoader
+        semanticDefinitionsRefreshTask = Task(priority: .utility) { @MainActor [weak self] in
+            defer {
+                if let self, self.semanticDefinitionsRefreshGeneration == generation {
+                    self.semanticDefinitionsRefreshTask = nil
+                }
+            }
+            let refreshedDefinitions = await projectLoader.loadDefinitions(projectURL: projectURL)
+            guard !Task.isCancelled,
+                  let self,
+                  self.projectURL == projectURL,
+                  self.semanticDefinitionsRefreshGeneration == generation,
+                  self.projectEnvironment?.beadsDirectoryURL.standardizedFileURL.path
+                    == trackerDirectoryURL.path
+            else {
+                return
+            }
+            guard let refreshedDefinitions else { return }
+
+            let sourceIndex = self.authoritativeIndex
+            let sourceRefreshGeneration = self.project.currentRefreshGeneration
+            let staleCutoffDays = self.staleCutoffDays
+            let hidesParentsWithOnlyBlockedChildrenInReady =
+                self.hidesParentsWithOnlyBlockedChildrenInReady
+            let rebuildTask = Task.detached(priority: .utility) {
+                () -> SemanticDefinitionsRefreshResult? in
+                guard !Task.isCancelled else { return nil }
+                let refreshedSemantics = BeadsMetadataService().loadSemantics(
+                    projectURL: projectURL,
+                    issues: sourceIndex.issues,
+                    statusDefinitions: refreshedDefinitions.statuses,
+                    typeDefinitions: refreshedDefinitions.types
+                )
+                guard !Task.isCancelled else { return nil }
+                guard refreshedSemantics.excludingSystemRecordTypes != sourceIndex.semantics else {
+                    return .unchanged
+                }
+                let refreshedIndex = BeadProjectIndex(
+                    issues: sourceIndex.issues,
+                    dependencies: sourceIndex.dependencies,
+                    semantics: refreshedSemantics,
+                    staleCutoffDays: staleCutoffDays,
+                    hidesParentsWithOnlyBlockedChildrenInReady:
+                        hidesParentsWithOnlyBlockedChildrenInReady,
+                    reusingSearchTextFrom: sourceIndex
+                )
+                guard !Task.isCancelled else { return nil }
+                return .rebuilt(refreshedIndex)
+            }
+            let rebuilt = await withTaskCancellationHandler {
+                await rebuildTask.value
+            } onCancel: {
+                rebuildTask.cancel()
+            }
+            guard let rebuilt,
+                  !Task.isCancelled,
+                  self.projectURL == projectURL,
+                  self.semanticDefinitionsRefreshGeneration == generation,
+                  self.project.currentRefreshGeneration == sourceRefreshGeneration,
+                  self.projectEnvironment?.beadsDirectoryURL.standardizedFileURL.path
+                    == trackerDirectoryURL.path
+            else {
+                return
+            }
+            self.cachedDefinitions = refreshedDefinitions
+            self.cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
+            let refreshedAt = Date()
+            self.cachedDefinitionsLastCheckedAt = refreshedAt
+            self.cachedDefinitionsNeedRefresh = false
+            self.semanticDefinitionsRepository.save(
+                refreshedDefinitions,
+                projectURL: projectURL,
+                trackerDirectoryURL: trackerDirectoryURL,
+                refreshedAt: refreshedAt
+            )
+
+            if case .rebuilt(let refreshedIndex) = rebuilt {
+                self.applyRefreshedSemantics(refreshedIndex)
+            }
+        }
+    }
+
+    internal func cancelSemanticDefinitionsRefresh() {
+        semanticDefinitionsRefreshGeneration &+= 1
+        semanticDefinitionsRefreshTask?.cancel()
+        semanticDefinitionsRefreshTask = nil
+    }
+
+    internal func invalidateSemanticDefinitionsCache() {
+        cancelSemanticDefinitionsRefresh()
+        cachedDefinitions = nil
+        cachedDefinitionsLastCheckedAt = nil
+        cachedDefinitionsNeedRefresh = true
+        if let projectURL {
+            semanticDefinitionsRepository.reset(
+                projectURL: projectURL,
+                trackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL
+                    ?? projectEnvironment?.beadsDirectoryURL
+            )
+        }
+        cachedDefinitionsTrackerDirectoryURL = projectEnvironment?.beadsDirectoryURL
+    }
+
+    private func applyRefreshedSemantics(_ refreshedAuthoritativeIndex: BeadProjectIndex) {
+        authoritativeIndex = refreshedAuthoritativeIndex
+        if mutations.projection.isEmpty {
+            index = refreshedAuthoritativeIndex
+            _contentRevision &+= 1
+            scheduleSavedViewCountRebuild()
+            applyFilters()
+            loadDependenciesForSelection()
+            pruneGateDetailsForCurrentSnapshot()
+        } else {
+            scheduleProjectionMaterialization()
+        }
     }
 
     private func indexPreservingMetadataChanges(

@@ -93,6 +93,7 @@ struct IssueListTableView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
         scrollView.automaticallyAdjustsContentInsets = true
+        coordinator.observeLiveScrolling(in: scrollView)
 
         coordinator.update(force: true)
         return scrollView
@@ -120,12 +121,72 @@ struct IssueListTableView: NSViewRepresentable {
         private var isSyncingSelection = false
         private var isHandlingContextClick = false
         private var contextFocusedIssueID: String?
+        private(set) var isLiveScrolling = false
+        private var liveScrollEndTask: Task<Void, Never>?
+        var liveScrollSettleDuration = Duration.milliseconds(180)
 
         private var lastUpdateKey: UpdateKey?
         private(set) var rowReconciliationCount = 0
 
         init(_ parent: IssueListTableView) {
             self.parent = parent
+        }
+
+        deinit {
+            liveScrollEndTask?.cancel()
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        func observeLiveScrolling(in scrollView: NSScrollView) {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(liveScrollDidStart(_:)),
+                name: NSScrollView.willStartLiveScrollNotification,
+                object: scrollView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(liveScrollDidEnd(_:)),
+                name: NSScrollView.didEndLiveScrollNotification,
+                object: scrollView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(liveScrollDidMove(_:)),
+                name: NSScrollView.didLiveScrollNotification,
+                object: scrollView
+            )
+        }
+
+        @objc private func liveScrollDidStart(_ notification: Notification) {
+            liveScrollEndTask?.cancel()
+            setLiveScrolling(true)
+        }
+
+        @objc private func liveScrollDidMove(_ notification: Notification) {
+            setLiveScrolling(true)
+            scheduleLiveScrollEnd()
+        }
+
+        @objc private func liveScrollDidEnd(_ notification: Notification) {
+            scheduleLiveScrollEnd()
+        }
+
+        private func scheduleLiveScrollEnd() {
+            liveScrollEndTask?.cancel()
+            liveScrollEndTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(for: self.liveScrollSettleDuration)
+                guard !Task.isCancelled else { return }
+                self.setLiveScrolling(false)
+                self.liveScrollEndTask = nil
+            }
+        }
+
+        private func setLiveScrolling(_ isLiveScrolling: Bool) {
+            guard self.isLiveScrolling != isLiveScrolling else { return }
+            self.isLiveScrolling = isLiveScrolling
+            reconfigureVisibleRows { _ in true }
         }
 
         /// Reconciles the table with `parent`. Reapplies the diffable snapshot only when the
@@ -257,77 +318,31 @@ struct IssueListTableView: NSViewRepresentable {
             }
         }
 
-        private func rowView(for itemID: String) -> AnyView {
-            guard let issue = parent.store.issue(with: itemID), let row = rowByID[itemID] else {
-                return AnyView(Color.clear)
+        private func rowView(for itemID: String) -> IssueListHostedRow {
+            guard let row = rowByID[itemID] else {
+                return .empty
             }
             let isContextFocused = shouldShowFocusOutline(for: itemID)
             let store = parent.store
-            if let gate = store.gate(for: itemID) {
-                return chromedRowView(
-                    content: GateRowView(
-                        issue: issue,
-                        row: row,
-                        gate: gate,
-                        now: parent.gateClock,
-                        // Gate rows disclose their blocked beads in the Gates section.
-                        showsDisclosure: parent.mode == .outline || parent.bookmark == .gates,
-                        toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
-                    ),
-                    itemID: itemID,
-                    isContextFocused: isContextFocused
-                )
-            } else {
-                let blockedByItems = store.activeBlockingIssues(for: itemID).map {
-                    BlockingRelationshipItem(
-                        issue: $0,
-                        statusCategory: store.statusCategory(for: $0.status)
-                    )
+            return IssueListHostedRow(
+                presentation: store.issueListPresentation(for: row),
+                row: row,
+                mode: parent.mode,
+                bookmark: parent.bookmark,
+                displayOptions: parent.displayOptions,
+                blockedReason: store.blockedReasonPresentation(
+                    for: itemID,
+                    bookmark: parent.bookmark,
+                    now: parent.gateClock
+                ),
+                gateClock: parent.gateClock,
+                readyGateGroupPosition: readyGateGroupPosition(for: itemID),
+                isContextFocused: isContextFocused,
+                allowsHoverPresentation: !isLiveScrolling,
+                openRelatedIssue: { store.openIssueFromDetail(issueID: $0) },
+                toggleExpansion: {
+                    store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded)
                 }
-                let blockingItems = store.activelyBlockedIssues(by: itemID).map {
-                    BlockingRelationshipItem(
-                        issue: $0,
-                        statusCategory: store.statusCategory(for: $0.status)
-                    )
-                }
-                return chromedRowView(
-                    content: IssueRowView(
-                        issue: issue,
-                        row: row,
-                        showsDisclosure: parent.mode == .outline,
-                        displayOptions: parent.displayOptions,
-                        statusCategory: store.statusCategory(for: issue.status),
-                        blockedReason: store.blockedReasonPresentation(
-                            for: itemID,
-                            bookmark: parent.bookmark,
-                            now: parent.gateClock
-                        ),
-                        blockedByItems: blockedByItems,
-                        blockingItems: blockingItems,
-                        openRelatedIssue: { store.openIssueFromDetail(issueID: $0) },
-                        toggleExpansion: { store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded) }
-                    ),
-                    itemID: itemID,
-                    isContextFocused: isContextFocused
-                )
-            }
-        }
-
-        /// Erases once for `NSHostingView<AnyView>`; the row content itself stays
-        /// concrete (and `.equatable()`-diffable) instead of double-wrapping in AnyView.
-        private func chromedRowView(
-            content: some View & Equatable,
-            itemID: String,
-            isContextFocused: Bool
-        ) -> AnyView {
-            AnyView(
-                content
-                    .equatable()
-                    .padding(.leading, 12)
-                    .padding(.trailing, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .readyGateGroupChrome(position: readyGateGroupPosition(for: itemID))
-                    .contextFocusChrome(isVisible: isContextFocused)
             )
         }
 
@@ -339,8 +354,8 @@ struct IssueListTableView: NSViewRepresentable {
             var currentGateIsReady = false
             for (index, row) in rows.enumerated() {
                 if row.depth == 0 {
-                    guard let gate = parent.store.gate(for: row.issueID),
-                          gate.actionState(now: parent.gateClock).isReady
+                    guard case .gate(let presentation)? = row.presentation,
+                          presentation.gate.actionState(now: parent.gateClock).isReady
                     else {
                         if groupStart != nil { break }
                         currentGateIsReady = false
@@ -1221,6 +1236,82 @@ private final class IssueKeyboardTableView: NSTableView {
 /// Reusable fixed-size host for a SwiftUI row. `sizingOptions = []` stops `NSHostingView`
 /// from installing intrinsic-content-size constraints, so it never triggers the automatic
 /// row-height Auto Layout pass — the row's frame comes from the table's fixed `rowHeight`.
+private struct IssueListHostedRow: View {
+    let presentation: IssueListRowPresentation?
+    let row: IssueListRow
+    let mode: IssueListMode
+    let bookmark: BeadBookmark
+    let displayOptions: BeadListDisplayOptions
+    let blockedReason: BlockedReasonPresentation?
+    let gateClock: Date
+    let readyGateGroupPosition: ReadyGateGroupPosition
+    let isContextFocused: Bool
+    let allowsHoverPresentation: Bool
+    let openRelatedIssue: (String) -> Void
+    let toggleExpansion: () -> Void
+
+    static let empty = IssueListHostedRow(
+        presentation: nil,
+        row: IssueListRow(
+            issueID: "",
+            depth: 0,
+            hasChildren: false,
+            childProgress: nil,
+            isExpanded: false,
+            isContext: false
+        ),
+        mode: .flat,
+        bookmark: .all,
+        displayOptions: .compact,
+        blockedReason: nil,
+        gateClock: .distantPast,
+        readyGateGroupPosition: .none,
+        isContextFocused: false,
+        allowsHoverPresentation: false,
+        openRelatedIssue: { _ in },
+        toggleExpansion: {}
+    )
+
+    var body: some View {
+        content
+            .padding(.leading, 12)
+            .padding(.trailing, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .readyGateGroupChrome(position: readyGateGroupPosition)
+            .contextFocusChrome(isVisible: isContextFocused)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch presentation {
+        case .issue(let presentation):
+            IssueRowView(
+                presentation: presentation,
+                row: row,
+                showsDisclosure: mode == .outline,
+                displayOptions: displayOptions,
+                blockedReason: blockedReason,
+                allowsHoverPresentation: allowsHoverPresentation,
+                openRelatedIssue: openRelatedIssue,
+                toggleExpansion: toggleExpansion
+            )
+            .equatable()
+        case .gate(let presentation):
+            GateRowView(
+                presentation: presentation,
+                row: row,
+                now: gateClock,
+                showsDisclosure: mode == .outline || bookmark == .gates,
+                allowsHoverPresentation: allowsHoverPresentation,
+                toggleExpansion: toggleExpansion
+            )
+            .equatable()
+        case nil:
+            Color.clear
+        }
+    }
+}
+
 private final class RowCellView: NSView {
     private let hostingView = RowHostingView()
 
@@ -1239,7 +1330,7 @@ private final class RowCellView: NSView {
         set { hostingView.onContextClickChange = newValue }
     }
 
-    var rootView: AnyView {
+    var rootView: IssueListHostedRow {
         get { hostingView.rootView }
         set { hostingView.rootView = newValue }
     }
@@ -1260,12 +1351,12 @@ private final class RowCellView: NSView {
     }
 }
 
-private final class RowHostingView: NSHostingView<AnyView> {
+private final class RowHostingView: NSHostingView<IssueListHostedRow> {
     var representedIssueID: String?
     var onContextFocusChange: ((String?) -> Void)?
     var onContextClickChange: ((Bool) -> Void)?
 
-    required init(rootView: AnyView) {
+    required init(rootView: IssueListHostedRow) {
         super.init(rootView: rootView)
         sizingOptions = []
         wantsLayer = true
@@ -1277,7 +1368,7 @@ private final class RowHostingView: NSHostingView<AnyView> {
     override var isOpaque: Bool { false }
 
     convenience init() {
-        self.init(rootView: AnyView(Color.clear))
+        self.init(rootView: .empty)
     }
 
     @available(*, unavailable)

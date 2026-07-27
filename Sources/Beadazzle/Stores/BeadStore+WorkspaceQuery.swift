@@ -430,7 +430,7 @@ extension BeadStore {
                     self.pendingQueryRecomputeRequest = nil
                 }
             }
-            let worker = Task.detached(priority: .userInitiated) { () -> QueryResults in
+            let worker = Task.detached(priority: .userInitiated) { () -> QueryResults? in
                 let sortedIDs: [String]
                 var counts: BeadFilterCounts?
                 switch request.scope {
@@ -517,7 +517,7 @@ extension BeadStore {
                 }
 
                 var outlineState = outlineSnapshot
-                let rows = BeadIssueListQuery.rows(
+                let rawRows = BeadIssueListQuery.rows(
                     index: index,
                     filteredIssueIDs: sortedIDs,
                     mode: mode,
@@ -527,6 +527,13 @@ extension BeadStore {
                     bookmark: bookmark,
                     shouldCancel: { Task.isCancelled }
                 )
+                guard let rows = index.presenting(
+                    rawRows,
+                    relationshipSortOrder: BeadIssueSortOrder(sort: sort, direction: direction),
+                    shouldCancel: { Task.isCancelled }
+                ) else {
+                    return nil
+                }
                 let didPruneExpansion = request.pruneExpansion
                     && !isGlobalSearch
                     && outlineState.prune(toVisibleRows: rows)
@@ -547,7 +554,13 @@ extension BeadStore {
                 worker.cancel()
             }
 
-            guard !Task.isCancelled, let self, self.queryGeneration == generation else { return }
+            guard !Task.isCancelled,
+                  let results,
+                  let self,
+                  self.queryGeneration == generation
+            else {
+                return
+            }
             self.applyQueryResults(results)
         }
     }
@@ -701,6 +714,7 @@ extension BeadStore {
 
     internal func rebuildIndexForProjectIndexPreferenceChange() {
         guard !index.issues.isEmpty || !index.dependencies.isEmpty || index.semantics != .empty else { return }
+        cancelSemanticDefinitionsRefresh()
         let rebuiltAuthoritativeIndex = BeadProjectIndex(
             issues: authoritativeIndex.issues,
             dependencies: authoritativeIndex.dependencies,
@@ -720,6 +734,9 @@ extension BeadStore {
         syncCommentsForSelectionFromCache()
         if !mutations.projection.isEmpty {
             scheduleProjectionMaterialization()
+        }
+        if let projectURL {
+            refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
         }
     }
 

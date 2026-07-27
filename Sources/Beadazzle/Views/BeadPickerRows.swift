@@ -33,7 +33,10 @@ struct BeadPickerResultRow: View {
 
             Button(action: select) {
                 IssueSummaryRowContent(
-                    issue: pickerRow.issue,
+                    presentation: IssueSummaryRowPresentation(
+                        issue: pickerRow.issue,
+                        statusCategory: store.statusCategory(for: pickerRow.issue.status)
+                    ),
                     row: pickerRow.row,
                     statusCategory: store.statusCategory(for: pickerRow.issue.status),
                     titleForegroundStyle: AnyShapeStyle(pickerRow.isSelectable ? .primary : .secondary),

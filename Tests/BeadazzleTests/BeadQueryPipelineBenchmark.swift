@@ -43,6 +43,17 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
         }
     }
 
+    private func makeSparseDependencies(_ count: Int) -> [BeadDependency] {
+        stride(from: 12, to: count, by: 10).map { issueIndex in
+            BeadDependency(
+                issueID: "bd-\(issueIndex)",
+                dependsOnID: "bd-\(issueIndex - 1)",
+                type: "blocks",
+                createdAt: nil
+            )
+        }
+    }
+
     private func outlineIssue(id: String, title: String, parentID: String?) -> BeadIssue {
         BeadIssue(
             id: id,
@@ -147,6 +158,16 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
                 filteredIssueIDsAreSorted: true
             )
         }
+        let flatRows = index.issueListRows(
+            for: sorted,
+            mode: .flat,
+            expandedIssueIDs: [],
+            sortOrder: sortOrder,
+            filteredIssueIDsAreSorted: true
+        )
+        time("row presentations") {
+            _ = index.presenting(flatRows, relationshipSortOrder: sortOrder)
+        }
     }
 
     func testPipelineTimingsAtScale() throws {
@@ -157,9 +178,16 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
             print("\n===== \(scale) beads =====")
             let semantics = makeSemantics()
             let issues = makeIssues(scale)
+            let dependencies = makeSparseDependencies(scale)
 
             var index = BeadProjectIndex.empty
-            time("index build") { index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics) }
+            time("index build") {
+                index = BeadProjectIndex(
+                    issues: issues,
+                    dependencies: dependencies,
+                    semantics: semantics
+                )
+            }
 
             let allIDs = index.issueIDs(for: .all)
             var filtered: [String] = []
@@ -249,14 +277,18 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
                     filteredIssueIDsAreSorted: true
                 )
             }
+            var flatRows: [IssueListRow] = []
             time("flat rows") {
-                _ = index.issueListRows(
+                flatRows = index.issueListRows(
                     for: sorted,
                     mode: .flat,
                     expandedIssueIDs: [],
                     sortOrder: sortOrder,
                     filteredIssueIDsAreSorted: true
                 )
+            }
+            time("row presentations") {
+                _ = index.presenting(flatRows, relationshipSortOrder: sortOrder)
             }
         }
     }

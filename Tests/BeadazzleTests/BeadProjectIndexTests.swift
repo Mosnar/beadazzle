@@ -792,6 +792,90 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(index.activelyBlockedIssues(by: "bd-closed-blocker", sortOrder: sortOrder).map(\.id), [])
     }
 
+    func testPresentingBuildsGateAndOrderedBlockingRelationships() throws {
+        let index = BeadProjectIndex(
+            issues: [
+                issue("bd-target", title: "Target", status: "open", type: "task"),
+                issue("bd-z", title: "Z blocker", status: "open", type: "task"),
+                issue("bd-a", title: "A blocker", status: "open", type: "task"),
+                issue("bd-dependent", title: "Dependent", status: "open", type: "task"),
+                issue(
+                    "g-1",
+                    title: "Approval",
+                    status: "open",
+                    type: "gate",
+                    gateAwaitType: .human,
+                    updatedAt: Date(timeIntervalSince1970: 123)
+                )
+            ],
+            dependencies: [
+                BeadDependency(issueID: "bd-target", dependsOnID: "bd-z", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-target", dependsOnID: "bd-a", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "bd-dependent", dependsOnID: "bd-target", type: "blocks", createdAt: nil)
+            ],
+            semantics: semantics()
+        )
+        let rows = ["bd-target", "g-1"].map {
+            IssueListRow(
+                issueID: $0,
+                depth: 0,
+                hasChildren: false,
+                childProgress: nil,
+                isExpanded: false,
+                isContext: false
+            )
+        }
+
+        let presented = try XCTUnwrap(index.presenting(
+            rows,
+            relationshipSortOrder: BeadIssueSortOrder(sort: .title, direction: .ascending)
+        ))
+
+        guard case .issue(let issuePresentation)? = presented[0].presentation else {
+            return XCTFail("Expected an issue presentation")
+        }
+        XCTAssertEqual(issuePresentation.blockedByItems.map(\.id), ["bd-a", "bd-z"])
+        XCTAssertEqual(issuePresentation.blockingItems.map(\.id), ["bd-dependent"])
+
+        guard case .gate(let gatePresentation)? = presented[1].presentation else {
+            return XCTFail("Expected a gate presentation")
+        }
+        XCTAssertEqual(gatePresentation.gate.id, "g-1")
+        XCTAssertEqual(gatePresentation.updatedAt, Date(timeIntervalSince1970: 123))
+    }
+
+    func testPresentingStopsWhenCancelled() {
+        let index = BeadProjectIndex(
+            issues: [
+                issue("bd-1", status: "open", type: "task"),
+                issue("bd-2", status: "open", type: "task")
+            ],
+            dependencies: [],
+            semantics: semantics()
+        )
+        let rows = ["bd-1", "bd-2"].map {
+            IssueListRow(
+                issueID: $0,
+                depth: 0,
+                hasChildren: false,
+                childProgress: nil,
+                isExpanded: false,
+                isContext: false
+            )
+        }
+        var checks = 0
+
+        let result = index.presenting(
+            rows,
+            relationshipSortOrder: BeadIssueSortOrder(sort: .title, direction: .ascending)
+        ) {
+            checks += 1
+            return checks > 1
+        }
+
+        XCTAssertNil(result)
+    }
+
     func testIssueListRowsIncludeImmediateChildProgressInFlatAndOutlineModes() {
         let now = Date()
         let index = BeadProjectIndex(

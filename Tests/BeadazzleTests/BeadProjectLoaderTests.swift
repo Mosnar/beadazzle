@@ -54,13 +54,58 @@ final class BeadProjectLoaderTests: XCTestCase {
         )
 
         let loaded = try await BeadProjectLoader(commands: commands)
-            .loadProject(projectURL: projectURL, cachedDefinitions: cached)
+            .loadProject(
+                projectURL: projectURL,
+                cachedDefinitions: cached,
+                cachedDefinitionsTrackerDirectoryURL: projectURL.appendingPathComponent(".beads")
+            )
 
         XCTAssertEqual(counter.definitionReads, 0, "cached definitions must not spawn any bd reads")
         // Cached definitions are still merged with the live snapshot's semantics.
         XCTAssertEqual(loaded.index.semantics.category(forStatus: "qa"), .wip)
         XCTAssertTrue(loaded.index.semantics.typeNames.contains("incident"))
         XCTAssertEqual(loaded.definitions, cached)
+    }
+
+    func testLoadProjectRejectsDefinitionsRoutedFromAnotherTracker() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "qa", type: "incident")
+        )
+        let counter = CommandCallCounter()
+        let commands = MetadataTestCommands(callCounter: counter)
+        let cached = BeadSemanticDefinitions(
+            statuses: [BeadStatusDefinition(name: "qa", category: .wip, icon: nil, description: nil)],
+            types: [BeadTypeDefinition(name: "incident", description: nil)]
+        )
+
+        let loaded = try await BeadProjectLoader(commands: commands).loadProject(
+            projectURL: projectURL,
+            cachedDefinitions: cached,
+            cachedDefinitionsTrackerDirectoryURL: URL(fileURLWithPath: "/tmp/another-tracker"),
+            loadsDefinitionsIfMissing: false
+        )
+
+        XCTAssertEqual(counter.definitionReads, 0)
+        XCTAssertNil(loaded.definitions)
+        XCTAssertEqual(loaded.index.semantics.category(forStatus: "qa"), .uncategorized)
+    }
+
+    func testLoadProjectCanBuildFallbackSemanticsWithoutWaitingForDefinitionCommands() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "One", status: "open", type: "task")
+        )
+        let counter = CommandCallCounter()
+        let commands = MetadataTestCommands(callCounter: counter)
+
+        let loaded = try await BeadProjectLoader(commands: commands).loadProject(
+            projectURL: projectURL,
+            loadsDefinitionsIfMissing: false
+        )
+
+        XCTAssertEqual(counter.definitionReads, 0)
+        XCTAssertNil(loaded.definitions)
+        XCTAssertFalse(loaded.definitionsLoadedFromCommands)
+        XCTAssertEqual(loaded.index.semantics.category(forStatus: "open"), .active)
     }
 
     func testLoadProjectReadsCommandMetadataSequentially() async throws {
@@ -144,6 +189,7 @@ final class BeadProjectLoaderTests: XCTestCase {
         _ = try await loader.loadProject(
             projectURL: projectURL,
             cachedDefinitions: initial.definitions,
+            cachedDefinitionsTrackerDirectoryURL: initial.environment.beadsDirectoryURL,
             cachedEnvironment: initial.environment
         )
 

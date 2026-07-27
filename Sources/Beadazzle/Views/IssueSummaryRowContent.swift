@@ -6,7 +6,7 @@ struct IssueSummaryRowContent: View {
         case plain
     }
 
-    let issue: BeadIssue
+    let presentation: IssueSummaryRowPresentation
     let row: IssueListRow
     let statusCategory: BeadStatusCategory
     var titleForegroundStyle = AnyShapeStyle(.primary)
@@ -21,6 +21,7 @@ struct IssueSummaryRowContent: View {
     var showsDependencyCounts = true
     var showsComments = true
     var showsLabels = true
+    var allowsHoverPresentation = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -30,12 +31,12 @@ struct IssueSummaryRowContent: View {
                 .foregroundStyle(BeadVisualStyle.color(forCategory: statusCategory))
                 .frame(width: 16, alignment: .center)
                 .padding(.trailing, 8)
-                .help("Status: \(issue.status)")
-                .accessibilityLabel("Status: \(issue.status)")
+                .help("Status: \(presentation.status)")
+                .accessibilityLabel("Status: \(presentation.status)")
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(issue.title)
+                    Text(presentation.title)
                         .font(.headline)
                         .foregroundStyle(titleForegroundStyle)
                         .lineLimit(1)
@@ -43,37 +44,37 @@ struct IssueSummaryRowContent: View {
 
                     Spacer(minLength: 8)
 
-                    Text("P\(issue.priority)")
+                    Text("P\(presentation.priority)")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(BeadVisualStyle.priorityColor(for: issue.priority))
+                        .foregroundStyle(BeadVisualStyle.priorityColor(for: presentation.priority))
                         .monospacedDigit()
                         .frame(width: 28, alignment: .trailing)
-                        .help("Priority P\(issue.priority)")
-                        .accessibilityLabel("Priority P\(issue.priority)")
+                        .help("Priority P\(presentation.priority)")
+                        .accessibilityLabel("Priority P\(presentation.priority)")
                 }
 
                 HStack(spacing: 8) {
                     issueIDView
 
-                    Text(issue.issueType)
+                    Text(presentation.issueType)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
 
-                    if showsOwner, let owner = issue.owner?.nilIfBlank {
+                    if showsOwner, let owner = presentation.owner {
                         Label(owner, systemImage: "person.crop.circle")
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .help("Owner: \(owner)")
                     }
 
-                    if showsAssignee, let assignee = issue.assignee?.nilIfBlank {
+                    if showsAssignee, let assignee = presentation.assignee {
                         Label(assignee, systemImage: "person")
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .help("Assignee: \(assignee)")
                     }
 
-                    if showsDueDate, let dueAt = issue.dueAt {
+                    if showsDueDate, let dueAt = presentation.dueAt {
                         let dueDate = BeadFormatters.displayDateOnly(dueAt)
                         Label(dueDate, systemImage: "calendar")
                             .foregroundStyle(.secondary)
@@ -100,7 +101,8 @@ struct IssueSummaryRowContent: View {
                         BlockingRelationshipCountPopover(
                             direction: .blockedBy,
                             items: blockedByItems,
-                            openIssue: openRelatedIssue
+                            openIssue: openRelatedIssue,
+                            allowsHoverPresentation: allowsHoverPresentation
                         )
                     }
 
@@ -108,22 +110,26 @@ struct IssueSummaryRowContent: View {
                         BlockingRelationshipCountPopover(
                             direction: .blocking,
                             items: blockingItems,
-                            openIssue: openRelatedIssue
+                            openIssue: openRelatedIssue,
+                            allowsHoverPresentation: allowsHoverPresentation
                         )
                     }
 
-                    if showsComments, issue.commentCount > 0 {
-                        Label(issue.commentCount.formatted(), systemImage: "text.bubble")
+                    if showsComments, presentation.commentCount > 0 {
+                        Label(presentation.commentCount.formatted(), systemImage: "text.bubble")
                             .foregroundStyle(.secondary)
                     }
 
-                    if showsLabels, !issue.labels.isEmpty {
-                        IssueLabelsPopover(labels: issue.labels)
+                    if showsLabels, !presentation.labels.isEmpty {
+                        IssueLabelsPopover(
+                            labels: presentation.labels,
+                            allowsHoverPresentation: allowsHoverPresentation
+                        )
                     }
 
                     Spacer()
 
-                    Text(BeadFormatters.relative(issue.updatedAt))
+                    Text(BeadFormatters.relative(presentation.updatedAt))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -138,9 +144,12 @@ struct IssueSummaryRowContent: View {
     private var issueIDView: some View {
         switch issueIDPresentation {
         case .copyable:
-            CopyableIssueIDButton(issueID: issue.id)
+            CopyableIssueIDButton(
+                issueID: presentation.id,
+                allowsHoverPresentation: allowsHoverPresentation
+            )
         case .plain:
-            Text(issue.id)
+            Text(presentation.id)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -210,8 +219,10 @@ private extension BlockedReasonPresentation.Tint {
 struct CopyableIssueIDButton: View {
     let issueID: String
     var width: CGFloat? = IssueListMetrics.issueIDWidth
+    var allowsHoverPresentation = true
 
     @State private var isHovered = false
+    @State private var isPointerInside = false
     @State private var didCopy = false
     @State private var resetCopyTask: Task<Void, Never>?
 
@@ -235,7 +246,18 @@ struct CopyableIssueIDButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            isPointerInside = hovering
+            guard allowsHoverPresentation else { return }
+            isHovered = hovering
+        }
+        .onChange(of: allowsHoverPresentation) {
+            if !allowsHoverPresentation {
+                isHovered = false
+            } else if isPointerInside {
+                isHovered = true
+            }
+        }
         .onDisappear {
             resetCopyTask?.cancel()
         }

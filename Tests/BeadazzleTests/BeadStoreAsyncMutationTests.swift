@@ -3,6 +3,144 @@ import XCTest
 
 @MainActor
 final class BeadStoreAsyncMutationTests: XCTestCase {
+    func testInitialProjectBecomesReadableBeforeDefinitionCommandsFinish() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setDefinitionLoadDelay(.milliseconds(300))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+
+        store.openProject(projectURL)
+
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let definitionCallsAtFirstDisplay = await commands.definitionLoadCallCount
+        XCTAssertLessThan(
+            definitionCallsAtFirstDisplay,
+            2,
+            "the first list should not wait for both embedded-Dolt metadata commands"
+        )
+        try await waitUntilAsync { await commands.definitionLoadCallCount == 2 }
+    }
+
+    func testPersistentDefinitionsKeepNextLaunchReadableDuringBackgroundVerification() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let userDefaults = makeUserDefaults()
+        let firstCommands = RecordingBeadsCommands()
+        let firstStore = BeadStore(userDefaults: userDefaults, commands: firstCommands)
+        firstStore.openProject(projectURL)
+        try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-1") != nil }
+        try await waitUntil {
+            BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
+                .load(projectURL: projectURL) != nil
+        }
+
+        let secondCommands = RecordingBeadsCommands()
+        await secondCommands.setDefinitionLoadDelay(.milliseconds(300))
+        let secondStore = BeadStore(userDefaults: userDefaults, commands: secondCommands)
+        secondStore.openProject(projectURL)
+        try await waitUntil { !secondStore.isLoading && secondStore.issue(with: "bd-1") != nil }
+
+        let definitionCallsAtFirstDisplay = await secondCommands.definitionLoadCallCount
+        XCTAssertLessThan(
+            definitionCallsAtFirstDisplay,
+            2,
+            "the cached list should not wait for background definition verification"
+        )
+        try await waitUntilAsync { await secondCommands.definitionLoadCallCount == 2 }
+    }
+
+    func testCachedDefinitionsAreCorrectedInMemoryAfterBackgroundVerification() async throws {
+        let projectURL = try makeProject(
+            issueLine(id: "bd-1", title: "Quality", status: "qa")
+        )
+        let userDefaults = makeUserDefaults()
+        BeadSemanticDefinitionsRepository(userDefaults: userDefaults).save(
+            BeadSemanticDefinitions(statuses: [], types: []),
+            projectURL: projectURL,
+            trackerDirectoryURL: projectURL.appendingPathComponent(".beads")
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setDefinitions(statuses: [
+            BeadStatusDefinition(
+                name: "qa",
+                category: .wip,
+                icon: nil,
+                description: nil,
+                source: .custom
+            )
+        ])
+        await commands.setDefinitionLoadDelay(.milliseconds(150))
+        let store = BeadStore(userDefaults: userDefaults, commands: commands)
+
+        store.openProject(projectURL)
+
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        XCTAssertEqual(store.index.semantics.category(forStatus: "qa"), .uncategorized)
+        try await waitUntil {
+            store.index.semantics.category(forStatus: "qa") == .wip
+                && store.semanticDefinitionsRefreshTask == nil
+        }
+        XCTAssertEqual(store.index.count(for: .inProgress), 1)
+    }
+
+    func testEditingDefinitionsClearsThePersistedTrackerCache() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let userDefaults = makeUserDefaults()
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: userDefaults, commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading
+                && store.semanticDefinitionsRefreshTask == nil
+                && BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
+                    .load(projectURL: projectURL) != nil
+        }
+
+        let succeeded = await store.addCustomStatus(named: "qa", category: .wip)
+
+        XCTAssertTrue(succeeded)
+        XCTAssertNil(
+            BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
+                .load(projectURL: projectURL)
+        )
+    }
+
+    func testVisibleRowPresentationAppliesProjectionAndStateLabelOverlaysImmediately() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "Original"))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: RecordingBeadsCommands())
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading && store.issueListRows.first?.presentation != nil
+        }
+        let row = try XCTUnwrap(store.issueListRows.first)
+
+        _ = store.applyOptimisticProjection(
+            BeadMutationProjectionEntry(
+                issueChanges: [
+                    "bd-1": .update(BeadIssueMutationPatch(
+                        title: .set("Projected"),
+                        priority: .set(0),
+                        labels: .set(["ordinary"])
+                    ))
+                ]
+            )
+        )
+        store.stateLabelOverridesByIssueID = [
+            "bd-1": ["Phase": .value("Testing")]
+        ]
+
+        guard case .issue(let presentation)? = store.issueListPresentation(for: row) else {
+            return XCTFail("Expected an issue presentation")
+        }
+        XCTAssertEqual(presentation.title, "Projected")
+        XCTAssertEqual(presentation.priority, 0)
+        XCTAssertEqual(presentation.labels, ["ordinary", "Phase:Testing"])
+        if case .issue(let frozenPresentation)? = row.presentation {
+            XCTAssertEqual(frozenPresentation.title, "Original")
+        } else {
+            XCTFail("Expected the stored background presentation")
+        }
+    }
+
     func testProjectSwitchCancelsInitializeBeadsCommand() async throws {
         let firstProjectURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeadStoreInitializeTests-\(UUID().uuidString)", isDirectory: true)
@@ -4697,6 +4835,8 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var checkGatesOutput = ""
     private var initializationDelay: Duration?
     private var definitionLoadDelay: Duration?
+    private var statusDefinitions: [BeadStatusDefinition] = []
+    private var typeDefinitions: [BeadTypeDefinition] = []
     private var appendsCreatedIssue = true
 
     func setInitializationDelay(_ delay: Duration?) {
@@ -4705,6 +4845,14 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setDefinitionLoadDelay(_ delay: Duration?) {
         definitionLoadDelay = delay
+    }
+
+    func setDefinitions(
+        statuses: [BeadStatusDefinition],
+        types: [BeadTypeDefinition] = []
+    ) {
+        statusDefinitions = statuses
+        typeDefinitions = types
     }
 
     func setAppendsCreatedIssue(_ appendsCreatedIssue: Bool) {
@@ -5109,7 +5257,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         if let definitionLoadDelay {
             try await Task.sleep(for: definitionLoadDelay)
         }
-        return []
+        return statusDefinitions
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
@@ -5117,7 +5265,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         if let definitionLoadDelay {
             try await Task.sleep(for: definitionLoadDelay)
         }
-        return []
+        return typeDefinitions
     }
 
     func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws {}

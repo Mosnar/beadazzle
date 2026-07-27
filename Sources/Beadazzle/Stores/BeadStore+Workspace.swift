@@ -130,6 +130,22 @@ extension BeadStore {
         )
     }
 
+    /// Keeps the expensive relationship presentation prepared by the background query,
+    /// while applying sparse optimistic issue/state changes synchronously for visible rows.
+    internal func issueListPresentation(
+        for row: IssueListRow
+    ) -> IssueListRowPresentation? {
+        guard let presentation = row.presentation,
+              let liveIssue = issue(with: row.issueID)
+        else {
+            return row.presentation
+        }
+        return presentation.overlaying(
+            issue: liveIssue,
+            statusCategory: statusCategory(for: liveIssue.status)
+        )
+    }
+
     func select(_ ids: Set<String>) {
         let ids = ids.intersection(index.allIssueIDs)
         let nextFullPageDetailIssueID = fullPageDetailIssueID.flatMap { ids == [$0] ? $0 : nil }

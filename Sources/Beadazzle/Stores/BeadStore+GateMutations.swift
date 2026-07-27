@@ -262,7 +262,7 @@ extension BeadStore {
             types.append(BeadTypeDefinition(name: name, description: nil, source: .custom))
             try await commands.saveCustomTypes(projectURL: projectURL, types: types.sorted { $0.name < $1.name })
             guard self.projectURL == projectURL else { return false }
-            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
+            invalidateSemanticDefinitionsCache()
             requestReconcile()
             return true
         } catch {
@@ -283,7 +283,7 @@ extension BeadStore {
             guard self.projectURL == projectURL else { return false }
             _hiddenTypeNames.remove(name)
             persistProjectVisibility()
-            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
+            invalidateSemanticDefinitionsCache()
             requestReconcile()
             return true
         } catch {
@@ -314,7 +314,7 @@ extension BeadStore {
             )
             try await commands.saveCustomStatuses(projectURL: projectURL, statuses: statuses.sorted { $0.name < $1.name })
             guard self.projectURL == projectURL else { return false }
-            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
+            invalidateSemanticDefinitionsCache()
             requestReconcile()
             return true
         } catch {
@@ -335,7 +335,7 @@ extension BeadStore {
             guard self.projectURL == projectURL else { return false }
             _hiddenStatusNames.remove(name)
             persistProjectVisibility()
-            cachedDefinitions = nil // definitions changed — force the reconcile to re-read them
+            invalidateSemanticDefinitionsCache()
             requestReconcile()
             return true
         } catch {

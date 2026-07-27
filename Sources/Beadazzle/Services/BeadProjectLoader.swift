@@ -5,7 +5,7 @@ import Foundation
 /// when someone edits custom definitions, so they are cached across reloads to avoid
 /// spawning two `bd` subprocesses on every project reload (the embedded-Dolt startup cost
 /// of those reads dominated the reload path).
-struct BeadSemanticDefinitions: Sendable, Equatable {
+struct BeadSemanticDefinitions: Codable, Sendable, Equatable {
     var statuses: [BeadStatusDefinition]
     var types: [BeadTypeDefinition]
 }
@@ -20,6 +20,9 @@ struct LoadedProject: Sendable {
     /// pass them back on subsequent reloads. `nil` when the `bd` read failed (built-in
     /// fallbacks were used) — the caller should not cache a failure.
     var definitions: BeadSemanticDefinitions?
+    /// True only when this load actually ran the metadata commands. Cached definitions
+    /// must not renew their own freshness timestamp.
+    var definitionsLoadedFromCommands: Bool
 }
 
 struct BeadProjectLoader: Sendable {
@@ -38,7 +41,9 @@ struct BeadProjectLoader: Sendable {
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil,
-        cachedEnvironment: BeadsProjectEnvironment? = nil
+        cachedDefinitionsTrackerDirectoryURL: URL? = nil,
+        cachedEnvironment: BeadsProjectEnvironment? = nil,
+        loadsDefinitionsIfMissing: Bool = true
     ) async throws -> LoadedProject {
         let environment = try await resolveEnvironment(
             projectURL: projectURL,
@@ -58,7 +63,9 @@ struct BeadProjectLoader: Sendable {
                         environment: environment,
                         staleCutoffDays: staleCutoffDays,
                         hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-                        cachedDefinitions: cachedDefinitions
+                        cachedDefinitions: cachedDefinitions,
+                        cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
+                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
                     )
                     loadedProject.snapshotRefreshWarning = exportError.localizedDescription
                     return loadedProject
@@ -72,7 +79,9 @@ struct BeadProjectLoader: Sendable {
             environment: environment,
             staleCutoffDays: staleCutoffDays,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-            cachedDefinitions: cachedDefinitions
+            cachedDefinitions: cachedDefinitions,
+            cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
+            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
         )
     }
 
@@ -81,7 +90,9 @@ struct BeadProjectLoader: Sendable {
         environment: BeadsProjectEnvironment,
         staleCutoffDays: Int,
         hidesParentsWithOnlyBlockedChildrenInReady: Bool,
-        cachedDefinitions: BeadSemanticDefinitions?
+        cachedDefinitions: BeadSemanticDefinitions?,
+        cachedDefinitionsTrackerDirectoryURL: URL?,
+        loadsDefinitionsIfMissing: Bool
     ) async throws -> LoadedProject {
         let snapshotTask = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
@@ -101,10 +112,18 @@ struct BeadProjectLoader: Sendable {
         }
         try Task.checkCancellation()
         let definitions: BeadSemanticDefinitions?
-        if let cachedDefinitions {
+        let definitionsLoadedFromCommands: Bool
+        let cacheMatchesResolvedTracker = cachedDefinitionsTrackerDirectoryURL?
+            .standardizedFileURL.path == environment.beadsDirectoryURL.standardizedFileURL.path
+        if let cachedDefinitions, cacheMatchesResolvedTracker {
             definitions = cachedDefinitions
-        } else {
+            definitionsLoadedFromCommands = false
+        } else if loadsDefinitionsIfMissing {
             definitions = await loadDefinitions(projectURL: projectURL)
+            definitionsLoadedFromCommands = definitions != nil
+        } else {
+            definitions = nil
+            definitionsLoadedFromCommands = false
         }
         try Task.checkCancellation()
         let metadata = BeadsMetadataService()
@@ -133,7 +152,8 @@ struct BeadProjectLoader: Sendable {
                 snapshot: loadedSnapshot.snapshot,
                 index: index,
                 snapshotRefreshWarning: nil,
-                definitions: definitions
+                definitions: definitions,
+                definitionsLoadedFromCommands: definitionsLoadedFromCommands
             )
         }
         return try await withTaskCancellationHandler {
@@ -162,7 +182,9 @@ struct BeadProjectLoader: Sendable {
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil,
-        cachedEnvironment: BeadsProjectEnvironment? = nil
+        cachedDefinitionsTrackerDirectoryURL: URL? = nil,
+        cachedEnvironment: BeadsProjectEnvironment? = nil,
+        loadsDefinitionsIfMissing: Bool = true
     ) async throws -> LoadedProject {
         let environment = try await resolveEnvironment(
             projectURL: projectURL,
@@ -183,7 +205,9 @@ struct BeadProjectLoader: Sendable {
             environment: environment,
             staleCutoffDays: staleCutoffDays,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-            cachedDefinitions: cachedDefinitions
+            cachedDefinitions: cachedDefinitions,
+            cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
+            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
         )
     }
 
@@ -201,7 +225,9 @@ struct BeadProjectLoader: Sendable {
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
         hidesParentsWithOnlyBlockedChildrenInReady: Bool = true,
         cachedDefinitions: BeadSemanticDefinitions? = nil,
-        cachedEnvironment: BeadsProjectEnvironment? = nil
+        cachedDefinitionsTrackerDirectoryURL: URL? = nil,
+        cachedEnvironment: BeadsProjectEnvironment? = nil,
+        loadsDefinitionsIfMissing: Bool = true
     ) async throws -> LoadedProject {
         let environment = try await resolveEnvironment(
             projectURL: projectURL,
@@ -223,7 +249,9 @@ struct BeadProjectLoader: Sendable {
             environment: environment,
             staleCutoffDays: staleCutoffDays,
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
-            cachedDefinitions: cachedDefinitions
+            cachedDefinitions: cachedDefinitions,
+            cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
+            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
         )
         loadedProject.snapshotRefreshWarning = snapshotRefreshWarning
         return loadedProject
@@ -231,7 +259,7 @@ struct BeadProjectLoader: Sendable {
 
     /// Reads status/type definitions from `bd`. Returns `nil` if the read fails, so the
     /// caller falls back to built-in definitions without caching the failure.
-    private func loadDefinitions(projectURL: URL) async -> BeadSemanticDefinitions? {
+    func loadDefinitions(projectURL: URL) async -> BeadSemanticDefinitions? {
         do {
             let statuses = try await commands.loadStatusDefinitions(projectURL: projectURL)
             let types = try await commands.loadTypeDefinitions(projectURL: projectURL)

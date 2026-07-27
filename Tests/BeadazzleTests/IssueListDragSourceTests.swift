@@ -136,6 +136,37 @@ final class IssueListDragSourceTests: XCTestCase {
         XCTAssertEqual(coordinator.rowReconciliationCount, 2)
     }
 
+    func testLiveScrollHoverSuppressionWaitsForMomentumToSettle() async {
+        let coordinator = tableView(
+            rows: [],
+            rowRevision: 0,
+            selectedIDs: [],
+            store: makeStore()
+        ).makeCoordinator()
+        let scrollView = NSScrollView()
+        coordinator.liveScrollSettleDuration = .milliseconds(20)
+        coordinator.observeLiveScrolling(in: scrollView)
+
+        NotificationCenter.default.post(
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView
+        )
+        XCTAssertTrue(coordinator.isLiveScrolling)
+
+        NotificationCenter.default.post(
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView
+        )
+        NotificationCenter.default.post(
+            name: NSScrollView.didLiveScrollNotification,
+            object: scrollView
+        )
+        XCTAssertTrue(coordinator.isLiveScrolling)
+
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(coordinator.isLiveScrolling)
+    }
+
     func testBatchPayloadKeepsIssueIDsInSelectionOrder() {
         let payload = BeadDragPayload(
             projectIdentity: "/project",

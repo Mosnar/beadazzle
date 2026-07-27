@@ -95,7 +95,10 @@ private struct SubIssueRow: View {
             store.openIssueFromDetail(issueID: issue.id)
         } label: {
             IssueSummaryRowContent(
-                issue: issue,
+                presentation: IssueSummaryRowPresentation(
+                    issue: issue,
+                    statusCategory: statusCategory
+                ),
                 row: row,
                 statusCategory: statusCategory,
                 titleForegroundStyle: AnyShapeStyle(.primary),

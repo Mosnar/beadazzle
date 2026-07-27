@@ -2,11 +2,13 @@ import SwiftUI
 
 struct IssueLabelsPopover: View {
     let labels: [String]
+    var allowsHoverPresentation = true
 
     var body: some View {
         HoverPersistentPopover(
             arrowEdge: .bottom,
-            fillsAvailableWidth: false
+            fillsAvailableWidth: false,
+            allowsHoverPresentation: allowsHoverPresentation
         ) { _ in
             Label(labels.count.formatted(), systemImage: "tag")
                 .foregroundStyle(.tertiary)

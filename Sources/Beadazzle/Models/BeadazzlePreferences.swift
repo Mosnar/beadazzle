@@ -68,6 +68,18 @@ enum BeadazzlePreferenceKeys {
     static func workspaceState(projectURL: URL) -> String {
         "WorkspaceState.\(projectURL.standardizedFileURL.path)"
     }
+
+    static func semanticDefinitions(trackerDirectoryURL: URL) -> String {
+        "SemanticDefinitions.Tracker.\(trackerDirectoryURL.standardizedFileURL.path)"
+    }
+
+    static func semanticDefinitionsTrackerRoute(projectURL: URL) -> String {
+        "SemanticDefinitions.Route.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func legacySemanticDefinitions(projectURL: URL) -> String {
+        "SemanticDefinitions.\(projectURL.standardizedFileURL.path)"
+    }
 }
 
 struct BeadListDisplayOptions: Equatable, Sendable {

@@ -235,12 +235,93 @@ struct IssueListRow: Identifiable, Hashable, Sendable {
     var childProgress: IssueChildProgress?
     var isExpanded: Bool
     var isContext: Bool
+    var presentation: IssueListRowPresentation? = nil
 }
 
 struct IssueChildProgress: Hashable, Sendable {
     var completedCount: Int
     var workedCount: Int
     var totalCount: Int
+}
+
+enum IssueListRowPresentation: Hashable, Sendable {
+    case issue(IssueSummaryRowPresentation)
+    case gate(GateSummaryRowPresentation)
+
+    func overlaying(
+        issue: BeadIssue,
+        statusCategory: BeadStatusCategory
+    ) -> IssueListRowPresentation {
+        switch self {
+        case .issue(let presentation):
+            return .issue(presentation.overlaying(
+                issue: issue,
+                statusCategory: statusCategory
+            ))
+        case .gate:
+            guard let gate = BeadGate(issue: issue) else { return self }
+            return .gate(GateSummaryRowPresentation(
+                gate: gate,
+                updatedAt: issue.updatedAt
+            ))
+        }
+    }
+}
+
+struct IssueSummaryRowPresentation: Hashable, Sendable {
+    var id: String
+    var title: String
+    var status: String
+    var priority: Int
+    var issueType: String
+    var owner: String?
+    var assignee: String?
+    var dueAt: Date?
+    var updatedAt: Date?
+    var commentCount: Int
+    var labels: [String]
+    var statusCategory: BeadStatusCategory
+    var blockedByItems: [BlockingRelationshipItem]
+    var blockingItems: [BlockingRelationshipItem]
+
+    init(
+        issue: BeadIssue,
+        statusCategory: BeadStatusCategory,
+        blockedByItems: [BlockingRelationshipItem] = [],
+        blockingItems: [BlockingRelationshipItem] = []
+    ) {
+        id = issue.id
+        title = issue.title
+        status = issue.status
+        priority = issue.priority
+        issueType = issue.issueType
+        owner = issue.owner?.nilIfBlank
+        assignee = issue.assignee?.nilIfBlank
+        dueAt = issue.dueAt
+        updatedAt = issue.updatedAt
+        commentCount = issue.commentCount
+        labels = issue.labels
+        self.statusCategory = statusCategory
+        self.blockedByItems = blockedByItems
+        self.blockingItems = blockingItems
+    }
+
+    func overlaying(
+        issue: BeadIssue,
+        statusCategory: BeadStatusCategory
+    ) -> IssueSummaryRowPresentation {
+        IssueSummaryRowPresentation(
+            issue: issue,
+            statusCategory: statusCategory,
+            blockedByItems: blockedByItems,
+            blockingItems: blockingItems
+        )
+    }
+}
+
+struct GateSummaryRowPresentation: Hashable, Sendable {
+    var gate: BeadGate
+    var updatedAt: Date?
 }
 
 struct BeadDependency: Identifiable, Hashable, Sendable {

@@ -392,22 +392,23 @@ private struct IssueListModePicker: View {
 /// reason as the subtitle. Used wherever a gate bead appears (chiefly the Gates section,
 /// where its blocked beads nest beneath it).
 struct GateRowView: View, Equatable {
-    let issue: BeadIssue
+    let presentation: GateSummaryRowPresentation
     let row: IssueListRow
-    let gate: BeadGate
     let now: Date
     let showsDisclosure: Bool
+    let allowsHoverPresentation: Bool
     let toggleExpansion: () -> Void
 
     nonisolated static func == (lhs: GateRowView, rhs: GateRowView) -> Bool {
-        lhs.issue == rhs.issue
+        lhs.presentation == rhs.presentation
             && lhs.row == rhs.row
-            && lhs.gate == rhs.gate
             && lhs.now == rhs.now
             && lhs.showsDisclosure == rhs.showsDisclosure
+            && lhs.allowsHoverPresentation == rhs.allowsHoverPresentation
     }
 
     var body: some View {
+        let gate = presentation.gate
         let actionState = gate.actionState(now: now)
         let tint = GatePresentation.tint(for: actionState, isOpen: gate.isOpen)
 
@@ -459,14 +460,17 @@ struct GateRowView: View, Equatable {
 
                     Spacer(minLength: 8)
 
-                    Text(BeadFormatters.relative(issue.updatedAt))
+                    Text(BeadFormatters.relative(presentation.updatedAt))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
                 HStack(spacing: 8) {
-                    CopyableIssueIDButton(issueID: issue.id)
+                    CopyableIssueIDButton(
+                        issueID: gate.id,
+                        allowsHoverPresentation: allowsHoverPresentation
+                    )
                     if let subtitle = gate.reason?.nilIfBlank {
                         Text(subtitle)
                             .foregroundStyle(.secondary)
@@ -483,43 +487,22 @@ struct GateRowView: View, Equatable {
 }
 
 struct IssueRowView: View, Equatable {
-    let issue: BeadIssue
+    let presentation: IssueSummaryRowPresentation
     let row: IssueListRow
     let showsDisclosure: Bool
     let displayOptions: BeadListDisplayOptions
-    let statusCategory: BeadStatusCategory
     let blockedReason: BlockedReasonPresentation?
-    let blockedByItems: [BlockingRelationshipItem]
-    let blockingItems: [BlockingRelationshipItem]
+    let allowsHoverPresentation: Bool
     let openRelatedIssue: (String) -> Void
     let toggleExpansion: () -> Void
 
     nonisolated static func == (lhs: IssueRowView, rhs: IssueRowView) -> Bool {
-        // Compare only the issue fields the row actually renders (see
-        // IssueSummaryRowContent): full `BeadIssue` equality scans description/notes
-        // bodies that can be kilobytes, per visible row per update.
-        displayedIssueFieldsEqual(lhs.issue, rhs.issue)
+        lhs.presentation == rhs.presentation
             && lhs.row == rhs.row
             && lhs.showsDisclosure == rhs.showsDisclosure
             && lhs.displayOptions == rhs.displayOptions
-            && lhs.statusCategory == rhs.statusCategory
             && lhs.blockedReason == rhs.blockedReason
-            && lhs.blockedByItems == rhs.blockedByItems
-            && lhs.blockingItems == rhs.blockingItems
-    }
-
-    nonisolated private static func displayedIssueFieldsEqual(_ lhs: BeadIssue, _ rhs: BeadIssue) -> Bool {
-        lhs.id == rhs.id
-            && lhs.title == rhs.title
-            && lhs.status == rhs.status
-            && lhs.priority == rhs.priority
-            && lhs.issueType == rhs.issueType
-            && lhs.owner == rhs.owner
-            && lhs.assignee == rhs.assignee
-            && lhs.dueAt == rhs.dueAt
-            && lhs.updatedAt == rhs.updatedAt
-            && lhs.commentCount == rhs.commentCount
-            && lhs.labels == rhs.labels
+            && lhs.allowsHoverPresentation == rhs.allowsHoverPresentation
     }
 
     var body: some View {
@@ -543,21 +526,22 @@ struct IssueRowView: View, Equatable {
             }
 
             IssueSummaryRowContent(
-                issue: issue,
+                presentation: presentation,
                 row: row,
-                statusCategory: statusCategory,
+                statusCategory: presentation.statusCategory,
                 titleForegroundStyle: row.isContext ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary),
                 issueIDPresentation: .copyable,
                 showsOwner: displayOptions.showsOwner,
                 showsAssignee: displayOptions.showsAssignee,
                 showsDueDate: displayOptions.showsDueDate,
                 blockedReason: blockedReason,
-                blockedByItems: blockedByItems,
-                blockingItems: blockingItems,
+                blockedByItems: presentation.blockedByItems,
+                blockingItems: presentation.blockingItems,
                 openRelatedIssue: openRelatedIssue,
                 showsDependencyCounts: true,
                 showsComments: displayOptions.showsComments,
-                showsLabels: true
+                showsLabels: true,
+                allowsHoverPresentation: allowsHoverPresentation
             )
         }
         .frame(height: IssueListMetrics.rowHeight, alignment: .center)

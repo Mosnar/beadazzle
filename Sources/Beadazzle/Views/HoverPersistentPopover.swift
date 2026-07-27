@@ -42,12 +42,14 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
     private let openDelay: Duration
     private let closeDelay: Duration
     private let fillsAvailableWidth: Bool
+    private let allowsHoverPresentation: Bool
     private let clickBehavior: ClickBehavior
     private let action: () -> Void
     private let label: (Bool) -> Label
     private let preview: () -> Preview
 
     @State private var presentation = HoverPersistentPopoverPresentationState()
+    @State private var isPointerInsideTrigger = false
     @State private var openTask: Task<Void, Never>?
     @State private var closeTask: Task<Void, Never>?
 
@@ -56,6 +58,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         openDelay: Duration = HoverPopoverTiming.openDelay,
         closeDelay: Duration = HoverPopoverTiming.closeDelay,
         fillsAvailableWidth: Bool = true,
+        allowsHoverPresentation: Bool = true,
         action: @escaping () -> Void,
         @ViewBuilder label: @escaping (Bool) -> Label,
         @ViewBuilder preview: @escaping () -> Preview
@@ -64,6 +67,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         self.openDelay = openDelay
         self.closeDelay = closeDelay
         self.fillsAvailableWidth = fillsAvailableWidth
+        self.allowsHoverPresentation = allowsHoverPresentation
         self.clickBehavior = .performAction
         self.action = action
         self.label = label
@@ -75,6 +79,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         openDelay: Duration = HoverPopoverTiming.openDelay,
         closeDelay: Duration = HoverPopoverTiming.closeDelay,
         fillsAvailableWidth: Bool = true,
+        allowsHoverPresentation: Bool = true,
         @ViewBuilder label: @escaping (Bool) -> Label,
         @ViewBuilder interactivePreview: @escaping () -> Preview
     ) {
@@ -82,6 +87,7 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         self.openDelay = openDelay
         self.closeDelay = closeDelay
         self.fillsAvailableWidth = fillsAvailableWidth
+        self.allowsHoverPresentation = allowsHoverPresentation
         clickBehavior = .pinPreview
         action = {}
         self.label = label
@@ -89,6 +95,41 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
     }
 
     var body: some View {
+        trigger
+            .onDisappear {
+                hideImmediately()
+            }
+            .popover(isPresented: $presentation.isPresented, arrowEdge: arrowEdge) {
+                preview()
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        updatePreviewHover(hovering)
+                    }
+            }
+            .onChange(of: allowsHoverPresentation) {
+                if !allowsHoverPresentation, !presentation.isPinned {
+                    hideImmediately()
+                } else if allowsHoverPresentation, isPointerInsideTrigger {
+                    updateLinkHover(true)
+                }
+            }
+            .onChange(of: presentation.isPresented) {
+                if !presentation.isPresented {
+                    presentation.isPinned = false
+                }
+            }
+    }
+
+    private var trigger: some View {
+        triggerButton
+            .onHover { hovering in
+                isPointerInsideTrigger = hovering
+                guard allowsHoverPresentation else { return }
+                updateLinkHover(hovering)
+            }
+    }
+
+    private var triggerButton: some View {
         Button {
             switch clickBehavior {
             case .performAction:
@@ -104,24 +145,6 @@ struct HoverPersistentPopover<Label: View, Preview: View>: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: .leading)
-        .onHover { hovering in
-            updateLinkHover(hovering)
-        }
-        .onDisappear {
-            hideImmediately()
-        }
-        .popover(isPresented: $presentation.isPresented, arrowEdge: arrowEdge) {
-            preview()
-                .contentShape(Rectangle())
-                .onHover { hovering in
-                    updatePreviewHover(hovering)
-                }
-        }
-        .onChange(of: presentation.isPresented) {
-            if !presentation.isPresented {
-                presentation.isPinned = false
-            }
-        }
     }
 
     private func updateLinkHover(_ hovering: Bool) {

@@ -2,10 +2,32 @@ import Foundation
 
 struct BeadsJSONLSnapshotReader {
     func loadSnapshot(from source: BeadsDataSource) throws -> BeadsSnapshot {
-        let records = try loadRecords(url: source.url)
+        var issues: [BeadIssue] = []
+        var dependencies: [BeadDependency] = []
+        _ = try JSONLLineReader.scan(url: source.url) { line in
+            guard let record = try loadRecord(
+                from: line.data,
+                lineNumber: line.number,
+                path: source.url.path
+            ) else {
+                return
+            }
+            let dependencyRecords = record.array("dependencies")
+            if let issue = loadIssue(
+                record: record,
+                dependencyRecords: dependencyRecords
+            ) {
+                issues.append(issue)
+            }
+            appendDependencies(
+                records: dependencyRecords,
+                defaultSourceID: record.string("id"),
+                into: &dependencies
+            )
+        }
         return BeadsSnapshot(
-            issues: loadIssues(records: records),
-            dependencies: loadAllDependencies(records: records),
+            issues: issues,
+            dependencies: sortedDependencies(dependencies),
             commentsByIssueID: [:]
         )
     }
@@ -16,67 +38,80 @@ struct BeadsJSONLSnapshotReader {
 
     private func loadIssues(records: [[String: Any]]) -> [BeadIssue] {
         records.compactMap { record in
-            let id = record.string("id")
-            guard !id.isEmpty else { return nil }
-
-            let dependencies = record.array("dependencies")
-            let comments = record.array("comments")
-            return BeadIssue(
-                id: id,
-                title: record.string("title"),
-                description: record.string("description"),
-                design: record.string("design"),
-                acceptanceCriteria: record.string("acceptance_criteria"),
-                notes: record.string("notes"),
-                status: record.string("status"),
-                priority: record.int("priority", default: 2),
-                issueType: record.string("issue_type"),
-                gateAwaitType: record.gateAwaitType(),
-                gateAwaitID: record.optionalString("await_id"),
-                gateTimeoutNanoseconds: record.int64("timeout"),
-                assignee: record.optionalString("assignee"),
-                owner: record.optionalString("owner"),
-                createdAt: parseDate(record.optionalString("created_at")),
-                createdBy: record.optionalString("created_by"),
-                updatedAt: parseDate(record.optionalString("updated_at")),
-                closedAt: parseDate(record.optionalString("closed_at")),
-                closeReason: record.optionalString("close_reason"),
-                dueAt: parseDate(record.optionalString("due_at")),
-                deferUntil: parseDate(record.optionalString("defer_until")),
-                externalRef: record.optionalString("external_ref"),
-                parentID: record.optionalString("parent_id") ?? record.optionalString("parent"),
-                labels: record.stringArray("labels").sorted(),
-                dependencyCount: record.int("dependency_count", default: dependencies.count),
-                dependentCount: record.int("dependent_count", default: 0),
-                commentCount: record.int("comment_count", default: comments.count),
-                pinned: record.bool("pinned"),
-                ephemeral: record.bool("ephemeral"),
-                isTemplate: record.bool("is_template")
+            loadIssue(
+                record: record,
+                dependencyRecords: record.array("dependencies")
             )
         }
     }
 
-    private func loadAllDependencies(records: [[String: Any]]) -> [BeadDependency] {
-        var dependencies: [BeadDependency] = []
+    private func loadIssue(
+        record: [String: Any],
+        dependencyRecords: [[String: Any]]
+    ) -> BeadIssue? {
+        let id = record.string("id")
+        guard !id.isEmpty else { return nil }
 
-        for record in records {
-            for dependency in record.array("dependencies") {
-                let sourceID = dependency.string("issue_id", default: record.string("id"))
-                let dependsOnID = dependency.string("depends_on_id")
-                guard !sourceID.isEmpty, !dependsOnID.isEmpty else { continue }
-                dependencies.append(
-                    BeadDependency(
-                        issueID: sourceID,
-                        dependsOnID: dependsOnID,
-                        type: dependency.string("type"),
-                        createdAt: parseDate(dependency.optionalString("created_at")),
-                        createdBy: dependency.optionalString("created_by")
-                    )
+        return BeadIssue(
+            id: id,
+            title: record.string("title"),
+            description: record.string("description"),
+            design: record.string("design"),
+            acceptanceCriteria: record.string("acceptance_criteria"),
+            notes: record.string("notes"),
+            status: record.string("status"),
+            priority: record.int("priority", default: 2),
+            issueType: record.string("issue_type"),
+            gateAwaitType: record.gateAwaitType(),
+            gateAwaitID: record.optionalString("await_id"),
+            gateTimeoutNanoseconds: record.int64("timeout"),
+            assignee: record.optionalString("assignee"),
+            owner: record.optionalString("owner"),
+            createdAt: parseDate(record.optionalString("created_at")),
+            createdBy: record.optionalString("created_by"),
+            updatedAt: parseDate(record.optionalString("updated_at")),
+            closedAt: parseDate(record.optionalString("closed_at")),
+            closeReason: record.optionalString("close_reason"),
+            dueAt: parseDate(record.optionalString("due_at")),
+            deferUntil: parseDate(record.optionalString("defer_until")),
+            externalRef: record.optionalString("external_ref"),
+            parentID: record.optionalString("parent_id") ?? record.optionalString("parent"),
+            labels: record.stringArray("labels").sorted(),
+            dependencyCount: record.int("dependency_count", default: dependencyRecords.count),
+            dependentCount: record.int("dependent_count", default: 0),
+            commentCount: record.int(
+                "comment_count",
+                default: record.array("comments").count
+            ),
+            pinned: record.bool("pinned"),
+            ephemeral: record.bool("ephemeral"),
+            isTemplate: record.bool("is_template")
+        )
+    }
+
+    private func appendDependencies(
+        records: [[String: Any]],
+        defaultSourceID: String,
+        into dependencies: inout [BeadDependency]
+    ) {
+        for dependency in records {
+            let sourceID = dependency.string("issue_id", default: defaultSourceID)
+            let dependsOnID = dependency.string("depends_on_id")
+            guard !sourceID.isEmpty, !dependsOnID.isEmpty else { continue }
+            dependencies.append(
+                BeadDependency(
+                    issueID: sourceID,
+                    dependsOnID: dependsOnID,
+                    type: dependency.string("type"),
+                    createdAt: parseDate(dependency.optionalString("created_at")),
+                    createdBy: dependency.optionalString("created_by")
                 )
-            }
+            )
         }
+    }
 
-        return dependencies.sorted { lhs, rhs in
+    private func sortedDependencies(_ dependencies: [BeadDependency]) -> [BeadDependency] {
+        dependencies.sorted { lhs, rhs in
             if lhs.type == rhs.type {
                 return (lhs.createdAt ?? .distantPast) > (rhs.createdAt ?? .distantPast)
             }
@@ -84,30 +119,16 @@ struct BeadsJSONLSnapshotReader {
         }
     }
 
-    private func loadRecords(url: URL) throws -> [[String: Any]] {
-        var records: [[String: Any]] = []
-        _ = try JSONLLineReader.scan(url: url) { line in
-            try appendRecord(
-                from: line.data,
-                lineNumber: line.number,
-                path: url.path,
-                into: &records
-            )
-        }
-        return records
-    }
-
-    private func appendRecord(
+    private func loadRecord(
         from rawLineData: Data,
         lineNumber: Int,
-        path: String,
-        into records: inout [[String: Any]]
-    ) throws {
+        path: String
+    ) throws -> [String: Any]? {
         var lineData = rawLineData
         if lineData.last == 13 {
             lineData.removeLast()
         }
-        guard !lineData.isEmpty else { return }
+        guard !lineData.isEmpty else { return nil }
         let value: Any
         do {
             value = try JSONSerialization.jsonObject(with: lineData)
@@ -119,9 +140,9 @@ struct BeadsJSONLSnapshotReader {
         }
         let recordType = object.optionalString("_type")
         guard recordType == nil || recordType == "issue" else {
-            return
+            return nil
         }
-        records.append(object)
+        return object
     }
 
     private func parseDate(_ value: String?) -> Date? {
@@ -142,7 +163,7 @@ private extension Dictionary where Key == String, Value == Any {
         return String(describing: value)
     }
 
-    func int(_ key: String, default defaultValue: Int) -> Int {
+    func int(_ key: String, default defaultValue: @autoclosure () -> Int) -> Int {
         if let int = self[key] as? Int {
             return int
         }
@@ -152,7 +173,7 @@ private extension Dictionary where Key == String, Value == Any {
         if let string = self[key] as? String, let int = Int(string) {
             return int
         }
-        return defaultValue
+        return defaultValue()
     }
 
     func int64(_ key: String) -> Int64? {

@@ -432,6 +432,57 @@ struct BeadProjectIndex: Sendable {
         }
     }
 
+    func presenting(
+        _ rows: [IssueListRow],
+        relationshipSortOrder: BeadIssueSortOrder,
+        shouldCancel: () -> Bool = { false }
+    ) -> [IssueListRow]? {
+        var presentedRows: [IssueListRow] = []
+        presentedRows.reserveCapacity(rows.count)
+        for row in rows {
+            guard !shouldCancel() else { return nil }
+            var presentedRow = row
+            presentedRow.presentation = issue(with: row.issueID).map { issue in
+                if let gate = BeadGate(issue: issue) {
+                    return .gate(GateSummaryRowPresentation(
+                        gate: gate,
+                        updatedAt: issue.updatedAt
+                    ))
+                }
+                let blockedByItems = dependenciesByIssueID[issue.id].map { _ in
+                    activeBlockingIssues(
+                        for: issue.id,
+                        sortOrder: relationshipSortOrder
+                    ).map {
+                        BlockingRelationshipItem(
+                            issue: $0,
+                            statusCategory: semantics.category(forStatus: $0.status)
+                        )
+                    }
+                } ?? []
+                let blockingItems = dependentsByIssueID[issue.id].map { _ in
+                    activelyBlockedIssues(
+                        by: issue.id,
+                        sortOrder: relationshipSortOrder
+                    ).map {
+                        BlockingRelationshipItem(
+                            issue: $0,
+                            statusCategory: semantics.category(forStatus: $0.status)
+                        )
+                    }
+                } ?? []
+                return .issue(IssueSummaryRowPresentation(
+                    issue: issue,
+                    statusCategory: semantics.category(forStatus: issue.status),
+                    blockedByItems: blockedByItems,
+                    blockingItems: blockingItems
+                ))
+            }
+            presentedRows.append(presentedRow)
+        }
+        return presentedRows
+    }
+
     func ancestorIDs(for issueID: String) -> [String] {
         var ancestors: [String] = []
         var visited: Set<String> = [issueID]
