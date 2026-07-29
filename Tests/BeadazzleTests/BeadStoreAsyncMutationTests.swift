@@ -168,6 +168,48 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertNil(store.initializationTask)
     }
 
+    func testSuccessfulInitializationRefreshesOwnerIdentity() async throws {
+        let projectURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeadStoreInitializeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
+        try FileManager.default.createDirectory(at: beadsURL, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: projectURL)
+        }
+
+        let resolver = SequencedOwnerIdentityResolver(identities: [
+            .resolved(value: "before-init@example.com", source: .gitConfiguration),
+            .resolved(value: "after-init@example.com", source: .gitConfiguration)
+        ])
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: RecordingBeadsCommands(),
+            ownerIdentityResolver: resolver
+        )
+        store.defaultNewBeadAssignee = .owner
+        store.openProject(projectURL)
+        try await waitUntil { store.missingDataSourceURL != nil }
+        try await waitUntilAsync { await resolver.resolveCallCount == 1 }
+
+        try issueLine(id: "bd-1", title: "Initialized").write(
+            to: beadsURL.appendingPathComponent("issues.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        store.initializeBeads(options: BeadsInitOptions())
+
+        try await waitUntil {
+            !store.isInitializingBeads
+                && store.issue(with: "bd-1") != nil
+                && store.ownerIdentity.value == "after-init@example.com"
+        }
+        let resolveCallCount = await resolver.resolveCallCount
+        XCTAssertEqual(resolveCallCount, 2)
+        XCTAssertEqual(store.blankDraft().assignee, "after-init@example.com")
+    }
+
     func testBulkSetReturnsTrueAndInvokesCommandOnSuccess() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -4751,6 +4793,22 @@ private actor AsyncTestGate {
         let pendingContinuations = continuations
         continuations.removeAll()
         pendingContinuations.forEach { $0.resume() }
+    }
+}
+
+private actor SequencedOwnerIdentityResolver: BeadOwnerIdentityResolving {
+    private let identities: [BeadOwnerIdentity]
+    private(set) var resolveCallCount = 0
+
+    init(identities: [BeadOwnerIdentity]) {
+        precondition(!identities.isEmpty)
+        self.identities = identities
+    }
+
+    func resolve(projectURL: URL) async -> BeadOwnerIdentity {
+        let index = min(resolveCallCount, identities.count - 1)
+        resolveCallCount += 1
+        return identities[index]
     }
 }
 

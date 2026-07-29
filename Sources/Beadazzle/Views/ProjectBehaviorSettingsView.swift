@@ -33,6 +33,29 @@ struct ProjectBehaviorSettingsPane: View {
             }
 
             Section {
+                ProjectNewBeadAssigneePreferenceControl(
+                    override: $store.projectNewBeadAssigneeOverride,
+                    appDefault: store.defaultNewBeadAssignee,
+                    availableAssignees: store.availableAssignees
+                )
+            } header: {
+                Text("New Beads")
+            } footer: {
+                if store.projectNewBeadAssigneeOverride?.mode == .specific,
+                   store.effectiveNewBeadAssignee == .unassigned {
+                    Text("Enter a name or email. Until then, new drafts in this project start unassigned.")
+                } else if store.effectiveNewBeadAssignee == .owner,
+                   store.ownerIdentity == .resolving {
+                    Text("Checking the Git identity that bd will use as owner.")
+                } else if store.effectiveNewBeadAssignee == .owner,
+                          store.ownerIdentity.value == nil {
+                    Text("Owner is not configured for this project, so new drafts currently start unassigned.")
+                } else {
+                    Text("Applies only when starting a new draft in this project.")
+                }
+            }
+
+            Section {
                 Button("Reset Saved Workspace State", role: .destructive) {
                     isConfirmingWorkspaceReset = true
                 }

@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- New beads can now inherit a default assignee from app or project settings, with the Git-derived owner visible in Project Settings.
 - Large projects now open and switch faster, use less peak memory while reading snapshots, and keep scrolling smoother.
 - Bulk actions stay disabled until beads are selected.
 - Search any view, then expand it to all beads.

@@ -3,6 +3,8 @@ import Foundation
 enum BeadazzlePreferenceKeys {
     static let bdCLIPath = "BDCLIPath"
     static let receivesBetaUpdates = "ReceivesBetaUpdates"
+    static let defaultNewBeadAssigneeMode = "NewBeads.DefaultAssignee.Mode"
+    static let defaultNewBeadAssigneeValue = "NewBeads.DefaultAssignee.Value"
     static let legacyStaleCutoffDays = "StaleCutoffDays"
     static let legacyShowsOwnerInBeadList = "ShowsOwnerInBeadList"
     static let legacyShowsAssigneeInBeadList = "ShowsAssigneeInBeadList"
@@ -43,6 +45,14 @@ enum BeadazzlePreferenceKeys {
 
     static func automaticallyRefreshesExternalChanges(projectURL: URL) -> String {
         "AutomaticallyRefreshExternalChanges.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func newBeadAssigneeOverrideMode(projectURL: URL) -> String {
+        "NewBeads.DefaultAssignee.OverrideMode.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func newBeadAssigneeOverrideValue(projectURL: URL) -> String {
+        "NewBeads.DefaultAssignee.OverrideValue.\(projectURL.standardizedFileURL.path)"
     }
 
     static func pinnedStateDimensions(projectURL: URL) -> String {
@@ -135,6 +145,30 @@ enum BeadazzleOptionInventory {
             defaultValue: "Off",
             uiLocation: "Settings > Updates",
             behavior: "Includes beta channels in the appcast request."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "defaultNewBeadAssignee",
+            title: "Default assignee for new beads",
+            scope: .appPreference,
+            persistence: [
+                BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
+                BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
+            ].joined(separator: " + "),
+            defaultValue: "Unassigned",
+            uiLocation: "Settings > General",
+            behavior: "Seeds the assignee on new bead drafts unless the active project overrides it."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "projectNewBeadAssigneeOverride",
+            title: "Project default assignee override",
+            scope: .projectConfiguration,
+            persistence: [
+                "NewBeads.DefaultAssignee.OverrideMode.<project path>",
+                "NewBeads.DefaultAssignee.OverrideValue.<project path>"
+            ].joined(separator: " + "),
+            defaultValue: "Use App Default",
+            uiLocation: "Project Settings > Behavior",
+            behavior: "Overrides the app default when starting new bead drafts for one project."
         ),
         BeadazzleOptionInventoryEntry(
             id: "staleCutoffDays",

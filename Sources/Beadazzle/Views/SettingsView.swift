@@ -129,6 +129,22 @@ private struct GeneralSettingsPane: View {
             } footer: {
                 Text("Leave the path empty to find bd from the environment and standard installation directories.")
             }
+
+            Section {
+                NewBeadAssigneePreferenceControl(
+                    preference: $store.defaultNewBeadAssignee,
+                    availableAssignees: store.availableAssignees
+                )
+            } header: {
+                Text("New Beads")
+            } footer: {
+                if store.defaultNewBeadAssignee.mode == .specific,
+                   store.defaultNewBeadAssignee.normalized == .unassigned {
+                    Text("Enter a name or email. Until then, new drafts start unassigned; projects can still override this default.")
+                } else {
+                    Text("Seeds new drafts only. Owner uses the Git identity resolved by bd; projects can override this default.")
+                }
+            }
         }
         .settingsGroupedForm()
         .task(id: store.bdCLIPath) {

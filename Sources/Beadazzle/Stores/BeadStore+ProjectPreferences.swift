@@ -1,6 +1,48 @@
 import Foundation
 
 extension BeadStore {
+    internal static func loadNewBeadAssigneePreference(
+        from userDefaults: UserDefaults,
+        modeKey: String,
+        valueKey: String
+    ) -> NewBeadAssigneePreference? {
+        guard let rawMode = userDefaults.string(forKey: modeKey),
+              let mode = NewBeadAssigneePreference.Mode(rawValue: rawMode)
+        else {
+            return nil
+        }
+        switch mode {
+        case .unassigned:
+            return .unassigned
+        case .owner:
+            return .owner
+        case .specific:
+            return .specific(
+                (userDefaults.string(forKey: valueKey) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    private static func persistNewBeadAssigneePreference(
+        _ preference: NewBeadAssigneePreference,
+        to userDefaults: UserDefaults,
+        modeKey: String,
+        valueKey: String
+    ) {
+        userDefaults.set(preference.mode.rawValue, forKey: modeKey)
+        if case .specific(let value) = preference {
+            let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.isEmpty {
+                userDefaults.removeObject(forKey: valueKey)
+            } else {
+                userDefaults.set(value, forKey: valueKey)
+            }
+        } else {
+            userDefaults.removeObject(forKey: valueKey)
+        }
+    }
+
     internal static func boolValue(_ userDefaults: UserDefaults, key: String, defaultValue: Bool) -> Bool {
         guard userDefaults.object(forKey: key) != nil else { return defaultValue }
         return userDefaults.bool(forKey: key)
@@ -34,6 +76,32 @@ extension BeadStore {
         }
     }
 
+    internal func persistDefaultNewBeadAssignee() {
+        Self.persistNewBeadAssigneePreference(
+            defaultNewBeadAssignee,
+            to: userDefaults,
+            modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
+            valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
+        )
+    }
+
+    internal func persistProjectNewBeadAssigneeOverride() {
+        guard let projectURL else { return }
+        let modeKey = BeadazzlePreferenceKeys.newBeadAssigneeOverrideMode(projectURL: projectURL)
+        let valueKey = BeadazzlePreferenceKeys.newBeadAssigneeOverrideValue(projectURL: projectURL)
+        guard let projectNewBeadAssigneeOverride else {
+            userDefaults.removeObject(forKey: modeKey)
+            userDefaults.removeObject(forKey: valueKey)
+            return
+        }
+        Self.persistNewBeadAssigneePreference(
+            projectNewBeadAssigneeOverride,
+            to: userDefaults,
+            modeKey: modeKey,
+            valueKey: valueKey
+        )
+    }
+
     internal func persistStaleCutoffDays() {
         guard let projectURL else { return }
         userDefaults.set(staleCutoffDays, forKey: BeadazzlePreferenceKeys.staleCutoffDays(projectURL: projectURL))
@@ -47,11 +115,20 @@ extension BeadStore {
         loadStaleCutoffDaysPreference(for: url)
         loadReadyParentRollUpPreference(for: url)
         loadExternalRefreshPreference(for: url)
+        loadNewBeadAssigneeOverride(for: url)
         loadPinnedStateDimensions(for: url)
         loadStateDimensionDisplayNames(for: url)
         loadStateValueDisplayNames(for: url)
         loadArchivedStateValues(for: url)
         loadSavedViews(for: url)
+    }
+
+    private func loadNewBeadAssigneeOverride(for url: URL) {
+        projectNewBeadAssigneeOverride = Self.loadNewBeadAssigneePreference(
+            from: userDefaults,
+            modeKey: BeadazzlePreferenceKeys.newBeadAssigneeOverrideMode(projectURL: url),
+            valueKey: BeadazzlePreferenceKeys.newBeadAssigneeOverrideValue(projectURL: url)
+        )
     }
 
     private func loadPinnedStateDimensions(for url: URL) {

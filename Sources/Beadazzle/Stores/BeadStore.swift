@@ -46,6 +46,7 @@ final class BeadProjectStore {
     fileprivate(set) var contentRevision = 0
     fileprivate(set) var currentDataSource: BeadsDataSource?
     fileprivate(set) var projectEnvironment: BeadsProjectEnvironment?
+    fileprivate(set) var ownerIdentity = BeadOwnerIdentity.unavailable
     fileprivate(set) var snapshotFreshness = ProjectSnapshotFreshness.unknown
     fileprivate(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     fileprivate(set) var isLoadingProjectHealth = false
@@ -69,6 +70,8 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var reconcileDebounceTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var reconcileState = SnapshotReconcileState()
     @ObservationIgnored fileprivate(set) var projectHealthTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var ownerIdentityTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var ownerIdentityGeneration = 0
     @ObservationIgnored fileprivate(set) var dataSourceMonitor: BeadsDataSourceMonitor?
     @ObservationIgnored fileprivate(set) var monitoredSourceFingerprint: String?
     @ObservationIgnored fileprivate(set) var cachedDefinitions: BeadSemanticDefinitions?
@@ -109,6 +112,9 @@ final class BeadProjectStore {
         cancelReconciliationWork()
         projectHealthTask?.cancel()
         projectHealthTask = nil
+        ownerIdentityGeneration &+= 1
+        ownerIdentityTask?.cancel()
+        ownerIdentityTask = nil
         semanticDefinitionsRefreshGeneration &+= 1
         projectionGeneration &+= 1
         projectionMaterializationTask?.cancel()
@@ -154,6 +160,21 @@ final class BeadProjectStore {
     func finishInitialization(generation: Int) {
         guard initializationGeneration == generation else { return }
         initializationTask = nil
+    }
+
+    func beginOwnerIdentityLoad() -> Int {
+        ownerIdentityGeneration &+= 1
+        ownerIdentityTask?.cancel()
+        return ownerIdentityGeneration
+    }
+
+    func ownsOwnerIdentityLoad(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
+        projectURL == expectedProjectURL && ownerIdentityGeneration == generation
+    }
+
+    func finishOwnerIdentityLoad(generation: Int) {
+        guard ownerIdentityGeneration == generation else { return }
+        ownerIdentityTask = nil
     }
 
     func beginProjectHealthLoad() -> Int {
@@ -867,6 +888,11 @@ final class BeadStore {
         get { project.projectEnvironment }
         set { project.projectEnvironment = newValue }
     }
+    var ownerIdentity: BeadOwnerIdentity { project.ownerIdentity }
+    internal var _ownerIdentity: BeadOwnerIdentity {
+        get { project.ownerIdentity }
+        set { project.ownerIdentity = newValue }
+    }
     var snapshotFreshness: ProjectSnapshotFreshness { project.snapshotFreshness }
     internal var _snapshotFreshness: ProjectSnapshotFreshness { get { project.snapshotFreshness } set { project.snapshotFreshness = newValue } }
     var projectHealthSnapshot: ProjectHealthSnapshot? { project.projectHealthSnapshot }
@@ -950,6 +976,19 @@ final class BeadStore {
         didSet {
             guard oldValue != bdCLIPath else { return }
             persistBDCLIPath()
+        }
+    }
+    var defaultNewBeadAssignee = NewBeadAssigneePreference.unassigned {
+        didSet {
+            guard oldValue != defaultNewBeadAssignee else { return }
+            persistDefaultNewBeadAssignee()
+        }
+    }
+    var projectNewBeadAssigneeOverride: NewBeadAssigneePreference? {
+        didSet {
+            guard oldValue != projectNewBeadAssigneeOverride else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectNewBeadAssigneeOverride()
         }
     }
     var staleCutoffDays = BeadProjectIndex.defaultStaleCutoffDays {
@@ -1112,6 +1151,7 @@ final class BeadStore {
     @ObservationIgnored internal let commands: any BeadsCommanding
     @ObservationIgnored internal let projectLoader: BeadProjectLoader
     @ObservationIgnored internal let activityHistoryRepository: BeadActivityHistoryRepository
+    @ObservationIgnored internal let ownerIdentityResolver: any BeadOwnerIdentityResolving
     @ObservationIgnored internal let savedViewRepository: BeadSavedViewRepository
     @ObservationIgnored internal let workspaceStateRepository: BeadWorkspaceStateRepository
     @ObservationIgnored internal let semanticDefinitionsRepository: BeadSemanticDefinitionsRepository
@@ -1139,6 +1179,10 @@ final class BeadStore {
     internal var activityLoadTask: Task<Void, Never>? { get { detail.activityLoadTask } set { detail.activityLoadTask = newValue } }
     internal var gateDetailTask: Task<Void, Never>? { get { detail.gateDetailTask } set { detail.gateDetailTask = newValue } }
     internal var projectHealthTask: Task<Void, Never>? { get { project.projectHealthTask } set { project.projectHealthTask = newValue } }
+    internal var ownerIdentityTask: Task<Void, Never>? {
+        get { project.ownerIdentityTask }
+        set { project.ownerIdentityTask = newValue }
+    }
     internal var projectionMaterializationTask: Task<Void, Never>? {
         get { project.projectionMaterializationTask }
         set { project.projectionMaterializationTask = newValue }
@@ -1209,16 +1253,23 @@ final class BeadStore {
     init(
         userDefaults: UserDefaults = .standard,
         commands: any BeadsCommanding = BeadsCommandService(),
-        activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository()
+        activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository(),
+        ownerIdentityResolver: any BeadOwnerIdentityResolving = BeadOwnerIdentityResolver()
     ) {
         self.userDefaults = userDefaults
         self.commands = commands
         self.projectLoader = BeadProjectLoader(commands: commands)
         self.activityHistoryRepository = activityHistoryRepository
+        self.ownerIdentityResolver = ownerIdentityResolver
         self.savedViewRepository = BeadSavedViewRepository(userDefaults: userDefaults)
         self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
         self.semanticDefinitionsRepository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
+        defaultNewBeadAssignee = Self.loadNewBeadAssigneePreference(
+            from: userDefaults,
+            modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
+            valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
+        ) ?? .unassigned
         _recentProjects = Self.loadRecentProjects(from: userDefaults)
 
         if recentProjects.isEmpty,

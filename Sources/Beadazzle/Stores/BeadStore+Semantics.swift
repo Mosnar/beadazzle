@@ -197,11 +197,17 @@ extension BeadStore {
 
     func blankDraft(parentID: String? = nil) -> IssueDraft {
         let fallbackType = BeadIssueWorkflowPolicy.normalMutableIssueTypes(index.semantics.typeNames).first ?? ""
-        return IssueDraft.blank(
+        var draft = IssueDraft.blank(
             defaultType: availableMutableTypes.first ?? fallbackType,
             defaultStatus: availableStatuses.first ?? index.semantics.statusNames.first ?? "",
             parentID: parentID
         )
+        draft.assignee = effectiveNewBeadAssignee.resolvedAssignee(ownerIdentity: ownerIdentity)
+        return draft
+    }
+
+    var effectiveNewBeadAssignee: NewBeadAssigneePreference {
+        (projectNewBeadAssigneeOverride ?? defaultNewBeadAssignee).normalized
     }
 
     func beadPickerDefaultDraft(for configuration: BeadPickerConfiguration) -> IssueDraft {

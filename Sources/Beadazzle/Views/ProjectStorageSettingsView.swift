@@ -11,6 +11,8 @@ struct ProjectOverviewSettingsPane: View {
             if !isInitialProjectHealthLoad {
                 ProjectOverviewSummarySection()
             }
+
+            ProjectOwnerIdentitySection()
         }
         .settingsGroupedForm()
         .loadsProjectHealthStatusIfNeeded()
@@ -32,6 +34,41 @@ struct ProjectOverviewSettingsPane: View {
         project.isLoadingProjectHealth
             && project.projectHealthSnapshot == nil
             && project.projectHealthAction == nil
+    }
+}
+
+private struct ProjectOwnerIdentitySection: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+
+    var body: some View {
+        Section {
+            LabeledContent("Owner for new beads") {
+                switch store.ownerIdentity {
+                case .resolving:
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Checking…")
+                            .foregroundStyle(.secondary)
+                    }
+                case .resolved(let value, let source):
+                    HStack(spacing: 8) {
+                        Text(value)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                        ProjectHealthBadge(title: source.displayName, style: .info)
+                    }
+                    .help("\(value) from \(source.displayName)")
+                case .unavailable:
+                    Text("Not configured")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Identity")
+        } footer: {
+            Text("bd records owner as creation-time provenance from GIT_AUTHOR_EMAIL or git config user.email. Beadazzle does not override it.")
+        }
     }
 }
 

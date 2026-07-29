@@ -3,6 +3,12 @@ import XCTest
 
 @MainActor
 final class BeadStorePreferencesTests: XCTestCase {
+    func testNewBeadAssigneePreferenceNormalizesSpecificValues() {
+        XCTAssertEqual(NewBeadAssigneePreference.specific("  alex@example.com  ").normalized, .specific("alex@example.com"))
+        XCTAssertEqual(NewBeadAssigneePreference.specific(" \n ").normalized, .unassigned)
+        XCTAssertEqual(NewBeadAssigneePreference.owner.displayName, "Owner")
+    }
+
     func testPreferenceDefaultsMatchCompactMetadataAndStaleCutoff() {
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
 
@@ -16,6 +22,8 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(store.stateValueDisplayNames.isEmpty)
         XCTAssertTrue(store.archivedStateValuesByDimension.isEmpty)
         XCTAssertEqual(store.beadListDisplayOptions, .compact)
+        XCTAssertEqual(store.defaultNewBeadAssignee, .unassigned)
+        XCTAssertNil(store.projectNewBeadAssigneeOverride)
     }
 
     func testAppPreferencesPersistThroughInjectedUserDefaults() {
@@ -23,12 +31,157 @@ final class BeadStorePreferencesTests: XCTestCase {
         let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
 
         store.bdCLIPath = "/tmp/custom-bd"
+        store.defaultNewBeadAssignee = .specific("  alex@example.com  ")
 
         let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
 
         XCTAssertEqual(reloadedStore.bdCLIPath, "/tmp/custom-bd")
+        XCTAssertEqual(reloadedStore.defaultNewBeadAssignee, .specific("alex@example.com"))
         XCTAssertEqual(reloadedStore.staleCutoffDays, 14)
         XCTAssertEqual(reloadedStore.beadListDisplayOptions, .compact)
+    }
+
+    func testBlankSpecificAssigneeModePersistsWhileResolvingAsUnassigned() async throws {
+        let defaults = makeUserDefaults()
+        let resolver = PreferenceOwnerIdentityResolver(identity: .unavailable)
+        let store = BeadStore(
+            userDefaults: defaults,
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: resolver
+        )
+
+        store.defaultNewBeadAssignee = .specific(" \n ")
+
+        let reloadedStore = BeadStore(
+            userDefaults: defaults,
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: resolver
+        )
+        XCTAssertEqual(reloadedStore.defaultNewBeadAssignee, .specific(""))
+        XCTAssertEqual(reloadedStore.defaultNewBeadAssignee.normalized, .unassigned)
+
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        reloadedStore.openProject(projectURL)
+        try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+        reloadedStore.projectNewBeadAssigneeOverride = .specific(" \t ")
+
+        let projectReloadedStore = BeadStore(
+            userDefaults: defaults,
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: resolver
+        )
+        projectReloadedStore.openProject(projectURL)
+        try await waitUntil {
+            !projectReloadedStore.isLoading
+                && projectReloadedStore.issue(with: "bd-1") != nil
+        }
+        XCTAssertEqual(projectReloadedStore.projectNewBeadAssigneeOverride, .specific(""))
+        XCTAssertEqual(projectReloadedStore.effectiveNewBeadAssignee, .unassigned)
+    }
+
+    func testProjectAssigneeOverridePersistsSeparatelyAndCanReturnToInheritance() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let otherProjectURL = try makeProject(issueLine(id: "other-1", status: "open", type: "task"))
+        let resolver = PreferenceOwnerIdentityResolver(identity: .resolved(
+            value: "owner@example.com",
+            source: .gitConfiguration
+        ))
+        let store = BeadStore(
+            userDefaults: defaults,
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: resolver
+        )
+        store.defaultNewBeadAssignee = .specific("app@example.com")
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertNil(store.projectNewBeadAssigneeOverride)
+        XCTAssertEqual(store.effectiveNewBeadAssignee, .specific("app@example.com"))
+        store.projectNewBeadAssigneeOverride = .specific(" project@example.com ")
+        XCTAssertEqual(store.effectiveNewBeadAssignee, .specific("project@example.com"))
+
+        store.openProject(otherProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "other-1") != nil }
+        XCTAssertNil(store.projectNewBeadAssigneeOverride)
+        XCTAssertEqual(store.effectiveNewBeadAssignee, .specific("app@example.com"))
+
+        let reloaded = BeadStore(
+            userDefaults: defaults,
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: resolver
+        )
+        reloaded.openProject(projectURL)
+        try await waitUntil { !reloaded.isLoading && reloaded.issue(with: "bd-1") != nil }
+        XCTAssertEqual(reloaded.projectNewBeadAssigneeOverride, .specific("project@example.com"))
+
+        reloaded.projectNewBeadAssigneeOverride = nil
+        let inherited = BeadStore(
+            userDefaults: defaults,
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: resolver
+        )
+        inherited.openProject(projectURL)
+        try await waitUntil { !inherited.isLoading && inherited.issue(with: "bd-1") != nil }
+        XCTAssertNil(inherited.projectNewBeadAssigneeOverride)
+        XCTAssertEqual(inherited.effectiveNewBeadAssignee, .specific("app@example.com"))
+    }
+
+    func testNewDraftsUseEffectiveAssigneeWithoutRewritingOpenDrafts() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-parent", status: "open", type: "task"))
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: PreferenceOwnerIdentityResolver(identity: .resolved(
+                value: "owner@example.com",
+                source: .gitConfiguration
+            ))
+        )
+        store.defaultNewBeadAssignee = .specific("app@example.com")
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading
+                && store.issue(with: "bd-parent") != nil
+                && store.ownerIdentity.value == "owner@example.com"
+        }
+
+        store.beginCreatingBead()
+        XCTAssertEqual(store.creationDraft?.assignee, "app@example.com")
+
+        store.projectNewBeadAssigneeOverride = .owner
+        XCTAssertEqual(store.creationDraft?.assignee, "app@example.com")
+
+        store.cancelCreation()
+        store.beginCreatingChildBead(parentID: "bd-parent")
+        XCTAssertEqual(store.creationDraft?.assignee, "owner@example.com")
+        XCTAssertEqual(store.creationDraft?.parentID, "bd-parent")
+
+        store.cancelCreation()
+        let parent = try XCTUnwrap(store.issue(with: "bd-parent"))
+        let pickerDraft = store.beadPickerDefaultDraft(for: .child(parent: parent))
+        XCTAssertEqual(pickerDraft.assignee, "owner@example.com")
+        XCTAssertEqual(pickerDraft.parentID, "bd-parent")
+
+        store.projectNewBeadAssigneeOverride = .unassigned
+        XCTAssertEqual(store.blankDraft().assignee, "")
+    }
+
+    func testOwnerDefaultFallsBackToUnassignedWhenIdentityIsUnavailable() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: PreferenceTestCommands(),
+            ownerIdentityResolver: PreferenceOwnerIdentityResolver(identity: .unavailable)
+        )
+        store.defaultNewBeadAssignee = .owner
+        store.openProject(projectURL)
+        try await waitUntil {
+            !store.isLoading
+                && store.issue(with: "bd-1") != nil
+                && store.ownerIdentity == .unavailable
+        }
+
+        XCTAssertEqual(store.blankDraft().assignee, "")
     }
 
     func testPinnedStateDimensionsPersistOrderPerProjectAndDropInvalidEntries() async throws {
@@ -583,6 +736,8 @@ final class BeadStorePreferencesTests: XCTestCase {
             "bdCLIPath",
             "automaticallyChecksForUpdates",
             "receivesBetaUpdates",
+            "defaultNewBeadAssignee",
+            "projectNewBeadAssigneeOverride",
             "staleCutoffDays",
             "hidesParentsWithOnlyBlockedChildrenInReady",
             "automaticallyRefreshesExternalChanges",
@@ -606,6 +761,14 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { !$0.defaultValue.isEmpty })
         XCTAssertTrue(entries.allSatisfy { !$0.uiLocation.isEmpty })
         XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
+        XCTAssertTrue(
+            entries.first { $0.id == "defaultNewBeadAssignee" }?
+                .persistence.contains(BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue) == true
+        )
+        XCTAssertTrue(
+            entries.first { $0.id == "projectNewBeadAssigneeOverride" }?
+                .persistence.contains("OverrideValue.<project path>") == true
+        )
         XCTAssertEqual(
             Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
             Set(["Issue List > View Options", "Sidebar > Bookmarks", "Project Settings > Storage", "Project Settings > Properties"])
@@ -1185,6 +1348,14 @@ final class BeadStorePreferencesTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(50))
         }
+    }
+}
+
+private struct PreferenceOwnerIdentityResolver: BeadOwnerIdentityResolving {
+    let identity: BeadOwnerIdentity
+
+    func resolve(projectURL: URL) async -> BeadOwnerIdentity {
+        identity
     }
 }
 

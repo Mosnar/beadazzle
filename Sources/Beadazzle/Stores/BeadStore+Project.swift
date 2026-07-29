@@ -137,6 +137,7 @@ extension BeadStore {
                 self._isInitializingBeads = false
                 self.rememberRecentProject(projectURL)
                 self.applyLoadedProject(loadedProject, projectURL: projectURL)
+                self.refreshOwnerIdentity(for: projectURL, showsResolvingState: true)
             } catch is CancellationError {
                 return
             } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
@@ -218,6 +219,7 @@ extension BeadStore {
         _gatesByID = [:]
         _currentDataSource = nil
         _projectEnvironment = nil
+        _ownerIdentity = .unavailable
         _snapshotFreshness = .unknown
         cachedDefinitions = nil
         cachedDefinitionsTrackerDirectoryURL = nil
@@ -238,6 +240,28 @@ extension BeadStore {
 
     func refresh() {
         refresh(reason: .manual, showsLoadingIndicator: true)
+    }
+
+    private func refreshOwnerIdentity(for projectURL: URL, showsResolvingState: Bool) {
+        let generation = project.beginOwnerIdentityLoad()
+        if showsResolvingState {
+            _ownerIdentity = .resolving
+        }
+        let resolver = ownerIdentityResolver
+        ownerIdentityTask = Task { @MainActor [weak self] in
+            defer { self?.project.finishOwnerIdentityLoad(generation: generation) }
+            let identity = await resolver.resolve(projectURL: projectURL)
+            guard !Task.isCancelled,
+                  let self,
+                  self.project.ownsOwnerIdentityLoad(
+                      projectURL: projectURL,
+                      generation: generation
+                  )
+            else {
+                return
+            }
+            self._ownerIdentity = identity
+        }
     }
 
     /// Server-backed trackers can change without touching this Mac's snapshot files.
@@ -269,6 +293,9 @@ extension BeadStore {
         }
         if reason == .manual {
             cancelSemanticDefinitionsRefresh()
+        }
+        if reason == .initial || reason == .manual {
+            refreshOwnerIdentity(for: projectURL, showsResolvingState: reason == .initial)
         }
         let refreshGeneration = project.beginRefresh()
         // A manual refresh or project (re)load reads authoritative state directly, so any
