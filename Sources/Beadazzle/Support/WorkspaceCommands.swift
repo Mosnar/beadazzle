@@ -27,6 +27,7 @@ extension FocusedValues {
 
 struct WorkspaceCommands: Commands {
     @FocusedValue(\.workspaceCommands) private var actions
+    @FocusedValue(\.beadFindActions) private var findActions
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -51,18 +52,44 @@ struct WorkspaceCommands: Commands {
             .disabled(actions?.refresh == nil)
         }
 
-        CommandMenu("Find") {
-            Button("Find") {
-                actions?.find?()
-            }
-            .keyboardShortcut("f")
-            .disabled(actions?.find == nil)
+        // Find lives in Edit, after the Cut/Copy/Paste/Select All group, which
+        // is where macOS apps put it.
+        CommandGroup(after: .pasteboard) {
+            Menu("Find") {
+                Button("Find...") {
+                    performFind()
+                }
+                .keyboardShortcut("f")
+                .disabled(actions?.find == nil && findActions?.canFindInCurrent != true)
 
-            Button(actions?.searchCoverageTitle ?? "Search All Beads") {
-                actions?.toggleSearchCoverage?()
+                Button("Find in Current Bead...") {
+                    findActions?.findInCurrent()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .option])
+                .disabled(findActions?.canFindInCurrent != true)
+
+                Divider()
+
+                Button("Find Next") {
+                    findActions?.findNext()
+                }
+                .keyboardShortcut("g", modifiers: [.command])
+                .disabled(findActions?.canStepBetweenMatches != true)
+
+                Button("Find Previous") {
+                    findActions?.findPrevious()
+                }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(findActions?.canStepBetweenMatches != true)
+
+                Divider()
+
+                Button(actions?.searchCoverageTitle ?? "Search All Beads") {
+                    actions?.toggleSearchCoverage?()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(actions?.toggleSearchCoverage == nil)
             }
-            .keyboardShortcut("f", modifiers: [.command, .shift])
-            .disabled(actions?.toggleSearchCoverage == nil)
         }
 
         CommandGroup(after: .saveItem) {
@@ -71,5 +98,17 @@ struct WorkspaceCommands: Commands {
             }
             .disabled(actions?.saveCurrentViewAsBookmark == nil)
         }
+    }
+
+    /// ⌘F escalates: focus the bead-list search field, then — pressed again
+    /// while that field still holds focus — open the in-bead find bar. Once
+    /// focus moves elsewhere ⌘F goes back to the list search, so it stays a
+    /// reliable way to reach it.
+    private func performFind() {
+        if SearchFieldFocusProbe.isSearchFieldFocused, findActions?.canFindInCurrent == true {
+            findActions?.findInCurrent()
+            return
+        }
+        actions?.find?()
     }
 }

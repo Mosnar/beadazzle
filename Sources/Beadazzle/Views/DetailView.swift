@@ -11,6 +11,9 @@ struct DetailView: View {
     @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var suppressedDeferredDateWrite: DeferredDateWriteSuppression?
+    /// In-bead find is per-window state, so it lives here rather than on the
+    /// app-wide `BeadStore` that every window shares.
+    @State private var findSession = BeadFindSession.forWindow()
 
     var body: some View {
         @Bindable var store = store
@@ -63,7 +66,24 @@ struct DetailView: View {
                 ContentUnavailableView("Select a Bead", systemImage: "circle.hexagongrid")
             }
         }
+        .beadFindSessionEnvironment(findSession)
         .focusedValue(\.beadSaveAction, activeSaveAction)
+        .focusedSceneValue(\.beadFindActions, findActions)
+        .onReceive(NotificationCenter.default.publisher(for: findSession.bus.results)) { notification in
+            BeadFindBus.ingest(notification, into: findSession)
+        }
+        // Keeps find pointed at whatever is actually on screen. `task(id:)`
+        // rather than `onChange` because it must also run for the initial value:
+        // navigating can remount this view rather than update it. Closing when
+        // the scope goes away means find state can't survive into a gate bead,
+        // an empty selection, or another project.
+        .task(id: findScope) {
+            guard let findScope else {
+                findSession.close()
+                return
+            }
+            findSession.rebind(scope: findScope)
+        }
         .sheet(item: $hierarchySheetRequest) { request in
             hierarchySheet(for: request)
         }
@@ -77,6 +97,36 @@ struct DetailView: View {
                 await confirmDeferredStatusChange(request, deferUntil: deferUntil)
             }
         }
+    }
+
+    /// Availability is resolved here, where the session's observable state is
+    /// tracked, and gated on there being a searchable body right now — so stale
+    /// session state can't leave Find Next enabled over a gate bead or an empty
+    /// selection.
+    private var findActions: BeadFindActions {
+        let scope = findScope
+        return BeadFindActions(
+            session: findSession,
+            scope: scope,
+            canStepBetweenMatches: scope != nil && findSession.isPresented && findSession.hasMatches
+        )
+    }
+
+    /// What find should search, or `nil` when there is no searchable body — gate
+    /// beads render plain text rather than the markdown engine fields find
+    /// relies on, and nothing is searchable with no selection.
+    private var findScope: BeadFindScope? {
+        guard let projectKey = store.project.projectURL?.path else { return nil }
+        if store.creationDraft != nil {
+            return BeadFindScope(
+                projectKey: projectKey,
+                documentIDPrefix: IssueTextSection.creationDocumentIDPrefix
+            )
+        }
+        guard let issue = store.selectedIssue, store.gate(for: issue.id) == nil else {
+            return nil
+        }
+        return BeadFindScope(projectKey: projectKey, documentIDPrefix: issue.id)
     }
 
     @ViewBuilder

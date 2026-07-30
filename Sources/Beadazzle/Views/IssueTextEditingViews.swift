@@ -37,6 +37,10 @@ enum IssueTextSection: Hashable {
     case design
     case notes
 
+    /// Document-ID prefix the unsaved creation draft uses, since it has no
+    /// issue ID to key its fields by yet.
+    static let creationDocumentIDPrefix = "new-bead"
+
     var title: String {
         switch self {
         case .description:
@@ -74,6 +78,13 @@ enum IssueTextSection: Hashable {
         case .notes:
             return "notes"
         }
+    }
+
+    /// Identifier the markdown engine uses for this field's document. Find
+    /// routes engine replies back to a section by rebuilding this string, so it
+    /// has to stay the single definition.
+    func documentID(prefix: String) -> String {
+        "\(prefix)-\(storageKey)"
     }
 
     var minimumLineCount: Int {

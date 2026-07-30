@@ -86,6 +86,7 @@ enum IssueDetailLayout {
 }
 
 private struct IssueEditingPageShell<Toolbar: View, CompactAccessory: View, Content: View>: View {
+    @Environment(BeadFindSession.self) private var findSession: BeadFindSession?
     private let toolbar: Toolbar
     private let compactAccessory: CompactAccessory
     private let showsCompactAccessory: Bool
@@ -108,6 +109,11 @@ private struct IssueEditingPageShell<Toolbar: View, CompactAccessory: View, Cont
 
             Divider()
 
+            if let findSession, findSession.isPresented {
+                BeadFindBar(session: findSession)
+                Divider()
+            }
+
             GeometryReader { proxy in
                 let usesInspectorRail = IssueDetailLayout.usesInspectorRail(for: proxy.size.width)
 
@@ -117,17 +123,34 @@ private struct IssueEditingPageShell<Toolbar: View, CompactAccessory: View, Cont
                         Divider()
                     }
 
-                    ScrollView {
-                        content(usesInspectorRail)
-                            .padding(
-                                .horizontal,
-                                IssueDetailLayout.horizontalPadding(usesInspectorRail: usesInspectorRail)
-                            )
-                            .padding(
-                                .vertical,
-                                IssueDetailLayout.verticalPadding(usesInspectorRail: usesInspectorRail)
-                            )
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    ScrollViewReader { scrollProxy in
+                        ScrollView {
+                            content(usesInspectorRail)
+                                .padding(
+                                    .horizontal,
+                                    IssueDetailLayout.horizontalPadding(usesInspectorRail: usesInspectorRail)
+                                )
+                                .padding(
+                                    .vertical,
+                                    IssueDetailLayout.verticalPadding(usesInspectorRail: usesInspectorRail)
+                                )
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                        }
+                        // Keyed on the focus token, which also advances when the
+                        // focused field's rect arrives — the moment the anchor
+                        // actually exists to be scrolled to.
+                        .task(id: findSession?.focusToken) {
+                            guard findSession?.hasFocusedAnchor == true else { return }
+                            await Task.yield()
+                            scrollProxy.scrollTo(BeadFindScrollAnchor.id, anchor: .center)
+                            // A yield is scheduler cooperation, not a layout
+                            // barrier: if the anchor hadn't been laid out yet
+                            // that call silently no-ops. Ask once more on the
+                            // next turn — for an already-revealed anchor
+                            // `scrollTo` is idempotent.
+                            await Task.yield()
+                            scrollProxy.scrollTo(BeadFindScrollAnchor.id, anchor: .center)
+                        }
                     }
                 }
             }
@@ -310,7 +333,7 @@ struct IssueCreationContent: View {
             HStack(alignment: .top, spacing: 0) {
                 IssueMainColumn(draft: $draft, focusesTitle: true) {
                     IssueBodySections(
-                        documentIDPrefix: "new-bead",
+                        documentIDPrefix: IssueTextSection.creationDocumentIDPrefix,
                         issue: nil,
                         draft: $draft
                     )
@@ -335,7 +358,7 @@ struct IssueCreationContent: View {
                 IssueCreationInspector(draft: $draft)
 
                 IssueBodySections(
-                    documentIDPrefix: "new-bead",
+                    documentIDPrefix: IssueTextSection.creationDocumentIDPrefix,
                     issue: nil,
                     draft: $draft
                 )
@@ -405,6 +428,6 @@ struct IssueBodySections: View {
     }
 
     private func documentID(for section: IssueTextSection) -> String {
-        "\(documentIDPrefix)-\(section.storageKey)"
+        section.documentID(prefix: documentIDPrefix)
     }
 }

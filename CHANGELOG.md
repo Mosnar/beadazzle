@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Search the text of the open bead with ⌘F pressed twice, or Edit ▸ Find, with match counts and next/previous.
+- Search commands now live in the Edit ▸ Find menu instead of their own top-level menu.
 - New beads can now inherit a default assignee from app or project settings, with the Git-derived owner visible in Project Settings.
 - Large projects now open and switch faster, use less peak memory while reading snapshots, and keep scrolling smoother.
 - Bulk actions stay disabled until beads are selected.
