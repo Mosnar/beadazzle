@@ -42,6 +42,33 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         XCTAssertTrue(secondStore.outlineState.expandedIssueIDs.contains("bd-parent"))
     }
 
+    func testRestoredHiddenPresetRemainsVisibleUntilNavigatingAway() async throws {
+        let projectURL = try makeProject(issuesJSONL: issuesJSONL)
+        let defaults = makeUserDefaults()
+
+        let firstStore = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
+        firstStore.showsClosedBeadsInSidebar = false
+        firstStore.showsZeroCountSidebarSections = false
+        firstStore.openProject(projectURL)
+        try await waitForStoreToLoad(firstStore)
+        firstStore.applyBookmark(.closed)
+        await firstStore.waitForPendingQueryRecompute()
+        firstStore.flushPendingWorkspaceState()
+
+        let secondStore = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
+        secondStore.openProject(projectURL)
+        try await waitForStoreToLoad(secondStore, requiresVisibleRows: false)
+
+        XCTAssertEqual(secondStore.selectedBookmark, .closed)
+        XCTAssertTrue(secondStore.visibleSidebarBookmarks.contains(.closed))
+
+        secondStore.applyBookmark(.open)
+        await secondStore.waitForPendingQueryRecompute()
+
+        XCTAssertTrue(secondStore.visibleSidebarBookmarks.contains(.open))
+        XCTAssertFalse(secondStore.visibleSidebarBookmarks.contains(.closed))
+    }
+
     func testPartialRestorationDropsDeletedReferences() async throws {
         let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
@@ -233,11 +260,12 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
 
     private func waitForStoreToLoad(
         _ store: BeadStore,
+        requiresVisibleRows: Bool = true,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
         let deadline = Date().addingTimeInterval(2)
-        while store.isLoading || store.issueListRows.isEmpty {
+        while store.isLoading || (requiresVisibleRows && store.issueListRows.isEmpty) {
             if Date() > deadline {
                 XCTFail("Timed out waiting for BeadStore to load test project", file: file, line: line)
                 return

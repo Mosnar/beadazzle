@@ -175,6 +175,15 @@ final class ContentLayoutTests: XCTestCase {
         )
         XCTAssertEqual(
             ContentLayout.presentation(
+                selectionCount: 1,
+                isFullPageDetailPresented: false,
+                opensSplitViewForSelection: false,
+                hasCreationDraft: false
+            ),
+            .listOnly
+        )
+        XCTAssertEqual(
+            ContentLayout.presentation(
                 selectionCount: 2,
                 isFullPageDetailPresented: false,
                 hasCreationDraft: false
@@ -191,12 +200,63 @@ final class ContentLayoutTests: XCTestCase {
         )
         XCTAssertEqual(
             ContentLayout.presentation(
+                selectionCount: 1,
+                isFullPageDetailPresented: true,
+                opensSplitViewForSelection: false,
+                hasCreationDraft: false
+            ),
+            .fullPageDetail
+        )
+        XCTAssertEqual(
+            ContentLayout.presentation(
                 selectionCount: 0,
                 isFullPageDetailPresented: false,
                 hasCreationDraft: true
             ),
             .creation
         )
+    }
+
+    @MainActor
+    func testIssueListActivationStillOpensDetailWhenSingleClickSplitViewIsDisabled() {
+        let suiteName = "ContentLayoutTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BeadStore(userDefaults: defaults)
+        store.opensSplitViewOnSingleClick = false
+        var openedIssueID: String?
+        let table = IssueListTableView(
+            rows: [
+                IssueListRow(
+                    issueID: "bd-1",
+                    depth: 0,
+                    hasChildren: false,
+                    childProgress: nil,
+                    isExpanded: false,
+                    isContext: false
+                )
+            ],
+            rowRevision: 1,
+            selectedIDs: [],
+            bookmark: .ready,
+            mode: .outline,
+            displayOptions: .compact,
+            contentRevision: 0,
+            gateClock: .distantPast,
+            store: store,
+            requestClose: { _ in },
+            requestSetStatus: { _, _ in },
+            requestBulkEdit: { _, _ in },
+            requestDelete: { _ in },
+            openDetail: { openedIssueID = $0 }
+        )
+        let coordinator = IssueListTableView.Coordinator(table)
+        coordinator.update(force: true)
+
+        coordinator.openRow(0)
+
+        XCTAssertEqual(openedIssueID, "bd-1")
     }
 
     func testMissingDataSourceUsesDetailPaneWithoutHidingProjectSelector() {

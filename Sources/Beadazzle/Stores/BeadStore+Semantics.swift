@@ -195,6 +195,22 @@ extension BeadStore {
         index.count(for: bookmark)
     }
 
+    var visibleSidebarBookmarks: [BeadBookmark] {
+        let activePreset = activeSavedViewID == nil ? selectedBookmark : nil
+        return BeadBookmark.allCases.filter { bookmark in
+            if bookmark == activePreset {
+                return true
+            }
+            if bookmark == .closed, !showsClosedBeadsInSidebar {
+                return false
+            }
+            if bookmark == .gates, !showsGatesInSidebar {
+                return false
+            }
+            return showsZeroCountSidebarSections || count(for: bookmark) > 0
+        }
+    }
+
     func blankDraft(parentID: String? = nil) -> IssueDraft {
         let fallbackType = BeadIssueWorkflowPolicy.normalMutableIssueTypes(index.semantics.typeNames).first ?? ""
         var draft = IssueDraft.blank(

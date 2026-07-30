@@ -48,6 +48,13 @@ extension BeadStore {
         return userDefaults.bool(forKey: key)
     }
 
+    internal static func boolValue(
+        _ userDefaults: UserDefaults,
+        preference: BeadazzleBoolPreferenceDescriptor
+    ) -> Bool {
+        boolValue(userDefaults, key: preference.key, defaultValue: preference.defaultValue)
+    }
+
     private static func migratedBoolValue(
         _ userDefaults: UserDefaults,
         key: String,
@@ -83,6 +90,13 @@ extension BeadStore {
             modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
             valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
         )
+    }
+
+    internal func persistAppDisplayPreference(
+        _ value: Bool,
+        preference: BeadazzleBoolPreferenceDescriptor
+    ) {
+        userDefaults.set(value, forKey: preference.key)
     }
 
     internal func persistProjectNewBeadAssigneeOverride() {

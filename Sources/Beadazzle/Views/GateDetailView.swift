@@ -237,15 +237,22 @@ private struct GateBreadcrumbBar: View {
     let onAddWaiter: () -> Void
 
     var body: some View {
+        let showsBookmarkCrumb = workspace.selectedBookmark != .gates
         HStack(spacing: 8) {
-            BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
-                store.clearSelection()
+            if store.showsProjectNameInBreadcrumbs {
+                BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
+                    store.clearSelection()
+                }
             }
-            if workspace.selectedBookmark != .gates {
-                BreadcrumbSeparator()
+            if showsBookmarkCrumb {
+                if store.showsProjectNameInBreadcrumbs {
+                    BreadcrumbSeparator()
+                }
                 BreadcrumbLabel(workspace.selectedBookmark.title, systemImage: workspace.selectedBookmark.systemImage)
             }
-            BreadcrumbSeparator()
+            if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb {
+                BreadcrumbSeparator()
+            }
 
             BreadcrumbIssueLabel(
                 issueID: gate.id,

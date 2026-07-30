@@ -92,6 +92,82 @@ enum BeadazzlePreferenceKeys {
     }
 }
 
+struct BeadazzleBoolPreferenceDescriptor: Equatable, Sendable {
+    let id: String
+    let key: String
+    let defaultValue: Bool
+
+    var defaultValueDescription: String {
+        defaultValue ? "On" : "Off"
+    }
+}
+
+enum BeadazzleAppBoolPreferences {
+    static let showsBackNavigationButton = BeadazzleBoolPreferenceDescriptor(
+        id: "showsBackNavigationButton",
+        key: "Display.Navigation.ShowsBackButton",
+        defaultValue: false
+    )
+    static let showsForwardNavigationButton = BeadazzleBoolPreferenceDescriptor(
+        id: "showsForwardNavigationButton",
+        key: "Display.Navigation.ShowsForwardButton",
+        defaultValue: false
+    )
+    static let showsAllChildrenInOutline = BeadazzleBoolPreferenceDescriptor(
+        id: "showsAllChildrenInOutline",
+        key: "Display.BeadList.ShowsAllChildrenInOutline",
+        defaultValue: true
+    )
+    static let opensSplitViewOnSingleClick = BeadazzleBoolPreferenceDescriptor(
+        id: "opensSplitViewOnSingleClick",
+        key: "Display.BeadList.OpensSplitViewOnSingleClick",
+        defaultValue: true
+    )
+    static let showsBeadIDUnderTitle = BeadazzleBoolPreferenceDescriptor(
+        id: "showsBeadIDUnderTitle",
+        key: "Display.BeadDetail.ShowsBeadIDUnderTitle",
+        defaultValue: true
+    )
+    static let showsCopyBeadIDButtonInBreadcrumbs = BeadazzleBoolPreferenceDescriptor(
+        id: "showsCopyBeadIDButtonInBreadcrumbs",
+        key: "Display.BeadDetail.ShowsCopyBeadIDButtonInBreadcrumbs",
+        defaultValue: true
+    )
+    static let showsProjectNameInBreadcrumbs = BeadazzleBoolPreferenceDescriptor(
+        id: "showsProjectNameInBreadcrumbs",
+        key: "Display.BeadDetail.ShowsProjectNameInBreadcrumbs",
+        defaultValue: true
+    )
+    static let showsClosedBeadsInSidebar = BeadazzleBoolPreferenceDescriptor(
+        id: "showsClosedBeadsInSidebar",
+        key: "Display.Sidebar.ShowsClosedBeads",
+        defaultValue: true
+    )
+    static let showsGatesInSidebar = BeadazzleBoolPreferenceDescriptor(
+        id: "showsGatesInSidebar",
+        key: "Display.Sidebar.ShowsGates",
+        defaultValue: true
+    )
+    static let showsZeroCountSidebarSections = BeadazzleBoolPreferenceDescriptor(
+        id: "showsZeroCountSidebarSections",
+        key: "Display.Sidebar.ShowsZeroCountSections",
+        defaultValue: true
+    )
+
+    static let all: [BeadazzleBoolPreferenceDescriptor] = [
+        showsBackNavigationButton,
+        showsForwardNavigationButton,
+        showsAllChildrenInOutline,
+        opensSplitViewOnSingleClick,
+        showsBeadIDUnderTitle,
+        showsCopyBeadIDButtonInBreadcrumbs,
+        showsProjectNameInBreadcrumbs,
+        showsClosedBeadsInSidebar,
+        showsGatesInSidebar,
+        showsZeroCountSidebarSections
+    ]
+}
+
 struct BeadListDisplayOptions: Equatable, Sendable {
     var showsOwner = false
     var showsAssignee = false
@@ -157,6 +233,96 @@ enum BeadazzleOptionInventory {
             defaultValue: "Unassigned",
             uiLocation: "Settings > General",
             behavior: "Seeds the assignee on new bead drafts unless the active project overrides it."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsBackNavigationButton.id,
+            title: "Show Back button",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsBackNavigationButton.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsBackNavigationButton.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the Back button in the workspace toolbar."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsForwardNavigationButton.id,
+            title: "Show Forward button",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsForwardNavigationButton.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsForwardNavigationButton.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the Forward button in the workspace toolbar."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsAllChildrenInOutline.id,
+            title: "Show all children in filtered outlines",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsAllChildrenInOutline.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsAllChildrenInOutline.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows expanded child beads as context even when they do not match the current filter."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick.id,
+            title: "Open split view on single click",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick.key,
+            defaultValue: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Opens the split detail pane when a single bead is selected."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle.id,
+            title: "Show bead ID under title",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the selected bead's ID beneath its editable title."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs.id,
+            title: "Show Copy Bead ID button in breadcrumbs",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the dedicated Copy Bead ID action in bead breadcrumbs."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs.id,
+            title: "Show project name in breadcrumbs",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the project crumb on bead and gate detail screens."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar.id,
+            title: "Show closed beads",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the Closed preset in the sidebar."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsGatesInSidebar.id,
+            title: "Show gates",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsGatesInSidebar.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsGatesInSidebar.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Shows the Gates preset in the sidebar."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections.id,
+            title: "Show sections with zero beads",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections.key,
+            defaultValue: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections.defaultValueDescription,
+            uiLocation: "Settings > Display",
+            behavior: "Keeps empty preset sections visible in the sidebar."
         ),
         BeadazzleOptionInventoryEntry(
             id: "projectNewBeadAssigneeOverride",

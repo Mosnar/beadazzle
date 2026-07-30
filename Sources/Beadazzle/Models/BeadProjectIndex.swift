@@ -678,6 +678,7 @@ struct BeadProjectIndex: Sendable {
         sortOrder: BeadIssueSortOrder,
         filteredIssueIDsAreSorted: Bool = false,
         bookmark: BeadBookmark = .all,
+        showsAllChildrenInOutline: Bool = true,
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
         guard !shouldCancel() else { return [] }
@@ -714,6 +715,7 @@ struct BeadProjectIndex: Sendable {
                 collapsedIssueIDs: collapsedIssueIDs,
                 sortOrder: sortOrder,
                 matchingIssueIDsAreSorted: filteredIssueIDsAreSorted,
+                showsAllChildren: showsAllChildrenInOutline,
                 shouldCancel: shouldCancel
             )
         }
@@ -1007,6 +1009,7 @@ struct BeadProjectIndex: Sendable {
         collapsedIssueIDs: Set<String>,
         sortOrder: BeadIssueSortOrder,
         matchingIssueIDsAreSorted: Bool,
+        showsAllChildren: Bool,
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
         let matchingIDSet = Set(matchingIssueIDs)
@@ -1014,6 +1017,7 @@ struct BeadProjectIndex: Sendable {
             matchingIssueIDs: matchingIDSet,
             expandedIssueIDs: expandedIssueIDs,
             collapsedIssueIDs: collapsedIssueIDs,
+            includesExpandedNonMatchingDescendants: showsAllChildren,
             shouldCancel: shouldCancel
         )
         guard !shouldCancel() else { return [] }
@@ -1071,13 +1075,15 @@ struct BeadProjectIndex: Sendable {
             let childIDs = childIDsByParentID[node.issueID] ?? []
             let visibleChildIDs = visibleChildIDsByParentID[node.issueID] ?? []
             let isContext = !matchingIDSet.contains(node.issueID)
-            let isExpanded = !collapsedIssueIDs.contains(node.issueID)
+            let hasChildren = showsAllChildren ? !childIDs.isEmpty : !visibleChildIDs.isEmpty
+            let isExpanded = hasChildren
+                && !collapsedIssueIDs.contains(node.issueID)
                 && (expandedIssueIDs.contains(node.issueID) || (isContext && !visibleChildIDs.isEmpty))
             rows.append(
                 IssueListRow(
                     issueID: node.issueID,
                     depth: node.depth,
-                    hasChildren: !childIDs.isEmpty,
+                    hasChildren: hasChildren,
                     childProgress: childProgressByParentID[node.issueID],
                     isExpanded: isExpanded,
                     isContext: isContext
@@ -1098,6 +1104,7 @@ struct BeadProjectIndex: Sendable {
         matchingIssueIDs: Set<String>,
         expandedIssueIDs: Set<String>,
         collapsedIssueIDs: Set<String>,
+        includesExpandedNonMatchingDescendants: Bool,
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> Set<String> {
         var visibleIDs = matchingIssueIDs
@@ -1111,6 +1118,8 @@ struct BeadProjectIndex: Sendable {
                 nextID = parentID(for: currentID)
             }
         }
+
+        guard includesExpandedNonMatchingDescendants else { return visibleIDs }
 
         var visitedExpandedIDs: Set<String> = []
         var expandedIDsToVisit = Array(visibleIDs.intersection(expandedIssueIDs).subtracting(collapsedIssueIDs))

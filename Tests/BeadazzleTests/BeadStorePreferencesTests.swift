@@ -24,6 +24,16 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.beadListDisplayOptions, .compact)
         XCTAssertEqual(store.defaultNewBeadAssignee, .unassigned)
         XCTAssertNil(store.projectNewBeadAssigneeOverride)
+        XCTAssertFalse(store.showsBackNavigationButton)
+        XCTAssertFalse(store.showsForwardNavigationButton)
+        XCTAssertTrue(store.showsAllChildrenInOutline)
+        XCTAssertTrue(store.opensSplitViewOnSingleClick)
+        XCTAssertTrue(store.showsBeadIDUnderTitle)
+        XCTAssertTrue(store.showsCopyBeadIDButtonInBreadcrumbs)
+        XCTAssertTrue(store.showsProjectNameInBreadcrumbs)
+        XCTAssertTrue(store.showsClosedBeadsInSidebar)
+        XCTAssertTrue(store.showsGatesInSidebar)
+        XCTAssertTrue(store.showsZeroCountSidebarSections)
     }
 
     func testAppPreferencesPersistThroughInjectedUserDefaults() {
@@ -32,13 +42,64 @@ final class BeadStorePreferencesTests: XCTestCase {
 
         store.bdCLIPath = "/tmp/custom-bd"
         store.defaultNewBeadAssignee = .specific("  alex@example.com  ")
+        store.showsBackNavigationButton = true
+        store.showsForwardNavigationButton = true
+        store.showsAllChildrenInOutline = false
+        store.opensSplitViewOnSingleClick = false
+        store.showsBeadIDUnderTitle = false
+        store.showsCopyBeadIDButtonInBreadcrumbs = false
+        store.showsProjectNameInBreadcrumbs = false
+        store.showsClosedBeadsInSidebar = false
+        store.showsGatesInSidebar = false
+        store.showsZeroCountSidebarSections = false
 
         let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
 
         XCTAssertEqual(reloadedStore.bdCLIPath, "/tmp/custom-bd")
         XCTAssertEqual(reloadedStore.defaultNewBeadAssignee, .specific("alex@example.com"))
+        XCTAssertTrue(reloadedStore.showsBackNavigationButton)
+        XCTAssertTrue(reloadedStore.showsForwardNavigationButton)
+        XCTAssertFalse(reloadedStore.showsAllChildrenInOutline)
+        XCTAssertFalse(reloadedStore.opensSplitViewOnSingleClick)
+        XCTAssertFalse(reloadedStore.showsBeadIDUnderTitle)
+        XCTAssertFalse(reloadedStore.showsCopyBeadIDButtonInBreadcrumbs)
+        XCTAssertFalse(reloadedStore.showsProjectNameInBreadcrumbs)
+        XCTAssertFalse(reloadedStore.showsClosedBeadsInSidebar)
+        XCTAssertFalse(reloadedStore.showsGatesInSidebar)
+        XCTAssertFalse(reloadedStore.showsZeroCountSidebarSections)
         XCTAssertEqual(reloadedStore.staleCutoffDays, 14)
         XCTAssertEqual(reloadedStore.beadListDisplayOptions, .compact)
+    }
+
+    func testSidebarDisplayPreferencesFilterPresetsAndZeroCountSections() {
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
+
+        XCTAssertEqual(store.visibleSidebarBookmarks, BeadBookmark.allCases)
+
+        store.showsClosedBeadsInSidebar = false
+        store.showsGatesInSidebar = false
+
+        XCTAssertFalse(store.visibleSidebarBookmarks.contains(.closed))
+        XCTAssertFalse(store.visibleSidebarBookmarks.contains(.gates))
+        XCTAssertEqual(
+            store.visibleSidebarBookmarks,
+            BeadBookmark.allCases.filter { $0 != .closed && $0 != .gates }
+        )
+
+        store.showsZeroCountSidebarSections = false
+
+        XCTAssertEqual(store.visibleSidebarBookmarks, [.ready])
+
+        store.applyBookmark(.closed)
+        XCTAssertEqual(store.visibleSidebarBookmarks, [.closed])
+
+        store.applyBookmark(.gates)
+        XCTAssertEqual(store.visibleSidebarBookmarks, [.gates])
+
+        store.applyBookmark(.open)
+        XCTAssertEqual(store.visibleSidebarBookmarks, [.open])
+        XCTAssertFalse(store.visibleSidebarBookmarks.contains(.closed))
+        XCTAssertFalse(store.visibleSidebarBookmarks.contains(.gates))
     }
 
     func testBlankSpecificAssigneeModePersistsWhileResolvingAsUnassigned() async throws {
@@ -737,6 +798,16 @@ final class BeadStorePreferencesTests: XCTestCase {
             "automaticallyChecksForUpdates",
             "receivesBetaUpdates",
             "defaultNewBeadAssignee",
+            "showsBackNavigationButton",
+            "showsForwardNavigationButton",
+            "showsAllChildrenInOutline",
+            "opensSplitViewOnSingleClick",
+            "showsBeadIDUnderTitle",
+            "showsCopyBeadIDButtonInBreadcrumbs",
+            "showsProjectNameInBreadcrumbs",
+            "showsClosedBeadsInSidebar",
+            "showsGatesInSidebar",
+            "showsZeroCountSidebarSections",
             "projectNewBeadAssigneeOverride",
             "staleCutoffDays",
             "hidesParentsWithOnlyBlockedChildrenInReady",
@@ -761,6 +832,34 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { !$0.defaultValue.isEmpty })
         XCTAssertTrue(entries.allSatisfy { !$0.uiLocation.isEmpty })
         XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
+        XCTAssertEqual(
+            BeadazzleAppBoolPreferences.all.count,
+            Set(BeadazzleAppBoolPreferences.all.map(\.id)).count
+        )
+        XCTAssertEqual(
+            BeadazzleAppBoolPreferences.all.count,
+            Set(BeadazzleAppBoolPreferences.all.map(\.key)).count
+        )
+        XCTAssertEqual(
+            Set(BeadazzleAppBoolPreferences.all.map(\.id)),
+            Set(entries.filter { $0.persistence.hasPrefix("Display.") }.map(\.id))
+        )
+        XCTAssertEqual(
+            Set(BeadazzleAppBoolPreferences.all.map(\.key)),
+            Set(entries.filter { $0.persistence.hasPrefix("Display.") }.map(\.persistence))
+        )
+        XCTAssertEqual(
+            Dictionary(
+                uniqueKeysWithValues: BeadazzleAppBoolPreferences.all.map {
+                    ($0.id, $0.defaultValueDescription)
+                }
+            ),
+            Dictionary(
+                uniqueKeysWithValues: entries
+                    .filter { $0.persistence.hasPrefix("Display.") }
+                    .map { ($0.id, $0.defaultValue) }
+            )
+        )
         XCTAssertTrue(
             entries.first { $0.id == "defaultNewBeadAssignee" }?
                 .persistence.contains(BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue) == true

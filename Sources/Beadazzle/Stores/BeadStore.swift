@@ -984,6 +984,99 @@ final class BeadStore {
             persistDefaultNewBeadAssignee()
         }
     }
+    var showsBackNavigationButton = BeadazzleAppBoolPreferences.showsBackNavigationButton.defaultValue {
+        didSet {
+            guard oldValue != showsBackNavigationButton else { return }
+            persistAppDisplayPreference(
+                showsBackNavigationButton,
+                preference: BeadazzleAppBoolPreferences.showsBackNavigationButton
+            )
+        }
+    }
+    var showsForwardNavigationButton = BeadazzleAppBoolPreferences.showsForwardNavigationButton.defaultValue {
+        didSet {
+            guard oldValue != showsForwardNavigationButton else { return }
+            persistAppDisplayPreference(
+                showsForwardNavigationButton,
+                preference: BeadazzleAppBoolPreferences.showsForwardNavigationButton
+            )
+        }
+    }
+    var showsAllChildrenInOutline = BeadazzleAppBoolPreferences.showsAllChildrenInOutline.defaultValue {
+        didSet {
+            guard oldValue != showsAllChildrenInOutline else { return }
+            persistAppDisplayPreference(
+                showsAllChildrenInOutline,
+                preference: BeadazzleAppBoolPreferences.showsAllChildrenInOutline
+            )
+            rebuildIssueListRows()
+        }
+    }
+    var opensSplitViewOnSingleClick = BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick.defaultValue {
+        didSet {
+            guard oldValue != opensSplitViewOnSingleClick else { return }
+            persistAppDisplayPreference(
+                opensSplitViewOnSingleClick,
+                preference: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick
+            )
+        }
+    }
+    var showsBeadIDUnderTitle = BeadazzleAppBoolPreferences.showsBeadIDUnderTitle.defaultValue {
+        didSet {
+            guard oldValue != showsBeadIDUnderTitle else { return }
+            persistAppDisplayPreference(
+                showsBeadIDUnderTitle,
+                preference: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle
+            )
+        }
+    }
+    var showsCopyBeadIDButtonInBreadcrumbs =
+        BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs.defaultValue {
+        didSet {
+            guard oldValue != showsCopyBeadIDButtonInBreadcrumbs else { return }
+            persistAppDisplayPreference(
+                showsCopyBeadIDButtonInBreadcrumbs,
+                preference: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs
+            )
+        }
+    }
+    var showsProjectNameInBreadcrumbs = BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs.defaultValue {
+        didSet {
+            guard oldValue != showsProjectNameInBreadcrumbs else { return }
+            persistAppDisplayPreference(
+                showsProjectNameInBreadcrumbs,
+                preference: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs
+            )
+        }
+    }
+    var showsClosedBeadsInSidebar = BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar.defaultValue {
+        didSet {
+            guard oldValue != showsClosedBeadsInSidebar else { return }
+            persistAppDisplayPreference(
+                showsClosedBeadsInSidebar,
+                preference: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar
+            )
+        }
+    }
+    var showsGatesInSidebar = BeadazzleAppBoolPreferences.showsGatesInSidebar.defaultValue {
+        didSet {
+            guard oldValue != showsGatesInSidebar else { return }
+            persistAppDisplayPreference(
+                showsGatesInSidebar,
+                preference: BeadazzleAppBoolPreferences.showsGatesInSidebar
+            )
+        }
+    }
+    var showsZeroCountSidebarSections =
+        BeadazzleAppBoolPreferences.showsZeroCountSidebarSections.defaultValue {
+        didSet {
+            guard oldValue != showsZeroCountSidebarSections else { return }
+            persistAppDisplayPreference(
+                showsZeroCountSidebarSections,
+                preference: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections
+            )
+        }
+    }
     var projectNewBeadAssigneeOverride: NewBeadAssigneePreference? {
         didSet {
             guard oldValue != projectNewBeadAssigneeOverride else { return }
@@ -1270,6 +1363,46 @@ final class BeadStore {
             modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
             valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
         ) ?? .unassigned
+        showsBackNavigationButton = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsBackNavigationButton
+        )
+        showsForwardNavigationButton = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsForwardNavigationButton
+        )
+        showsAllChildrenInOutline = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsAllChildrenInOutline
+        )
+        opensSplitViewOnSingleClick = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick
+        )
+        showsBeadIDUnderTitle = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle
+        )
+        showsCopyBeadIDButtonInBreadcrumbs = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs
+        )
+        showsProjectNameInBreadcrumbs = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs
+        )
+        showsClosedBeadsInSidebar = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar
+        )
+        showsGatesInSidebar = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsGatesInSidebar
+        )
+        showsZeroCountSidebarSections = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections
+        )
         _recentProjects = Self.loadRecentProjects(from: userDefaults)
 
         if recentProjects.isEmpty,

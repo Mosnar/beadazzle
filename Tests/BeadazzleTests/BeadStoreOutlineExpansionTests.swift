@@ -55,6 +55,32 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertNil(store.issueListRows.first { $0.issueID == "bd-child" }?.childProgress)
     }
 
+    func testOutlineChildDisplayPreferenceHidesExpandedChildrenThatDoNotMatchThePreset() async throws {
+        let store = try await makeLoadedStore(
+            issuesJSONL: """
+            {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic"}
+            {"_type":"issue","id":"bd-closed-child","title":"Closed child","status":"closed","priority":2,"issue_type":"task","parent_id":"bd-parent","closed_at":"2026-07-01T00:00:00Z"}
+            """
+        )
+
+        store.applyBookmark(.open)
+        await store.waitForPendingQueryRecompute()
+        store.select(["bd-parent"])
+        XCTAssertTrue(store.expandSelectedIssueChildren())
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent", "bd-closed-child"])
+
+        store.showsAllChildrenInOutline = false
+        await store.waitForPendingQueryRecompute()
+
+        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent"])
+        XCTAssertEqual(store.issueListRows.first?.hasChildren, false)
+        XCTAssertEqual(store.issueListRows.first?.isExpanded, false)
+        XCTAssertFalse(store.canExpandSelectedIssueChildren)
+        XCTAssertFalse(store.expandSelectedIssueChildren())
+    }
+
     func testRightArrowNavigationExpandsParentThenSelectsFirstChild() async throws {
         let store = try await makeLoadedStore()
 

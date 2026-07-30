@@ -1001,11 +1001,20 @@ final class BeadProjectIndexTests: XCTestCase {
             expandedIssueIDs: [],
             sortOrder: sortOrder
         )
+        let matchingOnlyRows = index.issueListRows(
+            for: ["bd-child"],
+            mode: .outline,
+            expandedIssueIDs: [],
+            sortOrder: sortOrder,
+            showsAllChildrenInOutline: false
+        )
 
         XCTAssertEqual(rows.map(\.issueID), ["bd-parent", "bd-child"])
         XCTAssertEqual(rows.map(\.depth), [0, 1])
         XCTAssertEqual(rows.first?.isExpanded, true)
         XCTAssertEqual(rows.map(\.isContext), [true, false])
+        XCTAssertEqual(matchingOnlyRows, rows)
+        XCTAssertEqual(matchingOnlyRows.first?.hasChildren, true)
     }
 
     func testCollapsedContextParentHidesMatchingDescendants() {
@@ -1083,11 +1092,21 @@ final class BeadProjectIndexTests: XCTestCase {
             expandedIssueIDs: ["bd-parent"],
             sortOrder: sortOrder
         )
+        let matchingOnly = index.issueListRows(
+            for: ["bd-parent", "bd-other"],
+            mode: .outline,
+            expandedIssueIDs: ["bd-parent"],
+            sortOrder: sortOrder,
+            showsAllChildrenInOutline: false
+        )
 
         XCTAssertEqual(collapsed.map(\.issueID), ["bd-other", "bd-parent"])
         XCTAssertEqual(expanded.map(\.issueID), ["bd-other", "bd-parent", "bd-child"])
         XCTAssertEqual(expanded.first { $0.issueID == "bd-child" }?.depth, 1)
         XCTAssertEqual(expanded.map(\.isContext), [false, false, true])
+        XCTAssertEqual(matchingOnly.map(\.issueID), ["bd-other", "bd-parent"])
+        XCTAssertEqual(matchingOnly.first { $0.issueID == "bd-parent" }?.hasChildren, false)
+        XCTAssertEqual(matchingOnly.first { $0.issueID == "bd-parent" }?.isExpanded, false)
     }
 
     func testExpandedFilteredContextChildShowsGrandchildren() {

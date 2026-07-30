@@ -100,20 +100,28 @@ struct IssueBreadcrumbBar: View {
         let canCreateGate = store.canCreateGate(blocking: issue)
         let completionTitle = store.completionActionTitle(for: [issue.id])
         let completionSystemImage = store.completionActionSystemImage(for: [issue.id])
+        let showsBookmarkCrumb = workspace.selectedBookmark != .gates
+        let parentIssue = store.parentIssue(for: issue.id)
         HStack(spacing: 8) {
-            BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
-                store.clearSelection()
+            if store.showsProjectNameInBreadcrumbs {
+                BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
+                    store.clearSelection()
+                }
             }
             // The Gates crumb is dropped here — a task nested under a gate doesn't belong to
             // "Gates", and hiding it reclaims horizontal space.
-            if workspace.selectedBookmark != .gates {
-                BreadcrumbSeparator()
+            if showsBookmarkCrumb {
+                if store.showsProjectNameInBreadcrumbs {
+                    BreadcrumbSeparator()
+                }
                 BreadcrumbLabel(workspace.selectedBookmark.title, systemImage: workspace.selectedBookmark.systemImage)
             }
 
-            if let parentIssue = store.parentIssue(for: issue.id) {
+            if let parentIssue {
                 let parentPresentation = ParentBeadPresentation(issue: parentIssue)
-                BreadcrumbSeparator()
+                if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb {
+                    BreadcrumbSeparator()
+                }
                 BreadcrumbButton(
                     parentPresentation.id,
                     systemImage: store.statusSymbol(for: parentIssue.status),
@@ -125,7 +133,9 @@ struct IssueBreadcrumbBar: View {
                     store.openIssueFromDetail(issueID: parentIssue.id)
                 }
             }
-            BreadcrumbSeparator()
+            if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb || parentIssue != nil {
+                BreadcrumbSeparator()
+            }
 
             BreadcrumbIssueLabel(
                 issueID: issue.id,
@@ -154,21 +164,23 @@ struct IssueBreadcrumbBar: View {
                     .disabled(!canSave)
                 }
 
-                Button {
-                    IssueClipboard.copyIssueID(issue.id)
-                } label: {
-                    DetailToolbarActionLabel()
-                }
-                .buttonStyle(
-                    DetailToolbarButtonStyle(
-                        systemImage: "doc.on.doc",
-                        isFocused: isCopyButtonFocused
+                if store.showsCopyBeadIDButtonInBreadcrumbs {
+                    Button {
+                        IssueClipboard.copyIssueID(issue.id)
+                    } label: {
+                        DetailToolbarActionLabel()
+                    }
+                    .buttonStyle(
+                        DetailToolbarButtonStyle(
+                            systemImage: "doc.on.doc",
+                            isFocused: isCopyButtonFocused
+                        )
                     )
-                )
-                .controlSize(.small)
-                .focused($isCopyButtonFocused)
-                .help("Copy \(issue.id)")
-                .accessibilityLabel("Copy Bead ID")
+                    .controlSize(.small)
+                    .focused($isCopyButtonFocused)
+                    .help("Copy \(issue.id)")
+                    .accessibilityLabel("Copy Bead ID")
+                }
 
                 Menu {
                     Button {

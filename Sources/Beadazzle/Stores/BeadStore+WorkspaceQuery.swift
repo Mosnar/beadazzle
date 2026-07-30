@@ -418,6 +418,7 @@ extension BeadStore {
         let folderOrderedIssueIDs = queryContext.folderOrderedIssueIDs
         let mode = queryContext.mode
         let isGlobalSearch = queryContext.isGlobalSearch
+        let shouldShowAllOutlineChildren = showsAllChildrenInOutline
         let gateClock = gateClock
         let savedViewFilterClock = savedViewFilterClock
         let outlineSnapshot = outlineState
@@ -525,6 +526,7 @@ extension BeadStore {
                     sort: sort,
                     direction: direction,
                     bookmark: bookmark,
+                    showsAllChildrenInOutline: shouldShowAllOutlineChildren,
                     shouldCancel: { Task.isCancelled }
                 )
                 guard let rows = index.presenting(

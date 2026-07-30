@@ -2,6 +2,7 @@ import SwiftUI
 
 private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
     case general
+    case display
     case updates
 
     var id: Self { self }
@@ -10,6 +11,8 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             "General"
+        case .display:
+            "Display"
         case .updates:
             "Updates"
         }
@@ -19,6 +22,8 @@ private enum AppSettingsPane: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             "gearshape"
+        case .display:
+            "rectangle.3.group"
         case .updates:
             "arrow.down.circle"
         }
@@ -70,6 +75,8 @@ private struct AppSettingsDetail: View {
         switch pane {
         case .general:
             GeneralSettingsPane()
+        case .display:
+            DisplaySettingsPane()
         case .updates:
             UpdatesSettingsPane()
         }

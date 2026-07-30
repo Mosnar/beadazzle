@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Added display settings for navigation controls, bead-list behavior, bead IDs, detail breadcrumbs, and sidebar sections.
+- Copyable bead IDs now stay aligned when confirming a copy.
 - About Beadazzle now includes project and problem-reporting links, author contact details, acknowledgments, and license information.
 - Search the text of the open bead with ⌘F pressed twice, or Edit ▸ Find, with match counts and next/previous.
 - Search commands now live in the Edit ▸ Find menu instead of their own top-level menu.

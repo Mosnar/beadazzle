@@ -25,6 +25,26 @@ struct ContentView: View {
             FolderAutomationStatusOverlay()
         }
         .toolbar {
+            if store.showsBackNavigationButton || store.showsForwardNavigationButton {
+                ToolbarItemGroup(placement: .navigation) {
+                    if store.showsBackNavigationButton {
+                        Button(action: store.goBack) {
+                            Label("Back", systemImage: "chevron.backward")
+                        }
+                        .disabled(!workspace.canGoBack)
+                        .help("Back")
+                    }
+
+                    if store.showsForwardNavigationButton {
+                        Button(action: store.goForward) {
+                            Label("Forward", systemImage: "chevron.forward")
+                        }
+                        .disabled(!workspace.canGoForward)
+                        .help("Forward")
+                    }
+                }
+            }
+
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     store.refresh()
@@ -297,6 +317,7 @@ struct ContentView: View {
         ContentLayout.presentation(
             selectionCount: workspace.selectedIDs.count,
             isFullPageDetailPresented: workspace.fullPageDetailIssueID != nil,
+            opensSplitViewForSelection: store.opensSplitViewOnSingleClick,
             hasCreationDraft: store.creationDraft != nil,
             hasMissingDataSource: project.projectReadiness.missingDataSourceURL != nil,
             hasUnavailableProject: project.projectReadiness.unavailableProject != nil,
@@ -685,6 +706,7 @@ enum ContentLayout {
     static func presentation(
         selectionCount: Int,
         isFullPageDetailPresented: Bool,
+        opensSplitViewForSelection: Bool = true,
         hasCreationDraft: Bool,
         hasMissingDataSource: Bool = false,
         hasUnavailableProject: Bool = false,
@@ -705,7 +727,7 @@ enum ContentLayout {
         if isFullPageDetailPresented {
             return .fullPageDetail
         }
-        if selectionCount == 1 {
+        if opensSplitViewForSelection, selectionCount == 1 {
             return .splitDetail
         }
         return .listOnly

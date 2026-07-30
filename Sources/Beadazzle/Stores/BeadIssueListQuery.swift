@@ -118,6 +118,7 @@ struct BeadIssueListQuery: Sendable {
         sort: IssueSort,
         direction: SortDirection,
         bookmark: BeadBookmark = .all,
+        showsAllChildrenInOutline: Bool = true,
         shouldCancel: @Sendable () -> Bool = { false }
     ) -> [IssueListRow] {
         PerformanceSignposts.query.withIntervalSignpost("RowBuild") {
@@ -132,6 +133,7 @@ struct BeadIssueListQuery: Sendable {
                 sortOrder: sortOrder,
                 filteredIssueIDsAreSorted: true,
                 bookmark: bookmark,
+                showsAllChildrenInOutline: showsAllChildrenInOutline,
                 shouldCancel: shouldCancel
             )
         }

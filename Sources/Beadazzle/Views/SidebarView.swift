@@ -22,7 +22,7 @@ struct SidebarView: View {
             }
 
             Section {
-                ForEach(BeadBookmark.allCases) { bookmark in
+                ForEach(store.visibleSidebarBookmarks) { bookmark in
                     BookmarkRow(bookmark: bookmark, count: store.count(for: bookmark))
                         .tag(BeadSidebarSelection.preset(bookmark))
                 }

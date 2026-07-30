@@ -235,11 +235,16 @@ struct CopyableIssueIDButton: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
-                    .font(.caption2.weight(.semibold))
-                    .frame(width: 12, alignment: .center)
-                    .opacity(isHovered || didCopy ? 1 : 0)
-                    .accessibilityHidden(true)
+                ZStack {
+                    Image(systemName: "doc.on.doc")
+                        .opacity(isHovered && !didCopy ? 1 : 0)
+
+                    Image(systemName: "checkmark")
+                        .opacity(didCopy ? 1 : 0)
+                }
+                .font(.caption2.weight(.semibold))
+                .frame(width: 12, alignment: .center)
+                .accessibilityHidden(true)
             }
             .foregroundStyle(foregroundColor)
             .frame(width: width, alignment: .leading)

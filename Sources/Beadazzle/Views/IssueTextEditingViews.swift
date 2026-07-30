@@ -1,17 +1,24 @@
 import SwiftUI
 
 struct IssueTitleBlock: View {
+    @Environment(BeadStore.self) private var store: BeadStore
     @Binding var draft: IssueDraft
+    let issueID: String?
     let focusesTitle: Bool
     @FocusState private var isTitleFocused: Bool
 
-    init(draft: Binding<IssueDraft>, focusesTitle: Bool = false) {
+    init(
+        draft: Binding<IssueDraft>,
+        issueID: String? = nil,
+        focusesTitle: Bool = false
+    ) {
         self._draft = draft
+        self.issueID = issueID
         self.focusesTitle = focusesTitle
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             TextField("Untitled bead", text: $draft.title, axis: .vertical)
                 .focused($isTitleFocused)
                 .textFieldStyle(.plain)
@@ -21,6 +28,10 @@ struct IssueTitleBlock: View {
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let issueID, store.showsBeadIDUnderTitle {
+                CopyableIssueIDButton(issueID: issueID, width: nil)
+            }
         }
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity, alignment: .leading)

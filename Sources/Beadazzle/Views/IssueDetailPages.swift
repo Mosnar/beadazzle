@@ -179,7 +179,7 @@ struct IssueDetailContent: View {
     var body: some View {
         if usesInspectorRail {
             HStack(alignment: .top, spacing: 0) {
-                IssueMainColumn(draft: $draft) {
+                IssueMainColumn(draft: $draft, issueID: issue.id) {
                     IssueDetailBody(
                         documentIDPrefix: issue.id,
                         issue: issue,
@@ -201,7 +201,7 @@ struct IssueDetailContent: View {
             .frame(maxWidth: IssueDetailLayout.contentMaxWidth, alignment: .topLeading)
         } else {
             VStack(alignment: .leading, spacing: 26) {
-                IssueTitleBlock(draft: $draft)
+                IssueTitleBlock(draft: $draft, issueID: issue.id)
 
                 IssueDetailBody(
                     documentIDPrefix: issue.id,
@@ -370,18 +370,29 @@ struct IssueCreationContent: View {
 
 struct IssueMainColumn<Content: View>: View {
     @Binding var draft: IssueDraft
+    let issueID: String?
     let focusesTitle: Bool
     let content: Content
 
-    init(draft: Binding<IssueDraft>, focusesTitle: Bool = false, @ViewBuilder content: () -> Content) {
+    init(
+        draft: Binding<IssueDraft>,
+        issueID: String? = nil,
+        focusesTitle: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
         self._draft = draft
+        self.issueID = issueID
         self.focusesTitle = focusesTitle
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
-            IssueTitleBlock(draft: $draft, focusesTitle: focusesTitle)
+            IssueTitleBlock(
+                draft: $draft,
+                issueID: issueID,
+                focusesTitle: focusesTitle
+            )
             content
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
