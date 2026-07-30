@@ -12,7 +12,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/Mosnar/swift-markdown-engine",
-            revision: "e3e7df28a031e4b93a57e3f6e349f4c85aef2c23"
+            revision: "049233f2007842d118ea95474b065ce2af66be29"
         ),
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4")
     ],
