@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- About Beadazzle now includes project and problem-reporting links, author contact details, acknowledgments, and license information.
 - Search the text of the open bead with ⌘F pressed twice, or Edit ▸ Find, with match counts and next/previous.
 - Search commands now live in the Edit ▸ Find menu instead of their own top-level menu.
 - New beads can now inherit a default assignee from app or project settings, with the Git-derived owner visible in Project Settings.

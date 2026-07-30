@@ -132,6 +132,13 @@ fi
 beadazzle_release_embed_sparkle "$app_contents"
 
 app_resources="$app_contents/Resources"
+mkdir -p "$app_resources"
+/usr/bin/ditto --norsrc "$BEADAZZLE_ROOT_DIR/LICENSE" "$app_resources/LICENSE"
+/usr/bin/ditto \
+  --norsrc \
+  "$BEADAZZLE_ROOT_DIR/THIRD_PARTY_NOTICES.md" \
+  "$app_resources/THIRD_PARTY_NOTICES.md"
+
 if beadazzle_release_write_app_icon "$BEADAZZLE_APP_ICON_SOURCE" "$app_resources"; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$info_plist" >/dev/null
 fi

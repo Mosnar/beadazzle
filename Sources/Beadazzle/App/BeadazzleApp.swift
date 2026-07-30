@@ -15,6 +15,8 @@ struct BeadazzleApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            AboutCommands()
+
             CommandGroup(after: .appInfo) {
                 if let updater = updaterController.updater {
                     CheckForUpdatesView(updater: updater)
@@ -52,6 +54,34 @@ struct BeadazzleApp: App {
                 .disabled(!store.canCollapseSelectedIssueChildren)
             }
         }
+
+        Window("About Beadazzle", id: AboutBeadazzleView.windowID) {
+            AboutBeadazzleView()
+        }
+        .defaultSize(width: 640, height: 320)
+        .defaultPosition(.center)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+
+        Window(
+            AboutDisclosure.acknowledgments.title,
+            id: AboutDisclosure.acknowledgments.windowID
+        ) {
+            AboutDisclosureView(disclosure: .acknowledgments)
+                .frame(minWidth: 560, minHeight: 380)
+        }
+        .defaultSize(width: 780, height: 560)
+        .windowResizability(.contentMinSize)
+
+        Window(
+            AboutDisclosure.license.title,
+            id: AboutDisclosure.license.windowID
+        ) {
+            AboutDisclosureView(disclosure: .license)
+                .frame(minWidth: 560, minHeight: 380)
+        }
+        .defaultSize(width: 700, height: 520)
+        .windowResizability(.contentMinSize)
 
         Window("Settings", id: "settings") {
             SettingsView()

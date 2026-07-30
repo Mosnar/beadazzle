@@ -46,7 +46,7 @@ beadazzle_release_resolve_version_context() {
   local detected_release="$requested_release"
 
   if [[ -z "$detected_release" ]] && command -v git >/dev/null 2>&1; then
-    detected_release="$(git -C "$BEADAZZLE_ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+    detected_release="$(git -C "$BEADAZZLE_ROOT_DIR" describe --tags --abbrev=0 2>/dev/null || true)"
   fi
 
   if [[ -z "$detected_release" ]]; then

@@ -23,7 +23,11 @@ let package = Package(
                 .product(name: "MarkdownEngine", package: "swift-markdown-engine"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "Sources/Beadazzle"
+            path: "Sources/Beadazzle",
+            resources: [
+                .copy("Resources/LICENSE"),
+                .copy("Resources/THIRD_PARTY_NOTICES.md"),
+            ]
         ),
         .testTarget(
             name: "BeadazzleTests",
