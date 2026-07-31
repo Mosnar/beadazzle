@@ -1,5 +1,10 @@
 import Foundation
 
+struct BeadPickerCreateResult: Equatable, Sendable {
+    let issueID: String
+    let relationshipApplied: Bool
+}
+
 extension BeadStore {
     @discardableResult
     func setParent(issueID: String, parentID: String?) async -> Bool {
@@ -146,6 +151,25 @@ extension BeadStore {
     func applyBeadPickerQuickCreate(_ createdIssueID: String, action: BeadPickerAction) async -> Bool {
         guard action.needsPostCreateRelationship else { return true }
         return await applyBeadPickerSelection(createdIssueID, action: action)
+    }
+
+    /// Owns the picker quick-create transaction. Once creation succeeds, the caller must
+    /// leave quick-create even when the relationship fails; the relationship's standard
+    /// retry targets the already-created bead instead of creating another one.
+    @discardableResult
+    func createBeadForPicker(
+        _ draft: IssueDraft,
+        action: BeadPickerAction
+    ) async -> BeadPickerCreateResult? {
+        guard let createdIssueID = await createBead(draft) else { return nil }
+        let relationshipApplied = await applyBeadPickerQuickCreate(
+            createdIssueID,
+            action: action
+        )
+        return BeadPickerCreateResult(
+            issueID: createdIssueID,
+            relationshipApplied: relationshipApplied
+        )
     }
 
 }

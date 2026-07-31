@@ -413,17 +413,18 @@ struct BeadPickerPopover: View {
             draft.priority = model.quickCreatePriority
             draft.labelsText = model.quickCreateLabelsText
 
-            guard let createdIssueID = await store.createBead(draft, revealCreated: false) else {
-                isApplying = false
-                return
-            }
-
-            let didApply = await store.applyBeadPickerQuickCreate(createdIssueID, action: configuration.action)
+            let result = await store.createBeadForPicker(
+                draft,
+                action: configuration.action
+            )
             isApplying = false
-            if didApply {
-                onApplied(createdIssueID)
-                onDismiss()
+            guard let result else { return }
+            if result.relationshipApplied {
+                onApplied(result.issueID)
             }
+            // A successful create is terminal even when its relationship failed. The
+            // failure dialog retries that relationship against this existing bead.
+            onDismiss()
         }
     }
 }

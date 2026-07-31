@@ -2844,31 +2844,48 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(events, ["bulk:bd-grandchild,bd-child", "update:bd-parent"])
     }
 
-    func testCreateSelectsProjectedIssueImmediatelyAndRevealsThroughFilters() async throws {
+    func testCreateKeepsDraftVisibleUntilBDReturnsNativeIDThenRevealsThroughFilters() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
         await commands.setCreateDelay(.milliseconds(250))
+        await commands.setAppendsCreatedIssue(false)
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         store.applyBookmark(.closed)
         store.setStatusFilter("closed", isOn: true)
         store.searchText = "does not match created"
+        await store.filterTask?.value
+        await store.waitForPendingQueryRecompute()
+        let queryGenerationBeforeCreate = store.queryGeneration
+        store.beginCreatingBead()
+        var creationDraft = try XCTUnwrap(store.creationDraft)
+        creationDraft.title = "Created from inline"
+        store.creationDraft = creationDraft
 
-        let submission = try XCTUnwrap(
-            store.submitCreateBead(draft(title: "Created from inline"), revealCreated: true)
-        )
-        let createdIssueID = submission.issueID
+        let createTask = Task {
+            await store.submitCreationDraft()
+        }
+        try await waitUntilAsync { await !commands.createCalls.isEmpty }
 
+        XCTAssertTrue(store.isSubmittingCreationDraft)
+        XCTAssertEqual(store.creationDraft, creationDraft)
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        let callBeforeCompletion = await commands.createCalls.first
+        XCTAssertNil(callBeforeCompletion?.draft.id)
+        let duplicateSubmission = await store.submitCreationDraft()
+        XCTAssertNil(duplicateSubmission)
+
+        let createResult = await createTask.value
+        let createdIssueID = try XCTUnwrap(createResult)
+        XCTAssertEqual(createdIssueID, "bd-created")
+        XCTAssertNil(store.creationDraft)
         XCTAssertEqual(store.selectedIDs, Set([createdIssueID]))
         XCTAssertEqual(store.selectedIssue?.title, "Created from inline")
-        let callsBeforeCompletion = await commands.createCalls
-        XCTAssertLessThanOrEqual(callsBeforeCompletion.count, 1)
-
-        let succeeded = await submission.value
-        XCTAssertTrue(succeeded)
         await store.waitForPendingProjectionMaterialization()
         await store.waitForPendingQueryRecompute()
+        XCTAssertFalse(store.isSubmittingCreationDraft)
+        XCTAssertEqual(store.queryGeneration - queryGenerationBeforeCreate, 1)
         XCTAssertTrue(store.issueListRows.contains { $0.issueID == createdIssueID })
         XCTAssertEqual(store.selectedBookmark, .all)
         XCTAssertTrue(store.statusFilters.isEmpty)
@@ -2877,6 +2894,10 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let calls = await commands.createCalls
         XCTAssertEqual(calls.map(\.draft.title), ["Created from inline"])
+        XCTAssertTrue(calls.allSatisfy { $0.draft.id == nil })
+
+        store.goBack()
+        XCTAssertNil(store.creationDraft)
     }
 
     func testCreateWarningKeepsSuccessfulProjectionAndShowsNonRetryableFeedback() async throws {
@@ -2887,9 +2908,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
 
-        let createdIssueID = await store.createBead(
-            draft(title: "Created despite warning"),
-            revealCreated: true
+        let createdIssueID = await store.createAndRevealBead(
+            draft(title: "Created despite warning")
         )
 
         let issueID = try XCTUnwrap(createdIssueID)
@@ -2967,15 +2987,17 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(draft.parentID, "bd-parent")
         XCTAssertTrue(store.selectedIDs.isEmpty)
         draft.title = "New child"
+        store.creationDraft = draft
 
         let succeeded = await store.save(draft)
 
         XCTAssertTrue(succeeded)
+        XCTAssertNil(store.creationDraft)
         let calls = await commands.createCalls
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.draft.parentID, "bd-parent")
-        let createdIssueID = try XCTUnwrap(calls.first?.draft.id)
-        XCTAssertEqual(store.issue(with: createdIssueID)?.parentID, "bd-parent")
+        XCTAssertNil(calls.first?.draft.id)
+        XCTAssertEqual(store.issue(with: "bd-created")?.parentID, "bd-parent")
     }
 
     func testChildCreationEligibilityExcludesClosedParentsAndGates() async throws {
@@ -3010,7 +3032,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         var draft = store.blankDraft(parentID: "bd-parent")
         draft.title = "New child"
-        let createdIssueID = await store.createBead(draft, revealCreated: false)
+        let createdIssueID = await store.createBead(draft)
 
         XCTAssertNil(createdIssueID)
         XCTAssertEqual(store.lastError, "Reopen bd-parent before adding a sub-issue.")
@@ -3018,7 +3040,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
-    func testCreateReturnsFalseAndSetsLastErrorOnCommandFailure() async throws {
+    func testCreateFailureReportsUncertainNonRetryableOutcome() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
         await commands.setCreateError(StoreMutationTestError.commandFailed)
@@ -3031,8 +3053,54 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertFalse(succeeded)
         XCTAssertTrue(store.selectedIDs.isEmpty)
         XCTAssertNil(store.issue(with: "bd-created"))
-        XCTAssertEqual(store.lastError, StoreMutationTestError.commandFailed.localizedDescription)
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't confirm bead creation")
+        XCTAssertFalse(store.currentFailure?.isRetryable ?? true)
+        XCTAssertTrue(store.currentFailure?.message.contains("may have been created") == true)
 
+        let calls = await commands.createCalls
+        XCTAssertEqual(calls.count, 1)
+    }
+
+    func testCreateFailurePreservesDraftForManualRecovery() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.beginCreatingBead()
+        var creationDraft = try XCTUnwrap(store.creationDraft)
+        creationDraft.title = "Keep this draft"
+        store.creationDraft = creationDraft
+
+        let createdIssueID = await store.submitCreationDraft()
+
+        XCTAssertNil(createdIssueID)
+        XCTAssertEqual(store.creationDraft, creationDraft)
+        XCTAssertTrue(store.selectedIDs.isEmpty)
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't confirm bead creation")
+        XCTAssertFalse(store.currentFailure?.isRetryable ?? true)
+    }
+
+    func testCreateWithMissingReturnedIDPreservesDraftAndCannotRetryAutomatically() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setAppendsCreatedIssue(false)
+        await commands.setCreateResult(issueID: "")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.beginCreatingBead()
+        var creationDraft = try XCTUnwrap(store.creationDraft)
+        creationDraft.title = "Outcome unknown"
+        store.creationDraft = creationDraft
+
+        let createdIssueID = await store.submitCreationDraft()
+
+        XCTAssertNil(createdIssueID)
+        XCTAssertEqual(store.creationDraft, creationDraft)
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't confirm bead creation")
+        XCTAssertFalse(store.currentFailure?.isRetryable ?? true)
         let calls = await commands.createCalls
         XCTAssertEqual(calls.count, 1)
     }
@@ -3047,9 +3115,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         await commands.setExportDelay(.milliseconds(400))
         let exportsBeforeCreate = await commands.exportCallCount
 
-        let createdIssueID = await store.createBead(
-            draft(title: "Committed before reload failure"),
-            revealCreated: true
+        let createdIssueID = await store.createAndRevealBead(
+            draft(title: "Committed before reload failure")
         )
 
         let unwrappedCreatedIssueID = try XCTUnwrap(createdIssueID)
@@ -3075,7 +3142,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let saveTask = Task { @MainActor in await store.save(editedDraft) }
         try await waitUntil { store.issue(with: "bd-1")?.title == "Optimistic title" }
         let createTask = Task { @MainActor in
-            await store.createBead(self.draft(title: "Created after rollback"), revealCreated: true)
+            await store.createAndRevealBead(self.draft(title: "Created after rollback"))
         }
         try await Task.sleep(for: .milliseconds(50))
         let createCallsWhileSaveIsPending = await commands.createCalls
@@ -3099,7 +3166,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
 
         let createTask = Task { @MainActor in
-            await store.createBead(self.draft(title: "Stale create"), revealCreated: true)
+            await store.createAndRevealBead(self.draft(title: "Stale create"))
         }
         try await waitUntilAsync { await !commands.createCalls.isEmpty }
         store.openProject(secondProjectURL)
@@ -3110,9 +3177,38 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let createdIssueID = await createTask.value
         XCTAssertNil(createdIssueID)
-        let attemptedCreateID = await commands.createCalls.first?.draft.id
-        XCTAssertFalse(attemptedCreateID.map(store.selectedIDs.contains) ?? false)
+        XCTAssertFalse(store.selectedIDs.contains("bd-created"))
         try await waitUntilAsync { await commands.exportCallCount > exportsAfterReopen }
+    }
+
+    func testInlineCreateFinishingInAnotherProjectClearsPersistedDraft() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Project A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateDelay(.milliseconds(300))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.beginCreatingBead()
+        var creationDraft = try XCTUnwrap(store.creationDraft)
+        creationDraft.title = "Created while away"
+        store.creationDraft = creationDraft
+
+        let createTask = Task { @MainActor in
+            await store.submitCreationDraft()
+        }
+        try await waitUntilAsync { await !commands.createCalls.isEmpty }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let createdIssueID = await createTask.value
+        XCTAssertNil(createdIssueID)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-created") != nil }
+
+        XCTAssertNil(store.creationDraft)
+        let calls = await commands.createCalls
+        XCTAssertEqual(calls.count, 1)
     }
 
     func testManualRefreshAfterDirectCreatePerformsExport() async throws {
@@ -3124,9 +3220,8 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let exportsBeforeCreate = await commands.exportCallCount
         await commands.setExportDelay(.milliseconds(400))
 
-        let createdIssueID = await store.createBead(
-            draft(title: "Committed create"),
-            revealCreated: true
+        let createdIssueID = await store.createAndRevealBead(
+            draft(title: "Committed create")
         )
         let exportsAfterCreate = await commands.exportCallCount
         XCTAssertEqual(exportsAfterCreate, exportsBeforeCreate)
@@ -4649,7 +4744,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         var draft = store.blankDraft(parentID: "bd-parent")
         draft.title = "Quick child"
-        let createdID = await store.createBead(draft, revealCreated: false)
+        let createdID = await store.createBead(draft)
 
         let unwrappedCreatedID = try XCTUnwrap(createdID)
         XCTAssertEqual(store.selectedIDs, Set(["bd-current"]))
@@ -4657,6 +4752,57 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let calls = await commands.createCalls
         XCTAssertEqual(calls.map(\.draft.title), ["Quick child"])
         XCTAssertEqual(calls.map(\.draft.parentID), ["bd-parent"])
+    }
+
+    func testPickerQuickCreateAppliesRelationshipToCreatedBead() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-current", title: "Current"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-current") != nil }
+        var draft = store.blankDraft()
+        draft.title = "New blocker"
+
+        let result = await store.createBeadForPicker(
+            draft,
+            action: .addBlockedBy(issueID: "bd-current")
+        )
+
+        XCTAssertEqual(result?.issueID, "bd-created")
+        XCTAssertEqual(result?.relationshipApplied, true)
+        let createCalls = await commands.createCalls
+        XCTAssertEqual(createCalls.count, 1)
+        let dependencyCalls = await commands.addDependencyCalls
+        XCTAssertEqual(dependencyCalls.map(\.issueID), ["bd-current"])
+        XCTAssertEqual(dependencyCalls.map(\.dependsOnID), ["bd-created"])
+    }
+
+    func testPickerQuickCreateRelationshipFailureRetriesWithoutCreatingAnotherBead() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-child", title: "Child"))
+        let commands = RecordingBeadsCommands()
+        await commands.setSetParentErrors([StoreMutationTestError.commandFailed, nil])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-child") != nil }
+        var draft = store.blankDraft()
+        draft.title = "New parent"
+
+        let result = await store.createBeadForPicker(
+            draft,
+            action: .setParent(issueID: "bd-child")
+        )
+
+        XCTAssertEqual(result?.issueID, "bd-created")
+        XCTAssertEqual(result?.relationshipApplied, false)
+        XCTAssertTrue(store.currentFailure?.isRetryable == true)
+        let retry = try XCTUnwrap(store.currentFailure?.retry)
+        await retry()
+
+        let createCalls = await commands.createCalls
+        XCTAssertEqual(createCalls.count, 1)
+        let parentCalls = await commands.setParentCalls
+        XCTAssertEqual(parentCalls.map(\.issueID), ["bd-child", "bd-child"])
+        XCTAssertEqual(parentCalls.map(\.parentID), ["bd-created", "bd-created"])
     }
 
     // MARK: Unified mutation feedback

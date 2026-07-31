@@ -5,6 +5,9 @@ enum BeadError: LocalizedError {
     case unsupportedProjectMode(URL, String)
     case invalidSnapshot(path: String, line: Int, message: String)
     case commandFailed(command: String, output: String)
+    /// The create subprocess exited successfully, but Beadazzle could not recover the
+    /// server-authored ID. The write may already be durable, so repeating it is unsafe.
+    case createOutcomeUncertain(command: String, output: String)
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +19,8 @@ enum BeadError: LocalizedError {
             return "Could not read Beads snapshot \(path) at line \(line): \(message)"
         case .commandFailed(let command, let output):
             return "`\(command)` failed: \(output)"
+        case .createOutcomeUncertain(let command, let output):
+            return "`\(command)` may have created a bead, but Beadazzle could not confirm its ID: \(output)"
         }
     }
 }

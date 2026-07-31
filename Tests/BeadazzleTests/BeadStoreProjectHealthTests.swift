@@ -196,6 +196,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         while await commands.exportCallCount < 1 {
             try await Task.sleep(for: .milliseconds(5))
         }
+        try await waitUntil { store.activeMutationCount == 1 }
 
         XCTAssertEqual(store.projectHealthAction, .synchronizingIssues)
         XCTAssertEqual(store.activeMutationCount, 1)

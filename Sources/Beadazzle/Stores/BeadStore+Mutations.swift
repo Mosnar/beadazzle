@@ -6,6 +6,17 @@ struct MetadataMutationHandle {
     let possiblePersistedLabels: [String]
 }
 
+private struct BeadCreateContext: Sendable {
+    let projectURL: URL
+    let mutationGeneration: Int
+    let draft: IssueDraft
+}
+
+private enum BeadCreatePresentation: Equatable {
+    case preserveSelection
+    case reveal
+}
+
 extension BeadStore {
     // MARK: Optimistic mutations
 
@@ -326,47 +337,6 @@ extension BeadStore {
         )
     }
 
-    private func generatedIssueID() -> String {
-        var prefixCounts: [String: Int] = [:]
-        for issue in authoritativeIndex.issues {
-            guard let prefix = Self.issuePrefix(from: issue.id) else { continue }
-            prefixCounts[prefix, default: 0] += 1
-        }
-        let inferredPrefix = prefixCounts.max { lhs, rhs in
-            lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
-        }?.key
-        let fallbackPrefix = projectEnvironment?.context.database ?? projectURL?.lastPathComponent
-        let prefix = Self.normalizedIssuePrefix(
-            projectEnvironment?.context.issuePrefix ?? inferredPrefix ?? fallbackPrefix
-        ) ?? "bd"
-
-        while true {
-            let suffix = UUID().uuidString
-                .replacingOccurrences(of: "-", with: "")
-                .prefix(12)
-                .lowercased()
-            let candidate = "\(prefix)-\(suffix)"
-            if issue(with: candidate) == nil {
-                return candidate
-            }
-        }
-    }
-
-    private static func issuePrefix(from issueID: String) -> String? {
-        guard let root = issueID.split(separator: ".", maxSplits: 1).first,
-              let separator = root.lastIndex(of: "-"),
-              separator != root.startIndex else {
-            return nil
-        }
-        return normalizedIssuePrefix(String(root[..<separator]))
-    }
-
-    private static func normalizedIssuePrefix(_ value: String?) -> String? {
-        guard let value = value?.nilIfBlank else { return nil }
-        let components = value.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
-        return components.filter { !$0.isEmpty }.joined(separator: "-").nilIfBlank
-    }
-
     internal func beginMetadataMutation(
         issueID: String,
         originalIssue: BeadIssue,
@@ -599,7 +569,10 @@ extension BeadStore {
         // The id is minted by `bd`, so create awaits that single write. Once the id arrives,
         // a projected issue is revealed immediately; snapshot export/reload happens later.
         guard let draftID = draft.id else {
-            return await createBead(draft, revealCreated: true) != nil
+            if creationDraft == draft {
+                return await submitCreationDraft() != nil
+            }
+            return await createAndRevealBead(draft) != nil
         }
 
         let mutationGeneration = mutations.metadataMutationGeneration
@@ -803,16 +776,84 @@ extension BeadStore {
         }
     }
 
+    /// Creates a bead for workflows, such as picker quick-create, that must preserve the
+    /// current selection. Inline creation uses `submitCreationDraft()` so its persisted
+    /// draft and single-flight state are resolved as part of the same transaction.
     @discardableResult
-    func createBead(_ draft: IssueDraft, revealCreated: Bool) async -> String? {
-        guard let submission = submitCreateBead(draft, revealCreated: revealCreated) else {
-            return nil
-        }
-        return await submission.value ? submission.issueID : nil
+    func createBead(_ draft: IssueDraft) async -> String? {
+        await createBead(draft, presentation: .preserveSelection)
     }
 
     @discardableResult
-    func submitCreateBead(_ draft: IssueDraft, revealCreated: Bool) -> BeadCreateSubmission? {
+    func createAndRevealBead(_ draft: IssueDraft) async -> String? {
+        await createBead(draft, presentation: .reveal)
+    }
+
+    /// Submits the shared inline creation draft once per project. The captured draft stays
+    /// visible while `bd` runs and is cleared only after a confirmed successful create.
+    @discardableResult
+    func submitCreationDraft() async -> String? {
+        guard let draft = creationDraft,
+              let context = createContext(for: draft),
+              !submittingCreationDraftProjectURLs.contains(context.projectURL) else {
+            return nil
+        }
+
+        submittingCreationDraftProjectURLs.insert(context.projectURL)
+        defer { submittingCreationDraftProjectURLs.remove(context.projectURL) }
+
+        let result: BeadsCreateResult
+        do {
+            result = try await executeCreate(context)
+        } catch {
+            handleCreateFailure(error, context: context)
+            return nil
+        }
+
+        let clearedCurrentDraft = resolveSubmittedCreationDraft(
+            context.draft,
+            projectURL: context.projectURL
+        )
+        guard ownsMutation(
+            projectURL: context.projectURL,
+            generation: context.mutationGeneration
+        ) else {
+            _ = rejectStaleMutation(targeting: context.projectURL)
+            return nil
+        }
+
+        return finishCreatedBead(
+            result,
+            context: context,
+            presentation: clearedCurrentDraft ? .reveal : .preserveSelection
+        )
+    }
+
+    @discardableResult
+    private func createBead(
+        _ draft: IssueDraft,
+        presentation: BeadCreatePresentation
+    ) async -> String? {
+        guard let context = createContext(for: draft) else { return nil }
+
+        let result: BeadsCreateResult
+        do {
+            result = try await executeCreate(context)
+        } catch {
+            handleCreateFailure(error, context: context)
+            return nil
+        }
+        guard ownsMutation(
+            projectURL: context.projectURL,
+            generation: context.mutationGeneration
+        ) else {
+            _ = rejectStaleMutation(targeting: context.projectURL)
+            return nil
+        }
+        return finishCreatedBead(result, context: context, presentation: presentation)
+    }
+
+    private func createContext(for draft: IssueDraft) -> BeadCreateContext? {
         guard let projectURL else { return nil }
         guard draft.id == nil else { return nil }
         guard BeadIssueWorkflowPolicy.isNormalMutableIssueType(draft.issueType) else {
@@ -829,70 +870,117 @@ extension BeadStore {
             lastError = unavailableMessage
             return nil
         }
-        let mutationLifetimeGeneration = beginMutation()
-        let createdIssueID = generatedIssueID()
-        var preparedCommandDraft = draft
-        preparedCommandDraft.id = createdIssueID
-        let commandDraft = preparedCommandDraft
-        let projectedIssue = projectedCreatedIssue(id: createdIssueID, draft: draft)
-        let projectionID = applyOptimisticProjection(
-            BeadMutationProjectionEntry(
-                issueChanges: [createdIssueID: .insert(projectedIssue)]
-            )
+
+        return BeadCreateContext(
+            projectURL: projectURL.standardizedFileURL,
+            mutationGeneration: mutationGeneration,
+            draft: draft
         )
-        if revealCreated {
-            revealIssue(id: createdIssueID)
+    }
+
+    private func executeCreate(_ context: BeadCreateContext) async throws -> BeadsCreateResult {
+        let mutationLifetimeGeneration = beginMutation()
+        defer { endMutation(generation: mutationLifetimeGeneration) }
+
+        // Keep the draft ID unset so `bd` remains authoritative for the project's
+        // configured ID mode and adaptive hash length. The creation form is the temporary
+        // UI state; once `bd` returns, project that real ID without waiting for export.
+        let commands = commands
+        let result = try await enqueueMutationWrite {
+            try await commands.createWithFeedback(
+                projectURL: context.projectURL,
+                draft: context.draft
+            )
+        }
+        guard let createdIssueID = result.issueID.nilIfBlank else {
+            throw BeadError.createOutcomeUncertain(
+                command: "bd create --silent",
+                output: "Expected created bead ID but bd returned no output."
+            )
+        }
+        return BeadsCreateResult(issueID: createdIssueID, warning: result.warning)
+    }
+
+    private func finishCreatedBead(
+        _ result: BeadsCreateResult,
+        context: BeadCreateContext,
+        presentation: BeadCreatePresentation
+    ) -> String {
+        let createdIssueID = result.issueID
+        let insertedProjection = issue(with: createdIssueID) == nil
+        if insertedProjection {
+            let projectedIssue = projectedCreatedIssue(id: createdIssueID, draft: context.draft)
+            let projectionID = applyOptimisticProjection(
+                BeadMutationProjectionEntry(
+                    issueChanges: [createdIssueID: .insert(projectedIssue)]
+                )
+            )
+            settleOptimisticProjection(id: projectionID, succeeded: true)
         }
 
-        let commands = commands
-        let completion = Task { @MainActor [weak self] in
-            guard let self else { return false }
-            defer { self.endMutation(generation: mutationLifetimeGeneration) }
-            do {
-                let result = try await self.enqueueMutationWrite {
-                    try await commands.createWithFeedback(projectURL: projectURL, draft: commandDraft)
-                }
-                guard result.issueID == createdIssueID else {
-                    throw BeadError.commandFailed(
-                        command: "bd create --id \(createdIssueID)",
-                        output: "bd reported the unexpected issue id \(result.issueID)."
-                    )
-                }
-                guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-                    return self.rejectStaleMutation(targeting: projectURL)
-                }
-                self.settleOptimisticProjection(id: projectionID, succeeded: true)
-                self.reconcileState.request(.mutation)
-                self.announceCompletion("Created bead \(createdIssueID)")
-                if let warning = result.warning?.nilIfBlank {
-                    self.enqueueFailure(BeadMutationFailure(
-                        title: "Created bead with a warning",
-                        message: "The bead was created successfully, but Beads reported a validation warning.",
-                        output: warning,
-                        retry: nil
-                    ))
-                }
-                return true
-            } catch {
-                guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
-                    return self.rejectStaleMutation(targeting: projectURL)
-                }
-                self.settleOptimisticProjection(id: projectionID, succeeded: false)
-                self.reconcileState.request(.mutation)
-                self.reportMutationFailure(
-                    error,
-                    title: "Couldn't create bead",
-                    retry: { [weak self] in
-                        guard let retry = self?.submitCreateBead(draft, revealCreated: revealCreated) else {
-                            return
-                        }
-                        _ = await retry.value
-                    }
-                )
-                return false
+        if presentation == .reveal {
+            let wasSuppressingHistory = suppressesHistoryRecording
+            suppressesHistoryRecording = true
+            if insertedProjection {
+                selectProjectedCreatedIssue(id: createdIssueID)
+            } else {
+                revealIssue(id: createdIssueID)
+            }
+            suppressesHistoryRecording = wasSuppressingHistory
+            if !wasSuppressingHistory {
+                recordWorkspaceSnapshotIfNeeded()
             }
         }
-        return BeadCreateSubmission(issueID: createdIssueID, completion: completion)
+
+        requestReconcile()
+        announceCompletion("Created bead \(createdIssueID)")
+        if let warning = result.warning?.nilIfBlank {
+            enqueueFailure(BeadMutationFailure(
+                title: "Created bead with a warning",
+                message: "The bead was created successfully, but Beads reported a validation warning.",
+                output: warning,
+                retry: nil
+            ))
+        }
+        return createdIssueID
+    }
+
+    private func handleCreateFailure(_ error: Error, context: BeadCreateContext) {
+        guard ownsMutation(
+            projectURL: context.projectURL,
+            generation: context.mutationGeneration
+        ) else {
+            _ = rejectStaleMutation(targeting: context.projectURL)
+            return
+        }
+        requestReconcile()
+        reportUncertainCreateFailure(error)
+    }
+
+    /// Resolves the submitted draft in both live and persisted workspace state. Equality
+    /// protects a newer edit from being cleared if something changed it programmatically.
+    @discardableResult
+    private func resolveSubmittedCreationDraft(
+        _ draft: IssueDraft,
+        projectURL: URL
+    ) -> Bool {
+        workspaceStateRepository.clearCreationDraft(matching: draft, projectURL: projectURL)
+        guard self.projectURL == projectURL else { return false }
+
+        if pendingRestoredWorkspaceSnapshot?.creationDraft == draft {
+            pendingRestoredWorkspaceSnapshot?.creationDraft = nil
+        }
+        workspaceHistory.clearCreationDraft(matching: draft)
+        guard creationDraft == draft else { return false }
+
+        let wasSuppressingHistory = suppressesHistoryRecording
+        suppressesHistoryRecording = true
+        creationDraft = nil
+        suppressesHistoryRecording = wasSuppressingHistory
+        if !wasSuppressingHistory {
+            syncCurrentWorkspaceSnapshotIfNeeded()
+        }
+        return true
     }
 
     func closeSelected() {

@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- New beads created in Beadazzle now use the project's native Beads ID format instead of longer app-generated IDs.
+- Bead creation now stays safe across project switches and ambiguous command failures, preserving drafts without offering retries that could create duplicates.
 - Sync Beads with one toolbar action that pulls before pushing; separate Pull and Push commands and shortcuts remain available.
 - Sync now preserves in-progress edits and pulled changes, keeps its progress icon visible, refreshes large trackers with less redundant work, and distinguishes remote failures from local snapshot failures.
 - Bead editors can now show suggested sections by type, add or hide empty sections, and use a customizable section order with app defaults and per-project overrides.

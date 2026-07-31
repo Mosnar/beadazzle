@@ -20,7 +20,30 @@ final class BeadsCommandServiceTests: XCTestCase {
 
     func testCreatedIssueIDThrowsWhenOutputIsEmpty() {
         XCTAssertThrowsError(try BeadsCommandService.createdIssueID(from: " \n ")) { error in
+            guard case BeadError.createOutcomeUncertain = error else {
+                return XCTFail("Expected an uncertain create outcome")
+            }
             XCTAssertTrue(error.localizedDescription.contains("Expected created bead ID"))
+        }
+    }
+
+    func testCreateReportsUncertainOutcomeWhenSuccessfulCommandReturnsNoID() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        exit 0
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+        var draft = IssueDraft.blank(defaultType: "feature", defaultStatus: "open")
+        draft.title = "Created without readable output"
+
+        do {
+            _ = try await service.createWithFeedback(projectURL: projectURL, draft: draft)
+            XCTFail("Expected an uncertain create outcome")
+        } catch {
+            guard case BeadError.createOutcomeUncertain = error else {
+                return XCTFail("Expected an uncertain create outcome, got \(error)")
+            }
         }
     }
 
@@ -28,12 +51,17 @@ final class BeadsCommandServiceTests: XCTestCase {
         let projectURL = try makeProjectWithBeadsDirectory()
         let stubURL = try makeExecutableScript(in: projectURL, contents: """
         #!/bin/sh
+        for argument in "$@"; do
+          if [ "$argument" = "--id" ]; then
+            printf '%s\n' 'Beadazzle must let bd generate issue IDs' >&2
+            exit 2
+          fi
+        done
         printf '%s\n' 'bd-created'
         printf '%s\n' 'description is recommended' >&2
         """)
         let service = BeadsCommandService(executable: { (stubURL, []) })
         var draft = IssueDraft.blank(defaultType: "feature", defaultStatus: "open")
-        draft.id = "bd-created"
         draft.title = "Created with warning"
 
         let result = try await service.createWithFeedback(projectURL: projectURL, draft: draft)

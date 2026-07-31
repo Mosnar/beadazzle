@@ -1386,7 +1386,10 @@ struct BeadsCommandService {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard let issueID = lines.last else {
-            throw BeadError.commandFailed(command: "bd create --silent", output: "Expected created bead ID but bd returned no output.")
+            throw BeadError.createOutcomeUncertain(
+                command: "bd create --silent",
+                output: "Expected created bead ID but bd returned no output."
+            )
         }
         return issueID
     }

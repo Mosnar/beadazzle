@@ -940,6 +940,14 @@ final class BeadStore {
             syncCurrentWorkspaceSnapshotIfNeeded()
         }
     }
+    /// Projects with an inline creation draft currently waiting on `bd`. Kept on the
+    /// shared store so every window observes the same single-flight state.
+    var submittingCreationDraftProjectURLs: Set<URL> = []
+
+    var isSubmittingCreationDraft: Bool {
+        guard let projectURL else { return false }
+        return submittingCreationDraftProjectURLs.contains(projectURL.standardizedFileURL)
+    }
     var filterCounts: BeadFilterCounts { workspace.filterCounts }
     internal var _filterCounts: BeadFilterCounts { get { workspace.filterCounts } set { workspace.filterCounts = newValue } }
     /// Bumped whenever issue *content* changes (project load/reload after a mutation, index
@@ -1376,9 +1384,9 @@ final class BeadStore {
     internal var _hiddenTypeNames: Set<String> { get { project.hiddenTypeNames } set { project.hiddenTypeNames = newValue } }
     var hiddenStatusNames: Set<String> { project.hiddenStatusNames }
     internal var _hiddenStatusNames: Set<String> { get { project.hiddenStatusNames } set { project.hiddenStatusNames = newValue } }
-    var canGoBack: Bool { workspace.canGoBack }
+    var canGoBack: Bool { workspace.canGoBack && !isSubmittingCreationDraft }
     internal var _canGoBack: Bool { get { workspace.canGoBack } set { workspace.canGoBack = newValue } }
-    var canGoForward: Bool { workspace.canGoForward }
+    var canGoForward: Bool { workspace.canGoForward && !isSubmittingCreationDraft }
     internal var _canGoForward: Bool { get { workspace.canGoForward } set { workspace.canGoForward = newValue } }
     var issueReferenceLookup: IssueReferenceLookup { project.issueReferenceLookup }
 

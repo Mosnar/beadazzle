@@ -62,6 +62,7 @@ struct IssueCreationPage: View {
                 hideTextSection: hideTextSection,
                 usesInspectorRail: usesInspectorRail
             )
+            .disabled(isCreating)
         }
     }
 

@@ -56,6 +56,20 @@ struct BeadWorkspaceHistory: Equatable, Sendable {
         currentSnapshot = snapshot
     }
 
+    /// Removes a successfully submitted creation draft from every navigation entry so Back
+    /// cannot resurrect it and accidentally create the same logical bead twice.
+    mutating func clearCreationDraft(matching draft: IssueDraft) {
+        for index in backStack.indices where backStack[index].creationDraft == draft {
+            backStack[index].creationDraft = nil
+        }
+        if currentSnapshot?.creationDraft == draft {
+            currentSnapshot?.creationDraft = nil
+        }
+        for index in forwardStack.indices where forwardStack[index].creationDraft == draft {
+            forwardStack[index].creationDraft = nil
+        }
+    }
+
     mutating func goBack() -> BeadWorkspaceSnapshot? {
         guard let previousSnapshot = backStack.popLast() else { return nil }
         if let currentSnapshot {

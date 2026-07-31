@@ -2,7 +2,7 @@ import Foundation
 
 extension BeadStore {
     func beginCreatingBead() {
-        guard canCreateBead, creationDraft == nil else { return }
+        guard canCreateBead, creationDraft == nil, !isSubmittingCreationDraft else { return }
         suppressesHistoryRecording = true
         clearSelection()
         _fullPageDetailIssueID = nil
@@ -32,7 +32,7 @@ extension BeadStore {
     }
 
     func beginCreatingChildBead(parentID: String) {
-        guard canAddSubIssue(parentID: parentID), creationDraft == nil else { return }
+        guard canAddSubIssue(parentID: parentID), creationDraft == nil, !isSubmittingCreationDraft else { return }
         suppressesHistoryRecording = true
         _selectedIDs.removeAll()
         _fullPageDetailIssueID = nil
@@ -43,18 +43,20 @@ extension BeadStore {
     }
 
     func cancelCreation() {
-        guard creationDraft != nil else { return }
+        guard creationDraft != nil, !isSubmittingCreationDraft else { return }
         creationDraft = nil
         recordWorkspaceSnapshotIfNeeded()
     }
 
     func goBack() {
+        guard !isSubmittingCreationDraft else { return }
         guard let snapshot = workspaceHistory.goBack() else { return }
         syncWorkspaceHistoryAvailability()
         restoreWorkspace(snapshot)
     }
 
     func goForward() {
+        guard !isSubmittingCreationDraft else { return }
         guard let snapshot = workspaceHistory.goForward() else { return }
         syncWorkspaceHistoryAvailability()
         restoreWorkspace(snapshot)
@@ -280,6 +282,37 @@ extension BeadStore {
         loadDependenciesForSelection()
         syncCommentsForSelectionFromCache()
         recordWorkspaceSnapshotIfNeeded()
+    }
+
+    /// Selects a newly created projected issue without launching a query against the old
+    /// index. Projection materialization will rebuild the index and issue list exactly once.
+    internal func selectProjectedCreatedIssue(id: String) {
+        guard let issue = issue(with: id), !issue.isSystemRecord else { return }
+        _selectedIDs = [id]
+        _fullPageDetailIssueID = nil
+
+        filterTask?.cancel()
+        filterTask = nil
+        let sourceSort = _searchCoverageSourceSort
+        let wasSuppressingFilterUpdates = suppressesFilterUpdates
+        suppressesFilterUpdates = true
+        _searchCoverage = .currentView
+        _searchCoverageSourceSort = nil
+        if let sourceSort {
+            sort = sourceSort.field
+            sortDirection = sourceSort.direction
+        }
+        _selectedBookmark = .all
+        _activeSavedViewID = nil
+        _sourceSavedViewID = nil
+        _activeAdvancedPredicate = nil
+        _listOrdering = .sorted(BeadSavedViewSort(field: sort, direction: sortDirection))
+        statusFilters = []
+        typeFilters = []
+        priorityFilters = []
+        labelFilters = []
+        searchText = ""
+        suppressesFilterUpdates = wasSuppressingFilterUpdates
     }
 
     func applyBookmark(_ bookmark: BeadBookmark) {

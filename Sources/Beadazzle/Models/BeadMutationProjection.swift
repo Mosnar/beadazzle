@@ -8,15 +8,6 @@ struct BeadMutationSubmission: Sendable {
     }
 }
 
-struct BeadCreateSubmission: Sendable {
-    let issueID: String
-    let completion: Task<Bool, Never>
-
-    var value: Bool {
-        get async { await completion.value }
-    }
-}
-
 enum BeadMutationValue<Value: Sendable>: Sendable {
     case unchanged
     case set(Value)

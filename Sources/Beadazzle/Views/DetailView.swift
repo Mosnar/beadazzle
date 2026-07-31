@@ -17,7 +17,6 @@ struct DetailView: View {
     @State private var draftConflictFields: Set<IssueDraftField> = []
     @State private var pendingDraftConflict: PendingDraftConflict?
     @State private var suppressesCreationDraftUpdates = false
-    @State private var isCreatingDraft = false
     @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var suppressedDeferredDateWrite: DeferredDateWriteSuppression?
@@ -43,7 +42,7 @@ struct DetailView: View {
                     textSectionLayout: textSectionLayout,
                     revealTextSection: revealTextSection,
                     hideTextSection: hideTextSection,
-                    isCreating: isCreatingDraft,
+                    isCreating: store.isSubmittingCreationDraft,
                     createAction: createDraft,
                     cancelAction: cancelCreation
                 )
@@ -346,7 +345,9 @@ struct DetailView: View {
         Binding(
             get: { store.creationDraft ?? store.blankDraft() },
             set: { nextDraft in
-                guard !suppressesCreationDraftUpdates, workspace.selectedIDs.isEmpty else { return }
+                guard !suppressesCreationDraftUpdates,
+                      !store.isSubmittingCreationDraft,
+                      workspace.selectedIDs.isEmpty else { return }
                 store.creationDraft = nextDraft
             }
         )
@@ -354,7 +355,7 @@ struct DetailView: View {
 
     private var activeSaveAction: BeadSaveAction? {
         if let creationDraft = store.creationDraft {
-            guard !isCreatingDraft, canSave(creationDraft) else { return nil }
+            guard !store.isSubmittingCreationDraft, canSave(creationDraft) else { return nil }
             return BeadSaveAction(title: "Create Bead", perform: createDraft)
         }
 
@@ -387,21 +388,15 @@ struct DetailView: View {
     }
 
     private func createDraft() {
-        guard !isCreatingDraft, let creationDraft = store.creationDraft else { return }
-        isCreatingDraft = true
-        defer { isCreatingDraft = false }
-        guard let submission = store.submitCreateBead(creationDraft, revealCreated: true) else {
-            return
-        }
-        store.creationDraft = nil
+        guard !store.isSubmittingCreationDraft, store.creationDraft != nil else { return }
         Task { @MainActor in
-            _ = await submission.value
+            _ = await store.submitCreationDraft()
         }
     }
 
     private func cancelCreation() {
         suppressesCreationDraftUpdates = true
-        if workspace.canGoBack {
+        if store.canGoBack {
             store.goBack()
         } else {
             store.cancelCreation()

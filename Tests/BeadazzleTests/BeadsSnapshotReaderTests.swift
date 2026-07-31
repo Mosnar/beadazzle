@@ -344,8 +344,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertTrue(store.canCreateGate(blocking: try XCTUnwrap(store.issue(with: "bd-parent"))))
 
         let createdIssueID = await store.createBead(
-            .blank(defaultType: "task", defaultStatus: "open"),
-            revealCreated: false
+            .blank(defaultType: "task", defaultStatus: "open")
         )
         let createdGate = await store.createGate(
             blocks: "bd-parent",

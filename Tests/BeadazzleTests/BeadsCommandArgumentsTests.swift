@@ -163,7 +163,7 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertEqual(value(after: "--parent", in: arguments), "bd-parent")
     }
 
-    func testCreateArgumentsUseExplicitIDAndDependencyForOptimisticChild() {
+    func testCreateArgumentsHonorExplicitClientIDAndUseDependencyForChild() {
         let arguments = BeadsCommandArguments.create(
             draft: draft(id: "bd-client-id", status: "open", parentID: "bd-parent")
         )

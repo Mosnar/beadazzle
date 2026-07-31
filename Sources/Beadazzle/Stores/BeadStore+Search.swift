@@ -99,10 +99,11 @@ extension BeadStore {
         }
         _searchCoverage = .currentView
         if let sourceSort = _searchCoverageSourceSort {
+            let wasSuppressingFilterUpdates = suppressesFilterUpdates
             suppressesFilterUpdates = true
             sort = sourceSort.field
             sortDirection = sourceSort.direction
-            suppressesFilterUpdates = false
+            suppressesFilterUpdates = wasSuppressingFilterUpdates
             _searchCoverageSourceSort = nil
         }
         return wasGlobalSearch

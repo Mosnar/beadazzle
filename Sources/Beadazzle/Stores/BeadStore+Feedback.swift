@@ -36,6 +36,30 @@ extension BeadStore {
         enqueueFailure(failure)
     }
 
+    /// Create is not idempotent when `bd` owns ID generation. Once the subprocess has
+    /// started, any failure is presented without an automatic retry because the first bead
+    /// may already be durable even if Beadazzle did not receive a usable result.
+    func reportUncertainCreateFailure(_ error: Error) {
+        let command: String?
+        let output: String?
+        switch error {
+        case let BeadError.commandFailed(failedCommand, failedOutput),
+             let BeadError.createOutcomeUncertain(failedCommand, failedOutput):
+            command = failedCommand
+            output = failedOutput
+        default:
+            command = nil
+            output = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        enqueueFailure(BeadMutationFailure(
+            title: "Couldn't confirm bead creation",
+            message: "The bead may have been created. Beadazzle will refresh the readable snapshot; check the issue list before creating it again.",
+            command: command,
+            output: output,
+            retry: nil
+        ))
+    }
+
     /// Reports bulk failures in one retryable dialog. Counts and retry targets stay
     /// exact; verbose per-command diagnostics are bounded for very large selections.
     func reportBulkMutationFailure(

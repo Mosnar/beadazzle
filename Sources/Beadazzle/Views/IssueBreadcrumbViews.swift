@@ -56,10 +56,20 @@ struct IssueCreationToolbar: View {
                 .disabled(isCreating)
                 .help(cancelButtonHelp)
 
-                Button(IssueCreationToolbarPresentation.createButtonTitle, action: createAction)
+                Button(action: createAction) {
+                    HStack(spacing: 5) {
+                        Text(IssueCreationToolbarPresentation.createButtonTitle)
+                        if isCreating {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(!canCreate)
+                .accessibilityLabel(isCreating ? "Creating bead" : "Create bead")
                 .help(createButtonHelp)
             }
             .fixedSize(horizontal: true, vertical: false)

@@ -40,6 +40,17 @@ final class BeadWorkspaceStateRepository {
         return true
     }
 
+    /// Clears only the draft that produced a confirmed create. A newer or independently
+    /// edited draft is preserved, which makes this safe after the user switches projects.
+    @discardableResult
+    func clearCreationDraft(matching draft: IssueDraft, projectURL: URL) -> Bool {
+        guard var payload = load(projectURL: projectURL), payload.creationDraft == draft else {
+            return false
+        }
+        payload.creationDraft = nil
+        return save(payload, projectURL: projectURL)
+    }
+
     func reset(projectURL: URL) {
         let key = BeadazzlePreferenceKeys.workspaceState(projectURL: projectURL)
         if let data = userDefaults.data(forKey: key) {
