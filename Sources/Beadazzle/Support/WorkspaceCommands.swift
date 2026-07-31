@@ -14,6 +14,46 @@ struct WorkspaceCommandActions {
     var saveCurrentViewAsBookmark: (() -> Void)?
 }
 
+/// A focused, reference-based target for project synchronization commands. Keeping the
+/// store here instead of action closures lets the menu read current availability while
+/// still ensuring shortcuts only affect the key workspace window.
+struct ProjectSyncCommandContext {
+    let store: BeadStore
+    let canSynchronize: Bool
+}
+
+enum ProjectDoltSyncCommand {
+    case pull
+    case push
+
+    var title: String {
+        switch self {
+        case .pull:
+            "Pull Beads from Remote"
+        case .push:
+            "Push Beads to Remote"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .pull:
+            "arrow.down.circle"
+        case .push:
+            "arrow.up.circle"
+        }
+    }
+
+    var shortcut: KeyboardShortcut {
+        switch self {
+        case .pull:
+            KeyboardShortcut(.downArrow, modifiers: [.command, .option])
+        case .push:
+            KeyboardShortcut(.upArrow, modifiers: [.command, .option])
+        }
+    }
+}
+
 private struct WorkspaceCommandActionsKey: FocusedValueKey {
     typealias Value = WorkspaceCommandActions
 }
@@ -23,11 +63,14 @@ extension FocusedValues {
         get { self[WorkspaceCommandActionsKey.self] }
         set { self[WorkspaceCommandActionsKey.self] = newValue }
     }
+
+    @Entry var projectSyncCommands: ProjectSyncCommandContext?
 }
 
 struct WorkspaceCommands: Commands {
     @FocusedValue(\.workspaceCommands) private var actions
     @FocusedValue(\.beadFindActions) private var findActions
+    @FocusedValue(\.projectSyncCommands) private var projectSync
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -50,6 +93,21 @@ struct WorkspaceCommands: Commands {
             }
             .keyboardShortcut("r")
             .disabled(actions?.refresh == nil)
+
+            Divider()
+
+            Menu("Beads Sync") {
+                Button("Sync Beads with Remote", systemImage: "arrow.triangle.2.circlepath") {
+                    performProjectSync()
+                }
+                .disabled(projectSync?.canSynchronize != true)
+
+                Divider()
+
+                projectSyncButton(.pull)
+                projectSyncButton(.push)
+            }
+            .disabled(projectSync?.canSynchronize != true)
         }
 
         // Find lives in Edit, after the Cut/Copy/Paste/Select All group, which
@@ -110,5 +168,32 @@ struct WorkspaceCommands: Commands {
             return
         }
         actions?.find?()
+    }
+
+    private func performProjectSync() {
+        guard let store = projectSync?.store else { return }
+        Task { @MainActor in
+            _ = await store.synchronizeProjectIssues(reportsFailureInWorkspace: true)
+        }
+    }
+
+    private func projectSyncButton(_ command: ProjectDoltSyncCommand) -> some View {
+        Button(command.title, systemImage: command.systemImage) {
+            performProjectSync(command)
+        }
+        .keyboardShortcut(command.shortcut)
+        .disabled(projectSync?.canSynchronize != true)
+    }
+
+    private func performProjectSync(_ command: ProjectDoltSyncCommand) {
+        guard let store = projectSync?.store else { return }
+        Task { @MainActor in
+            switch command {
+            case .pull:
+                _ = await store.pullProjectIssues(reportsFailureInWorkspace: true)
+            case .push:
+                _ = await store.pushProjectIssues(reportsFailureInWorkspace: true)
+            }
+        }
     }
 }

@@ -143,23 +143,14 @@ private struct ProjectDoltSyncSection: View {
             }
 
             if hasRemotes {
-                HStack(spacing: 8) {
-                    ProjectHealthActionButton(
-                        title: "Pull from Remote",
-                        systemImage: "arrow.down.circle",
-                        isDisabled: isBusy
-                    ) {
-                        Task { await store.pullProjectIssues() }
-                    }
-
-                    ProjectHealthActionButton(
-                        title: "Push to Remote",
-                        systemImage: "arrow.up.circle",
-                        isDisabled: isBusy
-                    ) {
-                        Task { await store.pushProjectIssues() }
-                    }
-                }
+                ProjectDoltSyncMenu(
+                    title: "Sync Now",
+                    reportsFailureInWorkspace: false,
+                    fillsAvailableWidth: true,
+                    isExternallyDisabled: project.isLoadingProjectHealth,
+                    completionRefresh: .fullHealth
+                )
+                .buttonStyle(.bordered)
             }
         } header: {
             Text("Dolt Sync")
@@ -170,10 +161,6 @@ private struct ProjectDoltSyncSection: View {
 
     private var hasRemotes: Bool {
         project.projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false
-    }
-
-    private var isBusy: Bool {
-        project.isLoadingProjectHealth || project.projectHealthAction != nil
     }
 }
 

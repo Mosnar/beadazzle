@@ -13,6 +13,9 @@ struct DetailView: View {
     let requestClose: (BeadIssue) -> Void
     @State private var draft: IssueDraft?
     @State private var draftIssueID: String?
+    @State private var draftBaseline: IssueDraft?
+    @State private var draftConflictFields: Set<IssueDraftField> = []
+    @State private var pendingDraftConflict: PendingDraftConflict?
     @State private var suppressesCreationDraftUpdates = false
     @State private var isCreatingDraft = false
     @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
@@ -61,6 +64,9 @@ struct DetailView: View {
                 .onChange(of: issue.id) {
                     resetDraft()
                     deferredStatusRequest = nil
+                }
+                .onChange(of: issue) { _, updatedIssue in
+                    rebaseActiveDraft(onto: updatedIssue)
                 }
                 .onChange(of: activeDraft(for: issue).status) { _, newStatus in
                     commitStatusChangeIfNeeded(issue: issue, status: newStatus)
@@ -120,6 +126,32 @@ struct DetailView: View {
             ) { deferUntil in
                 await confirmDeferredStatusChange(request, deferUntil: deferUntil)
             }
+        }
+        .alert(
+            "Pulled Changes Also Edited This Bead",
+            isPresented: Binding(
+                get: { pendingDraftConflict != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingDraftConflict = nil
+                    }
+                }
+            )
+        ) {
+            Button("Review Changes", role: .cancel) {
+                pendingDraftConflict = nil
+            }
+            Button("Keep My Changes", role: .destructive) {
+                guard let conflict = pendingDraftConflict,
+                      let issue = store.issue(with: conflict.issueID) else {
+                    pendingDraftConflict = nil
+                    return
+                }
+                pendingDraftConflict = nil
+                save(issue, allowsConflictingChanges: true)
+            }
+        } message: {
+            Text(pendingDraftConflict?.message ?? "Review the pulled changes before saving.")
         }
     }
 
@@ -233,7 +265,11 @@ struct DetailView: View {
                 confirmTitle: "Save and Close Children",
                 relatedIssues: request.childIssues
             ) {
-                let didSave = await store.save(request.draft, closingChildIssueIDs: request.childIssueIDs)
+                let didSave = await store.save(
+                    request.draft,
+                    closingChildIssueIDs: request.childIssueIDs,
+                    context: request.saveContext
+                )
                 if didSave {
                     resetDraft()
                 }
@@ -264,7 +300,8 @@ struct DetailView: View {
             ) {
                 let didSave = await store.save(
                     request.draft,
-                    reopeningAncestorIssueIDs: request.ancestorIssueIDs
+                    reopeningAncestorIssueIDs: request.ancestorIssueIDs,
+                    context: request.saveContext
                 )
                 if didSave {
                     resetDraft()
@@ -331,6 +368,11 @@ struct DetailView: View {
         Binding(
             get: { activeDraft(for: issue) },
             set: { nextDraft in
+                if draftIssueID != issue.id || draftBaseline == nil {
+                    draftBaseline = IssueDraft(issue: issue)
+                    draftConflictFields = []
+                    pendingDraftConflict = nil
+                }
                 draftIssueID = issue.id
                 draft = nextDraft
             }
@@ -370,8 +412,21 @@ struct DetailView: View {
         }
     }
 
-    private func save(_ issue: BeadIssue) {
+    private func save(_ issue: BeadIssue, allowsConflictingChanges: Bool = false) {
         let draft = activeDraft(for: issue)
+        let unresolvedConflicts = unresolvedDraftConflicts(draft: draft, issue: issue)
+        draftConflictFields = unresolvedConflicts
+        if !allowsConflictingChanges, !unresolvedConflicts.isEmpty {
+            pendingDraftConflict = PendingDraftConflict(
+                issueID: issue.id,
+                fields: unresolvedConflicts
+            )
+            return
+        }
+        let saveContext = IssueDraftSaveContext(
+            baseline: draftBaseline ?? IssueDraft(issue: issue),
+            allowsConflictingChanges: allowsConflictingChanges
+        )
         if !store.isDone(issue), store.statusClosesBeads(draft.status) {
             let childIssues = store.openChildIssues(forClosing: [issue.id])
             if !childIssues.isEmpty {
@@ -380,6 +435,7 @@ struct DetailView: View {
                         issueID: issue.id,
                         title: draft.title,
                         draft: draft,
+                        saveContext: saveContext,
                         childIssues: childIssues
                     )
                 )
@@ -393,6 +449,7 @@ struct DetailView: View {
                         issueID: issue.id,
                         title: draft.title,
                         draft: draft,
+                        saveContext: saveContext,
                         ancestorIssues: ancestorIssues
                     )
                 )
@@ -401,7 +458,7 @@ struct DetailView: View {
         }
 
         Task {
-            if await store.save(draft) {
+            if await store.save(draft, context: saveContext) {
                 resetDraft()
             }
         }
@@ -653,10 +710,49 @@ struct DetailView: View {
     private func resetDraft() {
         draft = nil
         draftIssueID = nil
+        draftBaseline = nil
+        draftConflictFields = []
+        pendingDraftConflict = nil
+    }
+
+    private func rebaseActiveDraft(onto issue: BeadIssue) {
+        guard draftIssueID == issue.id,
+              let draft,
+              let draftBaseline else { return }
+        let rebase = draft.rebased(from: draftBaseline, onto: issue)
+        let remoteDraft = IssueDraft(issue: issue)
+        var conflicts = draftConflictFields.union(rebase.conflictingFields)
+        conflicts = Set(conflicts.filter { !rebase.draft.matches(remoteDraft, field: $0) })
+        self.draft = rebase.draft
+        self.draftBaseline = remoteDraft
+        draftConflictFields = conflicts
+        pendingDraftConflict = nil
+        hierarchySheetRequest = nil
+    }
+
+    private func unresolvedDraftConflicts(
+        draft: IssueDraft,
+        issue: BeadIssue
+    ) -> Set<IssueDraftField> {
+        let current = IssueDraft(issue: issue)
+        return Set(draftConflictFields.filter { !draft.matches(current, field: $0) })
     }
 
     private func canSave(_ draft: IssueDraft) -> Bool {
         !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private struct PendingDraftConflict: Equatable {
+    let issueID: String
+    let fields: Set<IssueDraftField>
+
+    var message: String {
+        let names = IssueDraftField.allCases
+            .filter(fields.contains)
+            .map(\.displayName)
+            .formatted(.list(type: .and))
+        return "Both you and a pulled update changed \(names). Keeping your changes will overwrite only those fields; all other pulled changes will be preserved."
     }
 }
 

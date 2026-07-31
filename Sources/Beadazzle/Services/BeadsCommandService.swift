@@ -87,6 +87,10 @@ protocol BeadsCommanding: Sendable {
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws
     func exportReadableSnapshot(projectURL: URL) async throws
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws
+    func exportReadableSnapshotWithResult(
+        projectURL: URL,
+        beadsDirectoryURL: URL
+    ) async throws -> ReadableSnapshotExportResult
     func create(projectURL: URL, draft: IssueDraft) async throws -> String
     func createWithFeedback(projectURL: URL, draft: IssueDraft) async throws -> BeadsCreateResult
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws
@@ -174,6 +178,17 @@ extension BeadsCommanding {
 
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL _: URL) async throws {
         try await exportReadableSnapshot(projectURL: projectURL)
+    }
+
+    func exportReadableSnapshotWithResult(
+        projectURL: URL,
+        beadsDirectoryURL: URL
+    ) async throws -> ReadableSnapshotExportResult {
+        try await exportReadableSnapshot(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL
+        )
+        return .unprepared
     }
 
     func loadComments(projectURL _: URL, issueID _: String) async throws -> [BeadComment] { [] }
@@ -349,6 +364,16 @@ struct BeadsCommandService {
     }
 
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws {
+        _ = try await exportReadableSnapshotWithResult(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL
+        )
+    }
+
+    func exportReadableSnapshotWithResult(
+        projectURL: URL,
+        beadsDirectoryURL: URL
+    ) async throws -> ReadableSnapshotExportResult {
         let tempURL = Self.temporaryExportedIssuesJSONLURL(beadsDirectoryURL: beadsDirectoryURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
@@ -358,11 +383,17 @@ struct BeadsCommandService {
             terminatesOnCancel: true,
             timeout: snapshotExportTimeout
         )
-        try Self.validateExportedIssuesJSONL(at: tempURL)
-        try Self.installExportedIssuesJSONL(
-            tempURL: tempURL,
-            beadsDirectoryURL: beadsDirectoryURL
-        )
+        let preparationTask = Task.detached(priority: .userInitiated) {
+            try Self.prepareExportedIssuesJSONL(
+                tempURL: tempURL,
+                beadsDirectoryURL: beadsDirectoryURL
+            )
+        }
+        return try await withTaskCancellationHandler {
+            try await preparationTask.value
+        } onCancel: {
+            preparationTask.cancel()
+        }
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {
@@ -382,7 +413,10 @@ struct BeadsCommandService {
     }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue? = nil) async throws {
-        guard let arguments = BeadsCommandArguments.update(draft: draft, originalLabels: originalIssue?.labels) else { return }
+        guard let arguments = BeadsCommandArguments.update(
+            draft: draft,
+            originalIssue: originalIssue
+        ) else { return }
         try await run(projectURL: projectURL, arguments: arguments)
     }
 
@@ -1155,6 +1189,93 @@ struct BeadsCommandService {
         }
     }
 
+    private static func prepareExportedIssuesJSONL(
+        tempURL: URL,
+        beadsDirectoryURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> ReadableSnapshotExportResult {
+        try Task.checkCancellation()
+        let attributes = try fileManager.attributesOfItem(atPath: tempURL.path)
+        let temporarySource = BeadsDataSource(
+            kind: .jsonl,
+            url: tempURL,
+            size: (attributes[.size] as? NSNumber)?.int64Value ?? 0,
+            modifiedAt: attributes[.modificationDate] as? Date ?? .distantPast
+        )
+        let snapshot: BeadsSnapshot
+        do {
+            snapshot = try BeadsJSONLSnapshotReader().loadSnapshot(from: temporarySource)
+        } catch BeadError.invalidSnapshot(_, let line, _) {
+            throw BeadError.commandFailed(
+                command: "bd export --output \(BeadsCommandArguments.exportedIssuesJSONLPath)",
+                output: "Export produced invalid JSONL at line \(line)."
+            )
+        }
+        try Task.checkCancellation()
+
+        let destinationURL = exportedIssuesJSONLURL(beadsDirectoryURL: beadsDirectoryURL)
+        let matchesInstalledSnapshot = try filesHaveEqualContents(
+            tempURL,
+            destinationURL,
+            fileManager: fileManager
+        )
+        if !matchesInstalledSnapshot {
+            try installExportedIssuesJSONL(
+                tempURL: tempURL,
+                beadsDirectoryURL: beadsDirectoryURL,
+                fileManager: fileManager
+            )
+        }
+        // Once the validated snapshot has been installed, finish describing that committed
+        // result even if cancellation arrives. Reporting cancellation after replacement
+        // would leave callers believing the readable snapshot was not updated.
+        let installedSource = try BeadsDataSourceDiscovery(fileManager: fileManager).discover(
+            projectURL: beadsDirectoryURL.deletingLastPathComponent(),
+            beadsDirectoryURL: beadsDirectoryURL
+        )
+        return ReadableSnapshotExportResult(
+            loadedSnapshot: LoadedBeadsSnapshot(
+                source: installedSource,
+                snapshot: snapshot
+            ),
+            didReplaceSnapshot: !matchesInstalledSnapshot
+        )
+    }
+
+    private static func filesHaveEqualContents(
+        _ lhsURL: URL,
+        _ rhsURL: URL,
+        fileManager: FileManager
+    ) throws -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: rhsURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return false
+        }
+        let lhsAttributes = try fileManager.attributesOfItem(atPath: lhsURL.path)
+        let rhsAttributes = try fileManager.attributesOfItem(atPath: rhsURL.path)
+        guard (lhsAttributes[.size] as? NSNumber)?.int64Value
+                == (rhsAttributes[.size] as? NSNumber)?.int64Value else {
+            return false
+        }
+
+        let lhs = try FileHandle(forReadingFrom: lhsURL)
+        let rhs = try FileHandle(forReadingFrom: rhsURL)
+        defer {
+            try? lhs.close()
+            try? rhs.close()
+        }
+        while true {
+            try Task.checkCancellation()
+            let lhsData = try lhs.read(upToCount: 64 * 1024) ?? Data()
+            let rhsData = try rhs.read(upToCount: 64 * 1024) ?? Data()
+            guard lhsData == rhsData else { return false }
+            if lhsData.isEmpty {
+                return true
+            }
+        }
+    }
+
     static func validateExportedIssuesJSONL(at url: URL) throws {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -1404,33 +1525,53 @@ enum BeadsCommandArguments {
         return arguments
     }
 
-    static func update(draft: IssueDraft, originalLabels: [String]? = nil) -> [String]? {
+    static func update(
+        draft: IssueDraft,
+        originalLabels: [String]? = nil,
+        originalIssue: BeadIssue? = nil
+    ) -> [String]? {
         guard let id = draft.id else { return nil }
-        var arguments = [
-            "update",
-            id,
-            "--title",
-            draft.title,
-            "--type",
-            draft.issueType,
-            "--priority",
-            "P\(draft.priority)",
-            "--status",
-            draft.status,
-            "--description",
-            draft.description,
-            "--allow-empty-description",
-            "--design",
-            draft.design,
-            "--acceptance",
-            draft.acceptanceCriteria,
-            "--notes",
-            draft.notes
-        ]
-        arguments += ["--due", dateUpdateArgument(draft.dueAt)]
-        arguments += ["--defer", dateUpdateArgument(draft.deferUntil)]
-        appendLabelUpdate(&arguments, labels: draft.labels, originalLabels: originalLabels)
-        return arguments
+        var arguments = ["update", id]
+        if originalIssue == nil || draft.title != originalIssue?.title {
+            arguments += ["--title", draft.title]
+        }
+        if originalIssue == nil || draft.issueType != originalIssue?.issueType {
+            arguments += ["--type", draft.issueType]
+        }
+        if originalIssue == nil || draft.priority != originalIssue?.priority {
+            arguments += ["--priority", "P\(draft.priority)"]
+        }
+        if originalIssue == nil || draft.status != originalIssue?.status {
+            arguments += ["--status", draft.status]
+        }
+        if originalIssue == nil || draft.description != originalIssue?.description {
+            arguments += ["--description", draft.description, "--allow-empty-description"]
+        }
+        if originalIssue == nil || draft.design != originalIssue?.design {
+            arguments += ["--design", draft.design]
+        }
+        if originalIssue == nil || draft.acceptanceCriteria != originalIssue?.acceptanceCriteria {
+            arguments += ["--acceptance", draft.acceptanceCriteria]
+        }
+        if originalIssue == nil || draft.notes != originalIssue?.notes {
+            arguments += ["--notes", draft.notes]
+        }
+        if originalIssue == nil || draft.dueAt != originalIssue?.dueAt {
+            arguments += ["--due", dateUpdateArgument(draft.dueAt)]
+        }
+        if originalIssue == nil || draft.deferUntil != originalIssue?.deferUntil {
+            arguments += ["--defer", dateUpdateArgument(draft.deferUntil)]
+        }
+        let labelsBeforeUpdate = originalLabels ?? originalIssue?.labels
+        let labelsMatch = labelsBeforeUpdate.map { Set(draft.labels) == Set($0) } ?? false
+        if originalIssue == nil || !labelsMatch {
+            appendLabelUpdate(
+                &arguments,
+                labels: draft.labels,
+                originalLabels: labelsBeforeUpdate
+            )
+        }
+        return arguments.count > 2 ? arguments : nil
     }
 
     static func updateMetadata(

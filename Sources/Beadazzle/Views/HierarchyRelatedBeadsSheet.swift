@@ -34,6 +34,7 @@ struct CloseChildBeadsSaveRequest: Identifiable, Equatable {
     let issueID: String
     let title: String
     let draft: IssueDraft
+    let saveContext: IssueDraftSaveContext?
     let childIssues: [BeadIssue]
 
     var id: String {
@@ -83,6 +84,7 @@ struct ReopenAncestorBeadsSaveRequest: Identifiable, Equatable {
     let issueID: String
     let title: String
     let draft: IssueDraft
+    let saveContext: IssueDraftSaveContext?
     let ancestorIssues: [BeadIssue]
 
     var id: String {

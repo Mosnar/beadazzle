@@ -46,12 +46,20 @@ struct ContentView: View {
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    store.refresh()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                if store.hasConfiguredProjectDoltRemote
+                    || (store.projectEnvironment?.storageMode == .embedded
+                        && store.isLoadingProjectDoltRemotes) {
+                    ProjectDoltSyncMenu(
+                        isExternallyDisabled: store.isLoadingProjectDoltRemotes
+                    )
+                } else {
+                    Button {
+                        store.refresh()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!canRefresh)
                 }
-                .disabled(!canRefresh)
 
                 Button {
                     store.beginCreatingBead()
@@ -144,6 +152,10 @@ struct ContentView: View {
             searchCoverageTitle: searchCoverageCommandTitle,
             toggleSearchCoverage: searchCoverageCommand,
             saveCurrentViewAsBookmark: store.canSaveCurrentViewAsSmartBookmark ? presentSaveBookmark : nil
+        ))
+        .focusedSceneValue(\.projectSyncCommands, ProjectSyncCommandContext(
+            store: store,
+            canSynchronize: store.canSynchronizeProjectIssues
         ))
         .onChange(of: project.projectURL) {
             searchPresented = false

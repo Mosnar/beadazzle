@@ -43,18 +43,23 @@ struct BeadProjectLoader: Sendable {
         cachedDefinitions: BeadSemanticDefinitions? = nil,
         cachedDefinitionsTrackerDirectoryURL: URL? = nil,
         cachedEnvironment: BeadsProjectEnvironment? = nil,
-        loadsDefinitionsIfMissing: Bool = true
+        loadsDefinitionsIfMissing: Bool = true,
+        preparedSnapshot: LoadedBeadsSnapshot? = nil
     ) async throws -> LoadedProject {
         let environment = try await resolveEnvironment(
             projectURL: projectURL,
             cachedEnvironment: cachedEnvironment
         )
-        if cachedEnvironment == nil, environment.storageMode.refreshesWhenAppActivates {
+        var exportPreparedSnapshot = preparedSnapshot
+        if preparedSnapshot == nil,
+           cachedEnvironment == nil,
+           environment.storageMode.refreshesWhenAppActivates {
             do {
-                try await commands.exportReadableSnapshot(
+                let exportResult = try await commands.exportReadableSnapshotWithResult(
                     projectURL: projectURL,
                     beadsDirectoryURL: environment.beadsDirectoryURL
                 )
+                exportPreparedSnapshot = exportResult.loadedSnapshot
             } catch {
                 let exportError = error
                 do {
@@ -65,7 +70,8 @@ struct BeadProjectLoader: Sendable {
                         hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
                         cachedDefinitions: cachedDefinitions,
                         cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
-                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
+                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+                        preparedSnapshot: nil
                     )
                     loadedProject.snapshotRefreshWarning = exportError.localizedDescription
                     return loadedProject
@@ -81,7 +87,8 @@ struct BeadProjectLoader: Sendable {
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
             cachedDefinitions: cachedDefinitions,
             cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
-            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
+            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+            preparedSnapshot: exportPreparedSnapshot
         )
     }
 
@@ -92,23 +99,31 @@ struct BeadProjectLoader: Sendable {
         hidesParentsWithOnlyBlockedChildrenInReady: Bool,
         cachedDefinitions: BeadSemanticDefinitions?,
         cachedDefinitionsTrackerDirectoryURL: URL?,
-        loadsDefinitionsIfMissing: Bool
+        loadsDefinitionsIfMissing: Bool,
+        preparedSnapshot: LoadedBeadsSnapshot?
     ) async throws -> LoadedProject {
-        let snapshotTask = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            let snapshot = try PerformanceSignposts.load.withIntervalSignpost("SnapshotRead") {
-                try BeadsSnapshotReader().loadProject(
-                    projectURL: projectURL,
-                    beadsDirectoryURL: environment.beadsDirectoryURL
-                )
+        let loadedSnapshot: LoadedBeadsSnapshot
+        if let preparedSnapshot,
+           preparedSnapshot.source.url.deletingLastPathComponent().standardizedFileURL.path
+                == environment.beadsDirectoryURL.standardizedFileURL.path {
+            loadedSnapshot = preparedSnapshot
+        } else {
+            let snapshotTask = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                let snapshot = try PerformanceSignposts.load.withIntervalSignpost("SnapshotRead") {
+                    try BeadsSnapshotReader().loadProject(
+                        projectURL: projectURL,
+                        beadsDirectoryURL: environment.beadsDirectoryURL
+                    )
+                }
+                try Task.checkCancellation()
+                return snapshot
             }
-            try Task.checkCancellation()
-            return snapshot
-        }
-        let loadedSnapshot = try await withTaskCancellationHandler {
-            try await snapshotTask.value
-        } onCancel: {
-            snapshotTask.cancel()
+            loadedSnapshot = try await withTaskCancellationHandler {
+                try await snapshotTask.value
+            } onCancel: {
+                snapshotTask.cancel()
+            }
         }
         try Task.checkCancellation()
         let definitions: BeadSemanticDefinitions?
@@ -196,7 +211,7 @@ struct BeadProjectLoader: Sendable {
                 output: "The reported tracker directory does not exist: \(environment.beadsDirectoryURL.path)"
             )
         }
-        try await commands.exportReadableSnapshot(
+        let exportResult = try await commands.exportReadableSnapshotWithResult(
             projectURL: projectURL,
             beadsDirectoryURL: environment.beadsDirectoryURL
         )
@@ -207,7 +222,8 @@ struct BeadProjectLoader: Sendable {
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
             cachedDefinitions: cachedDefinitions,
             cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
-            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
+            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+            preparedSnapshot: exportResult.loadedSnapshot
         )
     }
 
@@ -234,12 +250,14 @@ struct BeadProjectLoader: Sendable {
             cachedEnvironment: cachedEnvironment
         )
         var snapshotRefreshWarning: String?
+        var preparedSnapshot: LoadedBeadsSnapshot?
         if Self.directoryExists(at: environment.beadsDirectoryURL) {
             do {
-                try await commands.exportReadableSnapshot(
+                let exportResult = try await commands.exportReadableSnapshotWithResult(
                     projectURL: projectURL,
                     beadsDirectoryURL: environment.beadsDirectoryURL
                 )
+                preparedSnapshot = exportResult.loadedSnapshot
             } catch {
                 snapshotRefreshWarning = error.localizedDescription
             }
@@ -251,7 +269,8 @@ struct BeadProjectLoader: Sendable {
             hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
             cachedDefinitions: cachedDefinitions,
             cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
-            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
+            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+            preparedSnapshot: preparedSnapshot
         )
         loadedProject.snapshotRefreshWarning = snapshotRefreshWarning
         return loadedProject

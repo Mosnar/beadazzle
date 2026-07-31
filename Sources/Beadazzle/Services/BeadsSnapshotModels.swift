@@ -35,3 +35,13 @@ struct LoadedBeadsSnapshot: Sendable {
     var source: BeadsDataSource
     var snapshot: BeadsSnapshot
 }
+
+struct ReadableSnapshotExportResult: Sendable {
+    var loadedSnapshot: LoadedBeadsSnapshot?
+    var didReplaceSnapshot: Bool
+
+    static let unprepared = ReadableSnapshotExportResult(
+        loadedSnapshot: nil,
+        didReplaceSnapshot: true
+    )
+}

@@ -158,7 +158,12 @@ extension BeadStore {
     internal func endMutation(generation: Int) {
         guard mutations.metadataMutationGeneration == generation else { return }
         activeMutationCount = max(0, activeMutationCount - 1)
+        mutations.resumeMutationIdleWaitersIfNeeded()
         scheduleReconcileIfIdle()
+    }
+
+    internal func waitForActiveMutationsToFinish() async {
+        await mutations.waitUntilIdle()
     }
 
     /// Serializes `bd` subprocesses in submission order. Focused metadata callers apply
@@ -185,6 +190,20 @@ extension BeadStore {
     internal func requestReconcile(trigger: SnapshotReconcileTrigger = .mutation) {
         reconcileState.request(trigger)
         scheduleReconcileIfIdle()
+    }
+
+    /// Claims an already-required reconcile immediately instead of leaving it on the
+    /// debounce queue. Remote sync uses this after exporting its snapshot so the export's
+    /// file-monitor event cannot start a second refresh and supersede the reload being
+    /// awaited by the user action.
+    @discardableResult
+    internal func beginImmediateReconcile(
+        trigger: SnapshotReconcileTrigger
+    ) -> Bool {
+        reconcileState.request(trigger)
+        reconcileDebounceTask?.cancel()
+        reconcileDebounceTask = nil
+        return reconcileState.beginIfPossible(activeMutationCount: activeMutationCount)
     }
 
     internal func externalRefreshPreferenceDidChange() {
@@ -528,25 +547,52 @@ extension BeadStore {
     }
 
     @discardableResult
-    func save(_ draft: IssueDraft) async -> Bool {
-        await save(draft, closingChildIssueIDs: [], reopeningAncestorIssueIDs: [])
-    }
-
-    @discardableResult
-    func save(_ draft: IssueDraft, closingChildIssueIDs childIssueIDs: [String]) async -> Bool {
-        await save(draft, closingChildIssueIDs: childIssueIDs, reopeningAncestorIssueIDs: [])
-    }
-
-    @discardableResult
-    func save(_ draft: IssueDraft, reopeningAncestorIssueIDs ancestorIssueIDs: [String]) async -> Bool {
-        await save(draft, closingChildIssueIDs: [], reopeningAncestorIssueIDs: ancestorIssueIDs)
+    func save(
+        _ draft: IssueDraft,
+        context: IssueDraftSaveContext? = nil
+    ) async -> Bool {
+        await save(
+            draft,
+            closingChildIssueIDs: [],
+            reopeningAncestorIssueIDs: [],
+            context: context
+        )
     }
 
     @discardableResult
     func save(
         _ draft: IssueDraft,
         closingChildIssueIDs childIssueIDs: [String],
-        reopeningAncestorIssueIDs ancestorIssueIDs: [String]
+        context: IssueDraftSaveContext? = nil
+    ) async -> Bool {
+        await save(
+            draft,
+            closingChildIssueIDs: childIssueIDs,
+            reopeningAncestorIssueIDs: [],
+            context: context
+        )
+    }
+
+    @discardableResult
+    func save(
+        _ draft: IssueDraft,
+        reopeningAncestorIssueIDs ancestorIssueIDs: [String],
+        context: IssueDraftSaveContext? = nil
+    ) async -> Bool {
+        await save(
+            draft,
+            closingChildIssueIDs: [],
+            reopeningAncestorIssueIDs: ancestorIssueIDs,
+            context: context
+        )
+    }
+
+    @discardableResult
+    func save(
+        _ draft: IssueDraft,
+        closingChildIssueIDs childIssueIDs: [String],
+        reopeningAncestorIssueIDs ancestorIssueIDs: [String],
+        context: IssueDraftSaveContext? = nil
     ) async -> Bool {
         guard let projectURL else { return false }
 
@@ -564,6 +610,19 @@ extension BeadStore {
               let originalIssue = issue(with: draftID)
         else {
             return false
+        }
+
+        var draft = draft
+        if let context {
+            let rebase = draft.rebased(from: context.baseline, onto: originalIssue)
+            if !context.allowsConflictingChanges, !rebase.conflictingFields.isEmpty {
+                reportMutationFailure(
+                    IssueDraftConflictError(fields: rebase.conflictingFields),
+                    title: "Review pulled changes before saving"
+                )
+                return false
+            }
+            draft = rebase.draft
         }
 
         guard BeadIssueWorkflowPolicy.canChangeIssueTypeThroughNormalMutation(
@@ -672,6 +731,7 @@ extension BeadStore {
 
         let ancestorIDsForWrite = hierarchyReopenWriteOrder(ancestorIDs)
         let childIDsForWrite = hierarchyCompletionWriteOrder(childIDs)
+        let childCompletionStatus = draft.status
         let commands = commands
         var attemptedWrite = false
         do {
@@ -690,7 +750,7 @@ extension BeadStore {
                     try await commands.bulkUpdate(
                         projectURL: projectURL,
                         ids: childIDsForWrite,
-                        status: draft.status,
+                        status: childCompletionStatus,
                         type: nil,
                         priority: nil
                     )
@@ -734,7 +794,8 @@ extension BeadStore {
                     await self.save(
                         draft,
                         closingChildIssueIDs: childIssueIDs,
-                        reopeningAncestorIssueIDs: ancestorIssueIDs
+                        reopeningAncestorIssueIDs: ancestorIssueIDs,
+                        context: context
                     )
                 }
             )

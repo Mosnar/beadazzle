@@ -52,6 +52,8 @@ final class BeadProjectStore {
     fileprivate(set) var isLoadingProjectHealth = false
     fileprivate(set) var projectHealthAction: ProjectHealthAction?
     fileprivate(set) var projectHealthActionError: ProjectHealthActionFailure?
+    fileprivate(set) var projectDoltRemotes: ProjectHealthValue<BeadsDoltRemotes>?
+    fileprivate(set) var isLoadingProjectDoltRemotes = false
     fileprivate(set) var isLoading = false
     fileprivate(set) var isInitializingBeads = false
     fileprivate(set) var hiddenTypeNames: Set<String> = []
@@ -62,7 +64,7 @@ final class BeadProjectStore {
     /// entries once the exported snapshot contains the same value.
     fileprivate(set) var stateLabelOverridesByIssueID: [String: [String: BeadStateLabelOverride]] = [:]
 
-    @ObservationIgnored fileprivate(set) var refreshTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var refreshTask: Task<Bool, Never>?
     @ObservationIgnored fileprivate(set) var initializationTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var refreshGeneration = 0
     @ObservationIgnored fileprivate(set) var initializationGeneration = 0
@@ -70,6 +72,8 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var reconcileDebounceTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var reconcileState = SnapshotReconcileState()
     @ObservationIgnored fileprivate(set) var projectHealthTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var projectDoltRemotesTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var projectDoltRemotesGeneration = 0
     @ObservationIgnored fileprivate(set) var ownerIdentityTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var ownerIdentityGeneration = 0
     @ObservationIgnored fileprivate(set) var dataSourceMonitor: BeadsDataSourceMonitor?
@@ -112,6 +116,10 @@ final class BeadProjectStore {
         cancelReconciliationWork()
         projectHealthTask?.cancel()
         projectHealthTask = nil
+        projectDoltRemotesGeneration &+= 1
+        projectDoltRemotesTask?.cancel()
+        projectDoltRemotesTask = nil
+        isLoadingProjectDoltRemotes = false
         ownerIdentityGeneration &+= 1
         ownerIdentityTask?.cancel()
         ownerIdentityTask = nil
@@ -186,6 +194,43 @@ final class BeadProjectStore {
     func finishProjectHealthLoad(generation: Int) {
         guard projectHealthGeneration == generation else { return }
         projectHealthTask = nil
+    }
+
+    func beginProjectDoltRemotesLoad() -> Int {
+        projectDoltRemotesGeneration &+= 1
+        projectDoltRemotesTask?.cancel()
+        isLoadingProjectDoltRemotes = true
+        return projectDoltRemotesGeneration
+    }
+
+    func beginProjectDoltRemotesHealthLoad() -> Int {
+        projectDoltRemotesGeneration &+= 1
+        projectDoltRemotesTask?.cancel()
+        projectDoltRemotesTask = nil
+        isLoadingProjectDoltRemotes = true
+        return projectDoltRemotesGeneration
+    }
+
+    func ownsProjectDoltRemotesLoad(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
+        projectURL == expectedProjectURL && projectDoltRemotesGeneration == generation
+    }
+
+    func finishProjectDoltRemotesLoad(generation: Int) {
+        guard projectDoltRemotesGeneration == generation else { return }
+        projectDoltRemotesTask = nil
+        isLoadingProjectDoltRemotes = false
+    }
+
+    /// A full health load is authoritative for the same remote value as the lightweight
+    /// workspace probe. Both loaders share a generation so whichever starts later wins.
+    func acceptProjectDoltRemotesFromHealthLoad(
+        _ remotes: ProjectHealthValue<BeadsDoltRemotes>,
+        generation: Int
+    ) {
+        guard projectDoltRemotesGeneration == generation else { return }
+        projectDoltRemotesTask = nil
+        isLoadingProjectDoltRemotes = false
+        projectDoltRemotes = remotes
     }
 }
 
@@ -639,6 +684,7 @@ final class BeadMutationStore {
     static let maximumPossiblyPersistedLabelsPerIssue = 256
 
     fileprivate(set) var activeMutationCount = 0
+    private var mutationIdleWaiters: [CheckedContinuation<Void, Never>] = []
     var optimisticMutationRevision = 0
     let writeQueue = BeadMutationWriteQueue()
     private var optimisticMutationQueues: [Int: BeadOptimisticMutationQueue] = [:]
@@ -762,6 +808,7 @@ final class BeadMutationStore {
         cancelledFolderAutomationIDs = []
         metadataMutationGeneration &+= 1
         activeMutationCount = 0
+        resumeMutationIdleWaiters()
         optimisticMutationRevision = 0
         optimisticMutationQueues = [:]
         metadataMutations = [:]
@@ -769,6 +816,26 @@ final class BeadMutationStore {
         metadataSettlementsByIssue = [:]
         projection.reset()
         clearPossiblyPersistedLabels()
+    }
+
+    func waitUntilIdle() async {
+        guard activeMutationCount > 0 else { return }
+        await withCheckedContinuation { continuation in
+            mutationIdleWaiters.append(continuation)
+        }
+    }
+
+    func resumeMutationIdleWaitersIfNeeded() {
+        guard activeMutationCount == 0 else { return }
+        resumeMutationIdleWaiters()
+    }
+
+    private func resumeMutationIdleWaiters() {
+        let waiters = mutationIdleWaiters
+        mutationIdleWaiters.removeAll(keepingCapacity: true)
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 
     func optimisticMutationQueue(for generation: Int) -> BeadOptimisticMutationQueue {
@@ -903,6 +970,16 @@ final class BeadStore {
     internal var _projectHealthAction: ProjectHealthAction? { get { project.projectHealthAction } set { project.projectHealthAction = newValue } }
     var projectHealthActionError: ProjectHealthActionFailure? { project.projectHealthActionError }
     internal var _projectHealthActionError: ProjectHealthActionFailure? { get { project.projectHealthActionError } set { project.projectHealthActionError = newValue } }
+    var projectDoltRemotes: ProjectHealthValue<BeadsDoltRemotes>? { project.projectDoltRemotes }
+    internal var _projectDoltRemotes: ProjectHealthValue<BeadsDoltRemotes>? {
+        get { project.projectDoltRemotes }
+        set { project.projectDoltRemotes = newValue }
+    }
+    var isLoadingProjectDoltRemotes: Bool { project.isLoadingProjectDoltRemotes }
+    internal var _isLoadingProjectDoltRemotes: Bool {
+        get { project.isLoadingProjectDoltRemotes }
+        set { project.isLoadingProjectDoltRemotes = newValue }
+    }
     /// Gate detail cache keyed by gate bead id. The issue snapshot is the source of truth
     /// for display fields; `bd gate show` only enriches the selected gate with waiters.
     var gatesByID: [String: BeadGate] { detail.gatesByID }
@@ -1316,7 +1393,7 @@ final class BeadStore {
     /// after the index loads, so restoration runs a single time per open (not on live reloads).
     @ObservationIgnored internal var pendingRestoredWorkspaceSnapshot: BeadWorkspaceSnapshot?
     @ObservationIgnored internal var workspaceStatePersistTask: Task<Void, Never>?
-    internal var refreshTask: Task<Void, Never>? { get { project.refreshTask } set { project.refreshTask = newValue } }
+    internal var refreshTask: Task<Bool, Never>? { get { project.refreshTask } set { project.refreshTask = newValue } }
     internal var initializationTask: Task<Void, Never>? { get { project.initializationTask } set { project.initializationTask = newValue } }
     internal var reconcileDebounceTask: Task<Void, Never>? { get { project.reconcileDebounceTask } set { project.reconcileDebounceTask = newValue } }
     internal var activeMutationCount: Int { get { mutations.activeMutationCount } set { mutations.activeMutationCount = newValue } }
@@ -1336,6 +1413,10 @@ final class BeadStore {
     internal var activityLoadTask: Task<Void, Never>? { get { detail.activityLoadTask } set { detail.activityLoadTask = newValue } }
     internal var gateDetailTask: Task<Void, Never>? { get { detail.gateDetailTask } set { detail.gateDetailTask = newValue } }
     internal var projectHealthTask: Task<Void, Never>? { get { project.projectHealthTask } set { project.projectHealthTask = newValue } }
+    internal var projectDoltRemotesTask: Task<Void, Never>? {
+        get { project.projectDoltRemotesTask }
+        set { project.projectDoltRemotesTask = newValue }
+    }
     internal var ownerIdentityTask: Task<Void, Never>? {
         get { project.ownerIdentityTask }
         set { project.ownerIdentityTask = newValue }

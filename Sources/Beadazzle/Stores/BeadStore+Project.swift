@@ -219,6 +219,10 @@ extension BeadStore {
         _gatesByID = [:]
         _currentDataSource = nil
         _projectEnvironment = nil
+        projectDoltRemotesTask?.cancel()
+        projectDoltRemotesTask = nil
+        _projectDoltRemotes = nil
+        _isLoadingProjectDoltRemotes = false
         _ownerIdentity = .unavailable
         _snapshotFreshness = .unknown
         cachedDefinitions = nil
@@ -288,14 +292,20 @@ extension BeadStore {
         refresh(reason: .reconcile, showsLoadingIndicator: false)
     }
 
-    internal func refresh(reason: RefreshReason, showsLoadingIndicator: Bool) {
-        guard let projectURL else { return }
+    @discardableResult
+    internal func refresh(
+        reason: RefreshReason,
+        showsLoadingIndicator: Bool,
+        preparedSnapshot: LoadedBeadsSnapshot? = nil
+    ) -> Task<Bool, Never>? {
+        guard let projectURL else { return nil }
         guard reason == .initial || activeMutationCount == 0 else {
             queueRefreshAfterMutation(reason: reason)
-            return
+            return nil
         }
         if reason == .manual {
             cancelSemanticDefinitionsRefresh()
+            loadProjectDoltRemotesIfNeeded(force: true)
         }
         if reason == .initial || reason == .manual {
             refreshOwnerIdentity(for: projectURL, showsResolvingState: reason == .initial)
@@ -353,7 +363,7 @@ extension BeadStore {
             )
         }
 
-        refreshTask = Task { @MainActor [weak self] in
+        let task = Task { @MainActor [weak self] in
             defer { self?.project.finishRefresh(generation: refreshGeneration) }
             do {
                 let snapshotTask = Task {
@@ -375,7 +385,8 @@ extension BeadStore {
                         cachedDefinitions: definitionsForLoad,
                         cachedDefinitionsTrackerDirectoryURL: definitionsTrackerForLoad,
                         cachedEnvironment: environmentForLoad,
-                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
+                        loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+                        preparedSnapshot: preparedSnapshot
                     )
                 }
                 let loadedProject = try await withTaskCancellationHandler {
@@ -387,7 +398,7 @@ extension BeadStore {
                       let self,
                       self.projectURL == projectURL,
                       self.project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
-                else { return }
+                else { return false }
                 guard reason == .initial
                         || self.mutations.optimisticMutationRevision == optimisticMutationRevision
                 else {
@@ -395,9 +406,14 @@ extension BeadStore {
                         self._isLoading = false
                     }
                     self.queueRefreshAfterMutation(reason: reason)
-                    return
+                    return false
                 }
-                if reason == .dataSourceChanged, self.currentDataSource == loadedProject.source {
+                if reason == .dataSourceChanged,
+                   self.currentDataSource == loadedProject.source,
+                   self.mutations.projection.isEmpty {
+                    let deferredMonitorRoles = self.reconcileState.complete(
+                        replaysDeferredEvents: true
+                    )
                     if showsLoadingIndicator {
                         self._isLoading = false
                     }
@@ -407,7 +423,14 @@ extension BeadStore {
                         source: loadedProject.source
                     )
                     self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
-                    return
+                    if !deferredMonitorRoles.isEmpty {
+                        self.handleDataSourceMonitorEvent(
+                            BeadsDataSourceMonitor.Event(roles: deferredMonitorRoles),
+                            projectURL: projectURL
+                        )
+                    }
+                    self.scheduleReconcileIfIdle()
+                    return true
                 }
                 self.applyLoadedProject(
                     loadedProject,
@@ -416,17 +439,18 @@ extension BeadStore {
                     metadataBaseline: metadataBaseline
                 )
                 self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
+                return true
             } catch is CancellationError {
                 guard let self,
                       self.project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
-                else { return }
+                else { return false }
                 self.finishReconcileAfterRefreshTermination(
                     projectURL: projectURL,
                     refreshGeneration: refreshGeneration
                 )
-                return
+                return false
             } catch BeadError.projectMissingDataSource(let missingURL) {
-                guard let self, !Task.isCancelled, self.projectURL == projectURL else { return }
+                guard let self, !Task.isCancelled, self.projectURL == projectURL else { return false }
                 let recoveryTask = Task {
                     try await projectLoader.exportAndLoadProject(
                         projectURL: projectURL,
@@ -447,7 +471,7 @@ extension BeadStore {
                     guard !Task.isCancelled,
                           self.projectURL == projectURL,
                           self.project.ownsRefresh(projectURL: projectURL, generation: refreshGeneration)
-                    else { return }
+                    else { return false }
                     guard reason == .initial
                             || self.mutations.optimisticMutationRevision == optimisticMutationRevision
                     else {
@@ -455,7 +479,7 @@ extension BeadStore {
                             self._isLoading = false
                         }
                         self.queueRefreshAfterMutation(reason: reason)
-                        return
+                        return false
                     }
                     self.applyLoadedProject(
                         recoveredProject,
@@ -464,36 +488,41 @@ extension BeadStore {
                         metadataBaseline: metadataBaseline
                     )
                     self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
+                    return true
                 } catch is CancellationError {
                     guard self.project.ownsRefresh(
                         projectURL: projectURL,
                         generation: refreshGeneration
-                    ) else { return }
+                    ) else { return false }
                     self.finishReconcileAfterRefreshTermination(
                         projectURL: projectURL,
                         refreshGeneration: refreshGeneration
                     )
-                    return
+                    return false
                 } catch BeadError.projectMissingDataSource {
-                    guard !Task.isCancelled, self.projectURL == projectURL else { return }
+                    guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setMissingDataSource(missingURL)
+                    return false
                 } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
-                    guard !Task.isCancelled, self.projectURL == projectURL else { return }
+                    guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setUnsupportedProject(unsupportedURL, detail: detail)
+                    return false
                 } catch {
-                    guard !Task.isCancelled, self.projectURL == projectURL else { return }
+                    guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setProjectUnavailable(projectURL, detail: error.localizedDescription)
                     self.markSnapshotFreshnessFailed(error.localizedDescription)
+                    return false
                 }
             } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
-                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return }
+                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return false }
                 self.setUnsupportedProject(unsupportedURL, detail: detail)
                 self.finishReconcileAfterRefreshTermination(
                     projectURL: projectURL,
                     refreshGeneration: refreshGeneration
                 )
+                return false
             } catch {
-                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return }
+                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return false }
                 if self.currentDataSource == nil {
                     self.setProjectUnavailable(projectURL, detail: error.localizedDescription)
                 } else {
@@ -505,8 +534,11 @@ extension BeadStore {
                     projectURL: projectURL,
                     refreshGeneration: refreshGeneration
                 )
+                return false
             }
         }
+        refreshTask = task
+        return task
     }
 
     private func queueRefreshAfterMutation(reason: RefreshReason) {
@@ -573,6 +605,7 @@ extension BeadStore {
             cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
         }
         _projectEnvironment = loadedProject.environment
+        loadProjectDoltRemotesIfNeeded()
         _currentDataSource = loadedProject.source
         markSnapshotFreshnessLoaded(
             projectURL: projectURL,
@@ -632,6 +665,36 @@ extension BeadStore {
         scheduleReconcileIfIdle()
     }
 
+    /// Completes a reconcile whose export was byte-identical to the source already in
+    /// memory. This retires monitor bookkeeping and freshness state without decoding or
+    /// rebuilding the same large snapshot again.
+    internal func completeClaimedReconcileWithoutReload(
+        projectURL: URL,
+        source: BeadsDataSource
+    ) -> Bool {
+        guard self.projectURL == projectURL,
+              currentDataSource == source,
+              mutations.projection.isEmpty,
+              let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else {
+            return false
+        }
+        let deferredMonitorRoles = reconcileState.complete(replaysDeferredEvents: true)
+        markSnapshotFreshnessLoaded(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: source
+        )
+        refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
+        if !deferredMonitorRoles.isEmpty {
+            handleDataSourceMonitorEvent(
+                BeadsDataSourceMonitor.Event(roles: deferredMonitorRoles),
+                projectURL: projectURL
+            )
+        }
+        scheduleReconcileIfIdle()
+        return true
+    }
+
     internal func refreshSemanticDefinitionsIfNeeded(projectURL: URL) {
         guard cachedDefinitionsNeedRefresh,
               semanticDefinitionsRefreshTask == nil,
@@ -659,6 +722,20 @@ extension BeadStore {
                 return
             }
             guard let refreshedDefinitions else { return }
+
+            if self.cachedDefinitions == refreshedDefinitions {
+                let refreshedAt = Date()
+                self.cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
+                self.cachedDefinitionsLastCheckedAt = refreshedAt
+                self.cachedDefinitionsNeedRefresh = false
+                self.semanticDefinitionsRepository.save(
+                    refreshedDefinitions,
+                    projectURL: projectURL,
+                    trackerDirectoryURL: trackerDirectoryURL,
+                    refreshedAt: refreshedAt
+                )
+                return
+            }
 
             let sourceIndex = self.authoritativeIndex
             let sourceRefreshGeneration = self.project.currentRefreshGeneration
@@ -742,6 +819,14 @@ extension BeadStore {
             )
         }
         cachedDefinitionsTrackerDirectoryURL = projectEnvironment?.beadsDirectoryURL
+    }
+
+    /// Keeps the last known-good definitions available for the immediate issue reload while
+    /// ensuring a pull that changed custom statuses or types is verified in the background.
+    internal func markSemanticDefinitionsCacheStale() {
+        cancelSemanticDefinitionsRefresh()
+        cachedDefinitionsLastCheckedAt = nil
+        cachedDefinitionsNeedRefresh = true
     }
 
     private func applyRefreshedSemantics(_ refreshedAuthoritativeIndex: BeadProjectIndex) {

@@ -207,6 +207,75 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
     }
 
+    func testPreparedExportReturnsDecodedSnapshotAndSkipsIdenticalReplacement() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let snapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+        let contents = """
+        {"_type":"issue","id":"bd-existing","title":"Existing","status":"open","priority":1,"issue_type":"task"}
+        """ + "\n"
+        try contents.write(to: snapshotURL, atomically: true, encoding: .utf8)
+        let originalModificationDate = Date(timeIntervalSince1970: 1_600_000_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalModificationDate],
+            ofItemAtPath: snapshotURL.path
+        )
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            printf '%s\n' '{"_type":"issue","id":"bd-existing","title":"Existing","status":"open","priority":1,"issue_type":"task"}' > "$1"
+            exit 0
+          fi
+          shift
+        done
+        exit 2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let result = try await service.exportReadableSnapshotWithResult(
+            projectURL: projectURL,
+            beadsDirectoryURL: projectURL.appendingPathComponent(".beads", isDirectory: true)
+        )
+
+        XCTAssertFalse(result.didReplaceSnapshot)
+        XCTAssertEqual(result.loadedSnapshot?.snapshot.issues.map(\.id), ["bd-existing"])
+        let attributes = try FileManager.default.attributesOfItem(atPath: snapshotURL.path)
+        XCTAssertEqual(attributes[.modificationDate] as? Date, originalModificationDate)
+        XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
+    func testPreparedExportReturnsInstalledSourceAfterReplacement() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let snapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+        try """
+        {"_type":"issue","id":"bd-existing","title":"Existing","status":"open","priority":1,"issue_type":"task"}
+        """.write(to: snapshotURL, atomically: true, encoding: .utf8)
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            printf '%s\n' '{"_type":"issue","id":"bd-new","title":"New","status":"open","priority":1,"issue_type":"task"}' > "$1"
+            exit 0
+          fi
+          shift
+        done
+        exit 2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let result = try await service.exportReadableSnapshotWithResult(
+            projectURL: projectURL,
+            beadsDirectoryURL: projectURL.appendingPathComponent(".beads", isDirectory: true)
+        )
+
+        XCTAssertTrue(result.didReplaceSnapshot)
+        XCTAssertEqual(result.loadedSnapshot?.source.url, snapshotURL)
+        XCTAssertEqual(result.loadedSnapshot?.snapshot.issues.map(\.id), ["bd-new"])
+        XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
     func testExportReadableSnapshotUsesResolvedTrackerDirectory() async throws {
         let projectURL = try makeProjectWithBeadsDirectory()
         let trackerDirectory = projectURL.appendingPathComponent("redirected-tracker", isDirectory: true)

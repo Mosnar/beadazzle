@@ -1243,6 +1243,110 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.issue(with: "bd-1")?.title, "Updated")
     }
 
+    func testFullSaveRebasesLocalEditOntoUnrelatedAuthoritativeChange() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"Original","description":"Original description","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let baselineIssue = try XCTUnwrap(store.issue(with: "bd-1"))
+        let baseline = IssueDraft(issue: baselineIssue)
+        var localDraft = baseline
+        localDraft.description = "Local description"
+        var pulledIssue = baselineIssue
+        pulledIssue.title = "Pulled title"
+        store.applyOptimisticState(issues: [pulledIssue], dependencies: [])
+
+        let didSave = await store.save(
+            localDraft,
+            context: IssueDraftSaveContext(
+                baseline: baseline,
+                allowsConflictingChanges: false
+            )
+        )
+
+        XCTAssertTrue(didSave)
+        let updateCalls = await commands.updateCalls
+        let call = try XCTUnwrap(updateCalls.last)
+        XCTAssertEqual(call.draft.title, "Pulled title")
+        XCTAssertEqual(call.draft.description, "Local description")
+        XCTAssertEqual(call.originalIssue?.title, "Pulled title")
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Pulled title")
+        XCTAssertEqual(store.issue(with: "bd-1")?.description, "Local description")
+    }
+
+    func testFullSaveStopsBeforeOverwritingConflictingAuthoritativeChange() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "Original"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let baselineIssue = try XCTUnwrap(store.issue(with: "bd-1"))
+        let baseline = IssueDraft(issue: baselineIssue)
+        var localDraft = baseline
+        localDraft.title = "Local title"
+        var pulledIssue = baselineIssue
+        pulledIssue.title = "Pulled title"
+        store.applyOptimisticState(issues: [pulledIssue], dependencies: [])
+
+        let didSave = await store.save(
+            localDraft,
+            context: IssueDraftSaveContext(
+                baseline: baseline,
+                allowsConflictingChanges: false
+            )
+        )
+
+        XCTAssertFalse(didSave)
+        let updateCalls = await commands.updateCalls
+        XCTAssertTrue(updateCalls.isEmpty)
+        XCTAssertEqual(store.issue(with: "bd-1")?.title, "Pulled title")
+        XCTAssertEqual(store.currentFailure?.title, "Review pulled changes before saving")
+    }
+
+    func testFullSaveCanKeepLocalValueWhilePreservingOtherPulledFields() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"Original","description":"Original description","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z"}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let baselineIssue = try XCTUnwrap(store.issue(with: "bd-1"))
+        let baseline = IssueDraft(issue: baselineIssue)
+        var localDraft = baseline
+        localDraft.title = "Local title"
+        var pulledIssue = baselineIssue
+        pulledIssue.title = "Pulled title"
+        pulledIssue.description = "Pulled description"
+        store.applyOptimisticState(issues: [pulledIssue], dependencies: [])
+
+        let didSave = await store.save(
+            localDraft,
+            context: IssueDraftSaveContext(
+                baseline: baseline,
+                allowsConflictingChanges: true
+            )
+        )
+
+        XCTAssertTrue(didSave)
+        let updateCalls = await commands.updateCalls
+        let call = try XCTUnwrap(updateCalls.last)
+        XCTAssertEqual(call.draft.title, "Local title")
+        XCTAssertEqual(call.draft.description, "Pulled description")
+        XCTAssertEqual(call.originalIssue?.title, "Pulled title")
+        XCTAssertEqual(call.originalIssue?.description, "Pulled description")
+    }
+
     func testFailedLabelReplacementThenClearUsesEveryPossiblePersistedLabel() async throws {
         let projectURL = try makeProject(
             """

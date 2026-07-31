@@ -3,6 +3,7 @@ import Foundation
 enum ProjectHealthAction: Equatable, Sendable {
     case exportingSnapshot
     case installingHooks
+    case synchronizingIssues
     case pullingIssues
     case pushingIssues
     case syncingBackup
@@ -15,6 +16,8 @@ enum ProjectHealthAction: Equatable, Sendable {
             "Exporting snapshot"
         case .installingHooks:
             "Installing hooks"
+        case .synchronizingIssues:
+            "Syncing issues"
         case .pullingIssues:
             "Pulling issues"
         case .pushingIssues:
@@ -27,6 +30,11 @@ enum ProjectHealthAction: Equatable, Sendable {
             "Flattening database"
         }
     }
+}
+
+enum ProjectHealthCompletionRefresh: Equatable, Sendable {
+    case none
+    case fullHealth
 }
 
 enum BeadsDoltMaintenanceKind: String, Identifiable, Sendable {
@@ -100,7 +108,14 @@ struct ProjectHealthActionFailure: Equatable, Sendable {
     static func pullCompletedButSnapshotRefreshFailed(_ message: String) -> ProjectHealthActionFailure {
         ProjectHealthActionFailure(
             title: "Pull completed, but refresh failed",
-            message: "The Dolt database was updated, but Beadazzle could not export its readable snapshot. The issue list may be stale. \(message)"
+            message: "The Dolt database was updated, but the issue list could not be refreshed. \(message)"
+        )
+    }
+
+    static func syncCompletedButSnapshotRefreshFailed(_ message: String) -> ProjectHealthActionFailure {
+        ProjectHealthActionFailure(
+            title: "Sync completed, but refresh failed",
+            message: "The Dolt remote was updated, but the issue list could not be refreshed. \(message)"
         )
     }
 
@@ -156,9 +171,14 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
         if environment?.storageMode == .embedded,
            let databaseURL = environment?.beadsDirectoryURL
             .appendingPathComponent("embeddeddolt", isDirectory: true) {
-            maintenancePreview.embeddedDatabaseSize = await Task.detached(priority: .utility) {
+            let databaseSizeTask = Task.detached(priority: .utility) {
                 Self.directorySize(at: databaseURL)
-            }.value
+            }
+            maintenancePreview.embeddedDatabaseSize = await withTaskCancellationHandler {
+                await databaseSizeTask.value
+            } onCancel: {
+                databaseSizeTask.cancel()
+            }
         }
 
         return ProjectHealthSnapshot(
@@ -182,6 +202,7 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
         ) else { return nil }
         var total: Int64 = 0
         for case let fileURL as URL in enumerator {
+            guard !Task.isCancelled else { return nil }
             guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
                   values.isRegularFile == true,
                   let size = values.fileSize else { continue }

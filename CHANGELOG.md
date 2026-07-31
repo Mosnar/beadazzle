@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Sync Beads with one toolbar action that pulls before pushing; separate Pull and Push commands and shortcuts remain available.
+- Sync now preserves in-progress edits and pulled changes, keeps its progress icon visible, refreshes large trackers with less redundant work, and distinguishes remote failures from local snapshot failures.
 - Bead editors can now show suggested sections by type, add or hide empty sections, and use a customizable section order with app defaults and per-project overrides.
 - New, untouched bead drafts now refresh their suggested sections immediately when the bead type changes.
 - Project Content settings can now manage Beads' shared description requirement and creation-validation behavior, with successful validation warnings shown without losing the new bead.

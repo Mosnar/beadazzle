@@ -72,6 +72,40 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         XCTAssertNil(value(after: "--assignee", in: arguments))
     }
 
+    func testUpdateArgumentsWithOriginalIssueEmitOnlyChangedFields() throws {
+        let original = issue(id: "bd-1", title: "Original")
+        var edited = IssueDraft(issue: original)
+        edited.title = "Edited"
+
+        let arguments = try XCTUnwrap(BeadsCommandArguments.update(
+            draft: edited,
+            originalIssue: original
+        ))
+
+        XCTAssertEqual(arguments, ["update", "bd-1", "--title", "Edited"])
+    }
+
+    func testUpdateArgumentsWithOriginalIssueSkipNoOpUpdate() {
+        let original = issue(id: "bd-1", title: "Original")
+
+        XCTAssertNil(BeadsCommandArguments.update(
+            draft: IssueDraft(issue: original),
+            originalIssue: original
+        ))
+    }
+
+    func testUpdateArgumentsTreatLabelReorderingAsNoOp() {
+        var original = issue(id: "bd-1", title: "Original")
+        original.labels = ["area:ui", "phase:ready"]
+        var edited = IssueDraft(issue: original)
+        edited.labels = ["phase:ready", "area:ui"]
+
+        XCTAssertNil(BeadsCommandArguments.update(
+            draft: edited,
+            originalIssue: original
+        ))
+    }
+
     func testCreateArgumentsNormalizeLabelsAndOmitBlankOptionalFields() {
         let arguments = BeadsCommandArguments.create(
             draft: draft(
@@ -718,6 +752,36 @@ final class BeadsCommandArgumentsTests: XCTestCase {
             parentID: parentID,
             dueAt: dueAt,
             deferUntil: deferUntil
+        )
+    }
+
+    private func issue(id: String, title: String) -> BeadIssue {
+        BeadIssue(
+            id: id,
+            title: title,
+            description: "Description",
+            design: "",
+            acceptanceCriteria: "",
+            notes: "",
+            status: "open",
+            priority: 2,
+            issueType: "task",
+            assignee: "riley",
+            owner: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            closedAt: nil,
+            dueAt: nil,
+            deferUntil: nil,
+            externalRef: nil,
+            parentID: nil,
+            labels: ["area:ui"],
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
         )
     }
 
