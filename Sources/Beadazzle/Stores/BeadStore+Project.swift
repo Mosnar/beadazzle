@@ -229,6 +229,9 @@ extension BeadStore {
         _selectedIDs.removeAll()
         _fullPageDetailIssueID = nil
         creationDraft = nil
+        creationValidationSettings = .beadsDefault
+        creationValidationLoadState = .idle
+        isSavingCreationValidationSettings = false
         outlineState.clear()
         _filterCounts = .empty
         _savedViewCounts = [:]

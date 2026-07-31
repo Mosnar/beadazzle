@@ -24,6 +24,9 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.beadListDisplayOptions, .compact)
         XCTAssertEqual(store.defaultNewBeadAssignee, .unassigned)
         XCTAssertNil(store.projectNewBeadAssigneeOverride)
+        XCTAssertEqual(store.issueTextSectionVisibilityMode, .suggestedForType)
+        XCTAssertEqual(store.issueTextSectionOrder, IssueTextSection.canonicalOrder)
+        XCTAssertEqual(store.issueTextSectionSuggestions, .beadsDefault)
         XCTAssertFalse(store.showsBackNavigationButton)
         XCTAssertFalse(store.showsForwardNavigationButton)
         XCTAssertTrue(store.showsAllChildrenInOutline)
@@ -42,6 +45,9 @@ final class BeadStorePreferencesTests: XCTestCase {
 
         store.bdCLIPath = "/tmp/custom-bd"
         store.defaultNewBeadAssignee = .specific("  alex@example.com  ")
+        store.issueTextSectionVisibilityMode = .descriptionOnly
+        store.issueTextSectionOrder = [.notes, .description, .acceptanceCriteria, .design]
+        store.setAppSuggestedSections([.description, .design], for: "feature")
         store.showsBackNavigationButton = true
         store.showsForwardNavigationButton = true
         store.showsAllChildrenInOutline = false
@@ -57,6 +63,15 @@ final class BeadStorePreferencesTests: XCTestCase {
 
         XCTAssertEqual(reloadedStore.bdCLIPath, "/tmp/custom-bd")
         XCTAssertEqual(reloadedStore.defaultNewBeadAssignee, .specific("alex@example.com"))
+        XCTAssertEqual(reloadedStore.issueTextSectionVisibilityMode, .descriptionOnly)
+        XCTAssertEqual(
+            reloadedStore.issueTextSectionOrder,
+            [.notes, .description, .acceptanceCriteria, .design]
+        )
+        XCTAssertEqual(
+            reloadedStore.issueTextSectionSuggestions.sections(for: "feature"),
+            [.description, .design]
+        )
         XCTAssertTrue(reloadedStore.showsBackNavigationButton)
         XCTAssertTrue(reloadedStore.showsForwardNavigationButton)
         XCTAssertFalse(reloadedStore.showsAllChildrenInOutline)
@@ -100,6 +115,71 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.visibleSidebarBookmarks, [.open])
         XCTAssertFalse(store.visibleSidebarBookmarks.contains(.closed))
         XCTAssertFalse(store.visibleSidebarBookmarks.contains(.gates))
+    }
+
+    func testProjectTextSectionOverridesPersistAndInheritUnchangedAppValues() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        store.issueTextSectionVisibilityMode = .descriptionOnly
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        store.projectIssueTextSectionOrderOverride = [
+            .notes,
+            .description,
+            .acceptanceCriteria,
+            .design
+        ]
+        store.setProjectSuggestedSectionOverride([.description, .design], for: "task")
+
+        let reloaded = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloaded.issueTextSectionVisibilityMode = .allSections
+        reloaded.openProject(projectURL)
+        try await waitUntil { !reloaded.isLoading && reloaded.issue(with: "bd-1") != nil }
+
+        XCTAssertNil(reloaded.projectIssueTextSectionVisibilityModeOverride)
+        XCTAssertEqual(reloaded.effectiveIssueTextSectionPreferences.visibilityMode, .allSections)
+        XCTAssertEqual(
+            reloaded.effectiveIssueTextSectionPreferences.order,
+            [.notes, .description, .acceptanceCriteria, .design]
+        )
+        XCTAssertEqual(
+            reloaded.effectiveIssueTextSectionPreferences.suggestions.sections(for: "task"),
+            [.description, .design]
+        )
+    }
+
+    func testNormalizedTextSectionPreferencesPersistAfterProgrammaticAssignment() async throws {
+        let defaults = makeUserDefaults()
+        let projectURL = try makeProject(issueLine(id: "bd-1", status: "open", type: "task"))
+        let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+
+        store.issueTextSectionOrder = [.notes, .notes]
+        store.issueTextSectionSuggestions = IssueTextSectionSuggestionMatrix(
+            version: 99,
+            sectionsByType: [" FEATURE ": [.notes, .notes]]
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.projectIssueTextSectionOrderOverride = [.design, .design]
+        store.projectIssueTextSectionSuggestionOverrides = [" TASK ": [.design, .design]]
+
+        let reloaded = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
+        reloaded.openProject(projectURL)
+        try await waitUntil { !reloaded.isLoading && reloaded.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(
+            reloaded.issueTextSectionOrder,
+            [.notes, .description, .acceptanceCriteria, .design]
+        )
+        XCTAssertEqual(reloaded.issueTextSectionSuggestions.version, 1)
+        XCTAssertEqual(reloaded.appSuggestedSections(for: "feature"), [.notes])
+        XCTAssertEqual(
+            reloaded.projectIssueTextSectionOrderOverride,
+            [.design, .description, .acceptanceCriteria, .notes]
+        )
+        XCTAssertEqual(reloaded.projectSuggestedSectionOverride(for: "task"), [.design])
     }
 
     func testBlankSpecificAssigneeModePersistsWhileResolvingAsUnassigned() async throws {
@@ -544,6 +624,8 @@ final class BeadStorePreferencesTests: XCTestCase {
 
         XCTAssertEqual(store.availableStatuses, [])
         XCTAssertEqual(store.availableTypes, [])
+        XCTAssertTrue(store.configurableMutableTypes.contains("incident"))
+        XCTAssertTrue(store.configurableMutableTypes.contains("task"))
         XCTAssertEqual(store.statusOptions(including: "open"), ["open"])
         XCTAssertEqual(store.statusChangeOptions(excluding: "open"), [])
         XCTAssertEqual(store.typeOptions(including: "task"), ["task"])
@@ -798,6 +880,9 @@ final class BeadStorePreferencesTests: XCTestCase {
             "automaticallyChecksForUpdates",
             "receivesBetaUpdates",
             "defaultNewBeadAssignee",
+            "issueTextSectionVisibilityMode",
+            "issueTextSectionSuggestions",
+            "issueTextSectionOrder",
             "showsBackNavigationButton",
             "showsForwardNavigationButton",
             "showsAllChildrenInOutline",
@@ -809,6 +894,9 @@ final class BeadStorePreferencesTests: XCTestCase {
             "showsGatesInSidebar",
             "showsZeroCountSidebarSections",
             "projectNewBeadAssigneeOverride",
+            "projectIssueTextSectionOverrides",
+            "create.require-description",
+            "validation.on-create",
             "staleCutoffDays",
             "hidesParentsWithOnlyBlockedChildrenInReady",
             "automaticallyRefreshesExternalChanges",
@@ -870,7 +958,13 @@ final class BeadStorePreferencesTests: XCTestCase {
         )
         XCTAssertEqual(
             Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
-            Set(["Issue List > View Options", "Sidebar > Bookmarks", "Project Settings > Storage", "Project Settings > Properties"])
+            Set([
+                "Issue List > View Options",
+                "Sidebar > Bookmarks",
+                "Project Settings > Storage",
+                "Project Settings > Properties",
+                "Project Settings > Content"
+            ])
         )
     }
 

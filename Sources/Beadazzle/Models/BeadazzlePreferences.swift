@@ -5,6 +5,9 @@ enum BeadazzlePreferenceKeys {
     static let receivesBetaUpdates = "ReceivesBetaUpdates"
     static let defaultNewBeadAssigneeMode = "NewBeads.DefaultAssignee.Mode"
     static let defaultNewBeadAssigneeValue = "NewBeads.DefaultAssignee.Value"
+    static let issueTextSectionVisibilityMode = "Editor.BeadContent.EmptySectionMode"
+    static let issueTextSectionOrder = "Editor.BeadContent.SectionOrder"
+    static let issueTextSectionSuggestions = "Editor.BeadContent.TypeSuggestions"
     static let legacyStaleCutoffDays = "StaleCutoffDays"
     static let legacyShowsOwnerInBeadList = "ShowsOwnerInBeadList"
     static let legacyShowsAssigneeInBeadList = "ShowsAssigneeInBeadList"
@@ -53,6 +56,18 @@ enum BeadazzlePreferenceKeys {
 
     static func newBeadAssigneeOverrideValue(projectURL: URL) -> String {
         "NewBeads.DefaultAssignee.OverrideValue.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func issueTextSectionVisibilityModeOverride(projectURL: URL) -> String {
+        "Editor.BeadContent.EmptySectionMode.Override.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func issueTextSectionOrderOverride(projectURL: URL) -> String {
+        "Editor.BeadContent.SectionOrder.Override.\(projectURL.standardizedFileURL.path)"
+    }
+
+    static func issueTextSectionSuggestionOverrides(projectURL: URL) -> String {
+        "Editor.BeadContent.TypeSuggestions.Override.\(projectURL.standardizedFileURL.path)"
     }
 
     static func pinnedStateDimensions(projectURL: URL) -> String {
@@ -235,6 +250,33 @@ enum BeadazzleOptionInventory {
             behavior: "Seeds the assignee on new bead drafts unless the active project overrides it."
         ),
         BeadazzleOptionInventoryEntry(
+            id: "issueTextSectionVisibilityMode",
+            title: "Empty bead sections",
+            scope: .appPreference,
+            persistence: BeadazzlePreferenceKeys.issueTextSectionVisibilityMode,
+            defaultValue: IssueTextSectionVisibilityMode.suggestedForType.title,
+            uiLocation: "Settings > Editor",
+            behavior: "Chooses which empty built-in text sections appear initially."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "issueTextSectionSuggestions",
+            title: "Suggested sections by type",
+            scope: .appPreference,
+            persistence: BeadazzlePreferenceKeys.issueTextSectionSuggestions,
+            defaultValue: "Beads suggestions",
+            uiLocation: "Settings > Editor",
+            behavior: "Maps bead types to the empty text sections shown initially."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "issueTextSectionOrder",
+            title: "Bead section order",
+            scope: .appPreference,
+            persistence: BeadazzlePreferenceKeys.issueTextSectionOrder,
+            defaultValue: "Description, Acceptance Criteria, Design, Notes",
+            uiLocation: "Settings > Editor",
+            behavior: "Orders built-in text sections in editors and Find navigation."
+        ),
+        BeadazzleOptionInventoryEntry(
             id: BeadazzleAppBoolPreferences.showsBackNavigationButton.id,
             title: "Show Back button",
             scope: .appPreference,
@@ -335,6 +377,33 @@ enum BeadazzleOptionInventory {
             defaultValue: "Use App Default",
             uiLocation: "Project Settings > Behavior",
             behavior: "Overrides the app default when starting new bead drafts for one project."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "projectIssueTextSectionOverrides",
+            title: "Project bead section overrides",
+            scope: .projectViewOption,
+            persistence: "Editor.BeadContent.*.Override.<project path>",
+            defaultValue: "Use App Default",
+            uiLocation: "Project Settings > Content",
+            behavior: "Privately overrides visibility, type suggestions, and order for one project on this Mac."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "create.require-description",
+            title: "Require a description",
+            scope: .projectConfiguration,
+            persistence: "bd config create.require-description",
+            defaultValue: "Off",
+            uiLocation: "Project Settings > Content",
+            behavior: "Shared Beads validation rule requiring descriptions on created beads."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "validation.on-create",
+            title: "Creation validation behavior",
+            scope: .projectConfiguration,
+            persistence: "bd config validation.on-create",
+            defaultValue: "None",
+            uiLocation: "Project Settings > Content",
+            behavior: "Chooses whether shared creation validation is ignored, warned, or enforced."
         ),
         BeadazzleOptionInventoryEntry(
             id: "staleCutoffDays",

@@ -2775,6 +2775,80 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.map(\.draft.title), ["Created from inline"])
     }
 
+    func testCreateWarningKeepsSuccessfulProjectionAndShowsNonRetryableFeedback() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreateWarning("description is recommended")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        let createdIssueID = await store.createBead(
+            draft(title: "Created despite warning"),
+            revealCreated: true
+        )
+
+        let issueID = try XCTUnwrap(createdIssueID)
+        XCTAssertEqual(store.issue(with: issueID)?.title, "Created despite warning")
+        XCTAssertEqual(store.currentFailure?.title, "Created bead with a warning")
+        XCTAssertEqual(store.currentFailure?.output, "description is recommended")
+        XCTAssertFalse(store.currentFailure?.isRetryable ?? true)
+    }
+
+    func testCreationValidationSettingsReloadOnlyWhenForced() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreationValidationSettings(BeadsCreationValidationSettings(
+            requiresDescription: true,
+            mode: .warn
+        ))
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        await store.loadCreationValidationSettingsIfNeeded()
+        XCTAssertEqual(store.creationValidationSettings.mode, .warn)
+
+        await commands.setCreationValidationSettings(BeadsCreationValidationSettings(
+            requiresDescription: false,
+            mode: .error
+        ))
+        await store.loadCreationValidationSettingsIfNeeded()
+        XCTAssertEqual(store.creationValidationSettings.mode, .warn)
+        let loadCountBeforeForce = await commands.creationValidationLoadCount
+        XCTAssertEqual(loadCountBeforeForce, 1)
+
+        await store.loadCreationValidationSettingsIfNeeded(force: true)
+        XCTAssertEqual(
+            store.creationValidationSettings,
+            BeadsCreationValidationSettings(requiresDescription: false, mode: .error)
+        )
+        let loadCountAfterForce = await commands.creationValidationLoadCount
+        XCTAssertEqual(loadCountAfterForce, 2)
+    }
+
+    func testCreationValidationSaveFailureReloadsAuthoritativeSettings() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setCreationValidationSettings(.beadsDefault)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.loadCreationValidationSettingsIfNeeded(force: true)
+        await commands.setCreationValidationSaveError(StoreMutationTestError.commandFailed)
+
+        await store.saveCreationValidationSettings(BeadsCreationValidationSettings(
+            requiresDescription: true,
+            mode: .error
+        ))
+
+        XCTAssertEqual(store.creationValidationSettings, .beadsDefault)
+        guard case .failed = store.creationValidationLoadState else {
+            return XCTFail("Expected failed creation validation load state")
+        }
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't save creation validation")
+    }
+
     func testBeginCreatingChildBeadPresetsParentAndSavesWithSingleCreate() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-parent", title: "Parent"))
         let commands = RecordingBeadsCommands()
@@ -4860,8 +4934,12 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var loadCommentsCalls: [(projectURL: URL, issueID: String)] = []
     private(set) var exportCallCount = 0
     private(set) var definitionLoadCallCount = 0
+    private(set) var creationValidationLoadCount = 0
     private var createIssueID = "bd-created"
     private var createError: Error?
+    private var createWarning: String?
+    private var creationValidationSettings = BeadsCreationValidationSettings.beadsDefault
+    private var creationValidationSaveError: Error?
     private var createDelay: Duration?
     private var updateError: Error?
     private var updateDelay: Duration?
@@ -4923,6 +5001,18 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setCreateError(_ error: Error?) {
         createError = error
+    }
+
+    func setCreateWarning(_ warning: String?) {
+        createWarning = warning
+    }
+
+    func setCreationValidationSettings(_ settings: BeadsCreationValidationSettings) {
+        creationValidationSettings = settings
+    }
+
+    func setCreationValidationSaveError(_ error: Error?) {
+        creationValidationSaveError = error
     }
 
     func setCreateDelay(_ delay: Duration?) {
@@ -5085,6 +5175,28 @@ private actor RecordingBeadsCommands: BeadsCommanding {
             try appendCreatedIssue(projectURL: projectURL, issueID: createdIssueID, draft: draft)
         }
         return createdIssueID
+    }
+
+    func createWithFeedback(projectURL: URL, draft: IssueDraft) async throws -> BeadsCreateResult {
+        BeadsCreateResult(
+            issueID: try await create(projectURL: projectURL, draft: draft),
+            warning: createWarning
+        )
+    }
+
+    func loadCreationValidationSettings(projectURL: URL) async throws -> BeadsCreationValidationSettings {
+        creationValidationLoadCount += 1
+        return creationValidationSettings
+    }
+
+    func saveCreationValidationSettings(
+        projectURL: URL,
+        settings: BeadsCreationValidationSettings
+    ) async throws {
+        if let creationValidationSaveError {
+            throw creationValidationSaveError
+        }
+        creationValidationSettings = settings
     }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {

@@ -42,83 +42,43 @@ struct IssueTitleBlock: View {
     }
 }
 
-enum IssueTextSection: Hashable {
-    case description
-    case acceptanceCriteria
-    case design
-    case notes
-
-    /// Document-ID prefix the unsaved creation draft uses, since it has no
-    /// issue ID to key its fields by yet.
-    static let creationDocumentIDPrefix = "new-bead"
-
-    var title: String {
-        switch self {
-        case .description:
-            return "Description"
-        case .acceptanceCriteria:
-            return "Acceptance Criteria"
-        case .design:
-            return "Design"
-        case .notes:
-            return "Notes"
-        }
-    }
-
-    var placeholder: String {
-        switch self {
-        case .description:
-            return "Add description..."
-        case .acceptanceCriteria:
-            return "Add acceptance criteria..."
-        case .design:
-            return "Add design notes..."
-        case .notes:
-            return "Add notes..."
-        }
-    }
-
-    var storageKey: String {
-        switch self {
-        case .description:
-            return "description"
-        case .acceptanceCriteria:
-            return "acceptance-criteria"
-        case .design:
-            return "design"
-        case .notes:
-            return "notes"
-        }
-    }
-
-    /// Identifier the markdown engine uses for this field's document. Find
-    /// routes engine replies back to a section by rebuilding this string, so it
-    /// has to stay the single definition.
-    func documentID(prefix: String) -> String {
-        "\(prefix)-\(storageKey)"
-    }
-
-    var minimumLineCount: Int {
-        switch self {
-        case .description:
-            return 3
-        case .acceptanceCriteria, .design:
-            return 3
-        case .notes:
-            return 2
-        }
-    }
-}
-
 struct EditableTextSection: View {
     let section: IssueTextSection
     @Binding var text: String
     let documentID: String
+    let canHide: Bool
+    let hideAction: () -> Void
+    @State private var isHeaderHovered = false
+    @FocusState private var isHideButtonFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(section.title)
-                .font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(section.title)
+                    .font(.title3.weight(.semibold))
+
+                Spacer()
+
+                if canHide {
+                    Button(action: hideAction) {
+                        DetailToolbarActionLabel()
+                    }
+                    .buttonStyle(
+                        DetailToolbarButtonStyle(
+                            systemImage: "eye.slash",
+                            isFocused: isHideButtonFocused
+                        )
+                    )
+                    .focused($isHideButtonFocused)
+                    .opacity(isHeaderHovered || isHideButtonFocused ? 1 : 0)
+                    .allowsHitTesting(isHeaderHovered || isHideButtonFocused)
+                    .help("Hide empty \(section.title) section")
+                    .accessibilityLabel("Hide \(section.title) section")
+                    .accessibilityHint("Keeps this empty section hidden until it is added again")
+                }
+            }
+            .contentShape(.rect)
+            .onHover { isHeaderHovered = $0 }
 
             MarkdownFieldEditor(
                 text: $text,

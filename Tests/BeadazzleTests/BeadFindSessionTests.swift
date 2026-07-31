@@ -8,8 +8,8 @@ final class BeadFindSessionTests: XCTestCase {
     private static let projectKey = "/tmp/project-a"
 
     private static func scope(
-        prefix: String = BeadFindSessionTests.prefix,
-        projectKey: String = BeadFindSessionTests.projectKey
+        prefix: String = "bd-42",
+        projectKey: String = "/tmp/project-a"
     ) -> BeadFindScope {
         BeadFindScope(projectKey: projectKey, documentIDPrefix: prefix)
     }
@@ -107,6 +107,32 @@ final class BeadFindSessionTests: XCTestCase {
         XCTAssertEqual(dispatcher.requests.first?.text, "widget")
         XCTAssertEqual(dispatcher.requests.first?.focusDocumentID, documentID(.description))
         XCTAssertEqual(dispatcher.requests.first?.focusIndex, 0)
+    }
+
+    func testFindUsesVisibleSectionsInTheirDisplayOrder() {
+        let dispatcher = RecordingDispatcher()
+        let session = BeadFindSession(
+            debounce: .zero,
+            settleGrace: .zero,
+            dispatcher: dispatcher
+        )
+        session.open(scope: BeadFindScope(
+            projectKey: Self.projectKey,
+            documentIDPrefix: Self.prefix,
+            sectionOrder: [.notes, .description]
+        ))
+
+        session.query = "widget"
+        XCTAssertEqual(dispatcher.requests.last?.focusDocumentID, documentID(.notes))
+
+        reply(to: session, query: "widget", counts: [
+            (.notes, 0),
+            (.description, 2)
+        ], dispatcher: dispatcher)
+
+        XCTAssertTrue(session.isSettled)
+        XCTAssertEqual(session.totalMatchCount, 2)
+        XCTAssertEqual(session.focusTarget?.section, .description)
     }
 
     func testTotalIsTheSumOfEveryFieldsCount() {

@@ -23,11 +23,72 @@ struct BeadsLabelMutationBatch: Equatable, Sendable {
     }
 }
 
+private struct BeadsCommandOutput: Sendable {
+    let standardOutput: String
+    let standardError: String
+
+    var combined: String {
+        [standardOutput, standardError]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+}
+
+private enum ConcurrentProcessOutputReader {
+    static func read(
+        standardOutput: Pipe,
+        standardError: Pipe
+    ) -> () -> BeadsCommandOutput {
+        let outputData = LockedProcessData()
+        let errorData = LockedProcessData()
+        let group = DispatchGroup()
+        let queue = DispatchQueue.global(qos: .userInitiated)
+
+        group.enter()
+        queue.async {
+            outputData.set(standardOutput.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+        group.enter()
+        queue.async {
+            errorData.set(standardError.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+
+        return {
+            group.wait()
+            return BeadsCommandOutput(
+                standardOutput: outputData.text,
+                standardError: errorData.text
+            )
+        }
+    }
+}
+
+private final class LockedProcessData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    var text: String {
+        lock.withLock {
+            String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+    }
+
+    func set(_ value: Data) {
+        lock.withLock {
+            data = value
+        }
+    }
+}
+
 protocol BeadsCommanding: Sendable {
     func initialize(projectURL: URL, options: BeadsInitOptions) async throws
     func exportReadableSnapshot(projectURL: URL) async throws
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws
     func create(projectURL: URL, draft: IssueDraft) async throws -> String
+    func createWithFeedback(projectURL: URL, draft: IssueDraft) async throws -> BeadsCreateResult
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws
     func updateMetadata(
         projectURL: URL,
@@ -69,6 +130,11 @@ protocol BeadsCommanding: Sendable {
     func loadCustomTypes(projectURL: URL) async throws -> [BeadTypeDefinition]
     func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws
     func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws
+    func loadCreationValidationSettings(projectURL: URL) async throws -> BeadsCreationValidationSettings
+    func saveCreationValidationSettings(
+        projectURL: URL,
+        settings: BeadsCreationValidationSettings
+    ) async throws
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig
     func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes
@@ -90,6 +156,22 @@ protocol BeadsCommanding: Sendable {
 }
 
 extension BeadsCommanding {
+    func createWithFeedback(projectURL: URL, draft: IssueDraft) async throws -> BeadsCreateResult {
+        BeadsCreateResult(
+            issueID: try await create(projectURL: projectURL, draft: draft),
+            warning: nil
+        )
+    }
+
+    func loadCreationValidationSettings(projectURL _: URL) async throws -> BeadsCreationValidationSettings {
+        .beadsDefault
+    }
+
+    func saveCreationValidationSettings(
+        projectURL _: URL,
+        settings _: BeadsCreationValidationSettings
+    ) async throws {}
+
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL _: URL) async throws {
         try await exportReadableSnapshot(projectURL: projectURL)
     }
@@ -284,8 +366,19 @@ struct BeadsCommandService {
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {
-        let output = try await runOutput(projectURL: projectURL, arguments: BeadsCommandArguments.create(draft: draft, silent: true))
-        return try Self.createdIssueID(from: output)
+        try await createWithFeedback(projectURL: projectURL, draft: draft).issueID
+    }
+
+    func createWithFeedback(projectURL: URL, draft: IssueDraft) async throws -> BeadsCreateResult {
+        let output = try await runCommandOutput(
+            projectURL: projectURL,
+            arguments: BeadsCommandArguments.create(draft: draft, silent: true),
+            timeout: writeCommandTimeout
+        )
+        return BeadsCreateResult(
+            issueID: try Self.createdIssueID(from: output.standardOutput),
+            warning: output.standardError.nilIfBlank
+        )
     }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue? = nil) async throws {
@@ -503,6 +596,46 @@ struct BeadsCommandService {
         try await run(projectURL: projectURL, arguments: BeadsCommandArguments.saveCustomTypes(types))
     }
 
+    func loadCreationValidationSettings(projectURL: URL) async throws -> BeadsCreationValidationSettings {
+        async let requiresDescription = configValue(
+            projectURL: projectURL,
+            key: "create.require-description"
+        )
+        async let mode = configValue(
+            projectURL: projectURL,
+            key: "validation.on-create"
+        )
+        let (descriptionValue, modeValue) = try await (requiresDescription, mode)
+        return BeadsCreationValidationSettings(
+            requiresDescription: ProjectStorageConfig.bool(from: descriptionValue) ?? false,
+            mode: modeValue.flatMap(BeadsCreationValidationMode.init(rawValue:)) ?? .none
+        )
+    }
+
+    func saveCreationValidationSettings(
+        projectURL: URL,
+        settings: BeadsCreationValidationSettings
+    ) async throws {
+        let original = try await loadCreationValidationSettings(projectURL: projectURL)
+        if original.requiresDescription != settings.requiresDescription {
+            try await run(
+                projectURL: projectURL,
+                arguments: [
+                    "config",
+                    "set",
+                    "create.require-description",
+                    settings.requiresDescription ? "true" : "false"
+                ]
+            )
+        }
+        if original.mode != settings.mode {
+            try await run(
+                projectURL: projectURL,
+                arguments: ["config", "set", "validation.on-create", settings.mode.rawValue]
+            )
+        }
+    }
+
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
         do {
             async let locationText: String? = try? await runOutput(
@@ -715,6 +848,24 @@ struct BeadsCommandService {
         }.value
     }
 
+    private func runCommandOutput(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String? = nil,
+        timeout: Duration? = nil
+    ) async throws -> BeadsCommandOutput {
+        let executable = executable()
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.runCommandOutputSynchronously(
+                projectURL: projectURL,
+                arguments: arguments,
+                standardInput: standardInput,
+                executable: executable,
+                timeout: timeout
+            )
+        }.value
+    }
+
     private func configValue(projectURL: URL, key: String) async throws -> String? {
         let text = try await runOutput(
             projectURL: projectURL,
@@ -748,19 +899,36 @@ struct BeadsCommandService {
         executable: CommandExecutable,
         timeout: Duration? = nil
     ) throws -> String {
+        try runCommandOutputSynchronously(
+            projectURL: projectURL,
+            arguments: arguments,
+            standardInput: standardInput,
+            executable: executable,
+            timeout: timeout
+        ).combined
+    }
+
+    private static func runCommandOutputSynchronously(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String? = nil,
+        executable: CommandExecutable,
+        timeout: Duration? = nil
+    ) throws -> BeadsCommandOutput {
         let process = Process()
         process.executableURL = executable.url
         process.arguments = executable.prefix + arguments
         process.currentDirectoryURL = projectURL
         process.environment = BeadsCLI.subprocessEnvironment(executableURL: executable.url)
 
-        let output = Pipe()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
         let input = standardInput.map { _ in Pipe() }
         if let input {
             process.standardInput = input
         }
-        process.standardOutput = output
-        process.standardError = output
+        process.standardOutput = standardOutput
+        process.standardError = standardError
 
         try process.run()
 
@@ -781,14 +949,17 @@ struct BeadsCommandService {
         }
         defer { watchdog?.item.cancel() }
 
+        let output = ConcurrentProcessOutputReader.read(
+            standardOutput: standardOutput,
+            standardError: standardError
+        )
         var standardInputDelivered = true
         if let standardInput, let input {
             standardInputDelivered = writeStandardInput(standardInput, to: input)
         }
 
-        let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let result = output()
 
         guard process.terminationStatus == 0 else {
             if watchdog?.state.didFire == true {
@@ -797,7 +968,7 @@ struct BeadsCommandService {
                     output: "Timed out waiting for `bd` to finish."
                 )
             }
-            throw BeadError.commandFailed(command: commandDescription(arguments), output: text)
+            throw BeadError.commandFailed(command: commandDescription(arguments), output: result.combined)
         }
         guard standardInputDelivered else {
             throw BeadError.commandFailed(
@@ -805,7 +976,7 @@ struct BeadsCommandService {
                 output: "`bd` stopped reading its input before it was fully delivered."
             )
         }
-        return text
+        return result
     }
 
     /// Writes `bd`'s stdin without crashing on a broken pipe. The non-throwing

@@ -88,6 +88,12 @@ extension BeadStore {
         BeadIssueWorkflowPolicy.normalMutableIssueTypes(optionTypeDefinitions.map(\.name))
     }
 
+    /// Every project-defined type that can participate in normal create/edit
+    /// workflows, including types hidden from Beadazzle's picker controls.
+    var configurableMutableTypes: [String] {
+        BeadIssueWorkflowPolicy.normalMutableIssueTypes(allTypeDefinitions.map(\.name))
+    }
+
     var availableDependencyTypes: [String] {
         index.dependencyTypeNames
     }

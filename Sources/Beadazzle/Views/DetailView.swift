@@ -1,5 +1,12 @@
 import SwiftUI
 
+private struct ActiveIssueTextSectionContext {
+    let id: String
+    let projectKey: String
+    let documentIDPrefix: String
+    let draft: IssueDraft
+}
+
 struct DetailView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var workspace: BeadWorkspaceStore { store.workspace }
@@ -11,17 +18,28 @@ struct DetailView: View {
     @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
     @State private var deferredStatusRequest: DeferredStatusRequest?
     @State private var suppressedDeferredDateWrite: DeferredDateWriteSuppression?
+    @State private var textSectionVisibilityOverrides = IssueTextSectionVisibilityOverrides()
+    @State private var textSectionContextID: String?
     /// In-bead find is per-window state, so it lives here rather than on the
     /// app-wide `BeadStore` that every window shares.
     @State private var findSession = BeadFindSession.forWindow()
 
     var body: some View {
         @Bindable var store = store
+        let textSectionContext = activeTextSectionContext
+        let textSectionLayout = effectiveTextSectionLayout(for: textSectionContext)
+        let activeFindScope = makeFindScope(
+            context: textSectionContext,
+            visibleTextSections: textSectionLayout.visible
+        )
 
         Group {
             if store.creationDraft != nil {
                 IssueCreationPage(
                     draft: creationDraftBinding,
+                    textSectionLayout: textSectionLayout,
+                    revealTextSection: revealTextSection,
+                    hideTextSection: hideTextSection,
                     isCreating: isCreatingDraft,
                     createAction: createDraft,
                     cancelAction: cancelCreation
@@ -32,6 +50,9 @@ struct DetailView: View {
                 IssueDetailPage(
                     issue: issue,
                     draft: draftBinding(for: issue),
+                    textSectionLayout: textSectionLayout,
+                    revealTextSection: revealTextSection,
+                    hideTextSection: hideTextSection,
                     isDirty: activeDraft(for: issue) != IssueDraft(issue: issue),
                     saveAction: { save(issue) },
                     revertAction: resetDraft,
@@ -68,7 +89,7 @@ struct DetailView: View {
         }
         .beadFindSessionEnvironment(findSession)
         .focusedValue(\.beadSaveAction, activeSaveAction)
-        .focusedSceneValue(\.beadFindActions, findActions)
+        .focusedSceneValue(\.beadFindActions, findActions(scope: activeFindScope))
         .onReceive(NotificationCenter.default.publisher(for: findSession.bus.results)) { notification in
             BeadFindBus.ingest(notification, into: findSession)
         }
@@ -77,12 +98,15 @@ struct DetailView: View {
         // navigating can remount this view rather than update it. Closing when
         // the scope goes away means find state can't survive into a gate bead,
         // an empty selection, or another project.
-        .task(id: findScope) {
-            guard let findScope else {
+        .task(id: activeFindScope) {
+            guard let activeFindScope else {
                 findSession.close()
                 return
             }
-            findSession.rebind(scope: findScope)
+            findSession.rebind(scope: activeFindScope)
+        }
+        .task(id: textSectionContext?.id) {
+            synchronizeVisibleTextSections(contextID: textSectionContext?.id)
         }
         .sheet(item: $hierarchySheetRequest) { request in
             hierarchySheet(for: request)
@@ -103,9 +127,8 @@ struct DetailView: View {
     /// tracked, and gated on there being a searchable body right now — so stale
     /// session state can't leave Find Next enabled over a gate bead or an empty
     /// selection.
-    private var findActions: BeadFindActions {
-        let scope = findScope
-        return BeadFindActions(
+    private func findActions(scope: BeadFindScope?) -> BeadFindActions {
+        BeadFindActions(
             session: findSession,
             scope: scope,
             canStepBetweenMatches: scope != nil && findSession.isPresented && findSession.hasMatches
@@ -115,18 +138,89 @@ struct DetailView: View {
     /// What find should search, or `nil` when there is no searchable body — gate
     /// beads render plain text rather than the markdown engine fields find
     /// relies on, and nothing is searchable with no selection.
-    private var findScope: BeadFindScope? {
+    private var activeTextSectionContext: ActiveIssueTextSectionContext? {
         guard let projectKey = store.project.projectURL?.path else { return nil }
-        if store.creationDraft != nil {
-            return BeadFindScope(
+        if let creationDraft = store.creationDraft {
+            return ActiveIssueTextSectionContext(
+                id: "\(projectKey)::creation",
                 projectKey: projectKey,
-                documentIDPrefix: IssueTextSection.creationDocumentIDPrefix
+                documentIDPrefix: IssueTextSection.creationDocumentIDPrefix,
+                draft: creationDraft
             )
         }
         guard let issue = store.selectedIssue, store.gate(for: issue.id) == nil else {
             return nil
         }
-        return BeadFindScope(projectKey: projectKey, documentIDPrefix: issue.id)
+        return ActiveIssueTextSectionContext(
+            id: "\(projectKey)::\(issue.id)",
+            projectKey: projectKey,
+            documentIDPrefix: issue.id,
+            draft: activeDraft(for: issue)
+        )
+    }
+
+    private func effectiveTextSectionLayout(
+        for context: ActiveIssueTextSectionContext?
+    ) -> IssueTextSectionLayout {
+        guard let context else {
+            return IssueTextSectionLayout(visible: [], hidden: [])
+        }
+        let explicitlyRevealed = textSectionContextID == context.id
+            ? textSectionVisibilityOverrides.revealed
+            : []
+        let explicitlyHidden = textSectionContextID == context.id
+            ? textSectionVisibilityOverrides.hidden
+            : []
+        return IssueTextSectionPresentationPolicy.editorLayout(
+            draft: context.draft,
+            preferences: store.effectiveIssueTextSectionPreferences,
+            explicitlyRevealed: explicitlyRevealed,
+            explicitlyHidden: explicitlyHidden
+        )
+    }
+
+    private func makeFindScope(
+        context: ActiveIssueTextSectionContext?,
+        visibleTextSections: [IssueTextSection]
+    ) -> BeadFindScope? {
+        guard let context, !visibleTextSections.isEmpty else { return nil }
+        return BeadFindScope(
+            projectKey: context.projectKey,
+            documentIDPrefix: context.documentIDPrefix,
+            sectionOrder: visibleTextSections
+        )
+    }
+
+    private func synchronizeVisibleTextSections(contextID: String?) {
+        guard let contextID else {
+            textSectionContextID = nil
+            textSectionVisibilityOverrides = IssueTextSectionVisibilityOverrides()
+            return
+        }
+        if textSectionContextID != contextID {
+            textSectionContextID = contextID
+            textSectionVisibilityOverrides = IssueTextSectionVisibilityOverrides()
+        }
+    }
+
+    private func revealTextSection(_ section: IssueTextSection) {
+        guard let context = activeTextSectionContext else { return }
+        if textSectionContextID != context.id {
+            textSectionContextID = context.id
+            textSectionVisibilityOverrides = IssueTextSectionVisibilityOverrides()
+        }
+        textSectionVisibilityOverrides.reveal(section)
+    }
+
+    private func hideTextSection(_ section: IssueTextSection) {
+        guard let context = activeTextSectionContext,
+              IssueTextSectionPresentationPolicy.canHide(section, in: context.draft)
+        else { return }
+        if textSectionContextID != context.id {
+            textSectionContextID = context.id
+            textSectionVisibilityOverrides = IssueTextSectionVisibilityOverrides()
+        }
+        textSectionVisibilityOverrides.hide(section)
     }
 
     @ViewBuilder

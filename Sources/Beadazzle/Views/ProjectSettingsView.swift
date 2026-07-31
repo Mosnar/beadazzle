@@ -3,6 +3,7 @@ import SwiftUI
 private enum ProjectSettingsPane: String, Identifiable, Hashable {
     case overview
     case behavior
+    case content
     case properties
     case types
     case statuses
@@ -18,6 +19,8 @@ private enum ProjectSettingsPane: String, Identifiable, Hashable {
             "Overview"
         case .behavior:
             "Behavior"
+        case .content:
+            "Content"
         case .properties:
             "Properties"
         case .types:
@@ -39,6 +42,8 @@ private enum ProjectSettingsPane: String, Identifiable, Hashable {
             "gauge"
         case .behavior:
             "checklist"
+        case .content:
+            "text.alignleft"
         case .properties:
             "slider.horizontal.3"
         case .types:
@@ -91,7 +96,7 @@ struct ProjectSettingsView: View {
             SettingsPaneGroup(
                 id: "issue-model",
                 title: "Issue Model",
-                panes: [.properties, .types, .statuses]
+                panes: [.content, .properties, .types, .statuses]
             ),
             SettingsPaneGroup(
                 id: "storage",
@@ -132,6 +137,8 @@ private struct ProjectSettingsDetail: View {
                 ProjectOverviewSettingsPane()
             case .behavior:
                 ProjectBehaviorSettingsPane()
+            case .content:
+                ProjectContentSettingsPane()
             case .properties:
                 ProjectStatePropertiesSettingsPane()
             case .types:
@@ -149,6 +156,12 @@ private struct ProjectSettingsDetail: View {
             ContentUnavailableView("Active Project Required", systemImage: "folder")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct ProjectContentSettingsPane: View {
+    var body: some View {
+        ProjectIssueTextSectionSettings()
     }
 }
 

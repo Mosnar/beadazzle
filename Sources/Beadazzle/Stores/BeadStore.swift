@@ -984,6 +984,32 @@ final class BeadStore {
             persistDefaultNewBeadAssignee()
         }
     }
+    var issueTextSectionVisibilityMode = IssueTextSectionVisibilityMode.suggestedForType {
+        didSet {
+            guard oldValue != issueTextSectionVisibilityMode else { return }
+            persistIssueTextSectionVisibilityMode()
+        }
+    }
+    var issueTextSectionOrder = IssueTextSection.canonicalOrder {
+        didSet {
+            let normalized = IssueTextSectionPreferences.normalizedOrder(issueTextSectionOrder)
+            if normalized != issueTextSectionOrder {
+                issueTextSectionOrder = normalized
+            }
+            guard oldValue != issueTextSectionOrder else { return }
+            persistIssueTextSectionOrder()
+        }
+    }
+    var issueTextSectionSuggestions = IssueTextSectionSuggestionMatrix.beadsDefault {
+        didSet {
+            let normalized = issueTextSectionSuggestions.normalized()
+            if normalized != issueTextSectionSuggestions {
+                issueTextSectionSuggestions = normalized
+            }
+            guard oldValue != issueTextSectionSuggestions else { return }
+            persistIssueTextSectionSuggestions()
+        }
+    }
     var showsBackNavigationButton = BeadazzleAppBoolPreferences.showsBackNavigationButton.defaultValue {
         didSet {
             guard oldValue != showsBackNavigationButton else { return }
@@ -1084,6 +1110,44 @@ final class BeadStore {
             persistProjectNewBeadAssigneeOverride()
         }
     }
+    var projectIssueTextSectionVisibilityModeOverride: IssueTextSectionVisibilityMode? {
+        didSet {
+            guard oldValue != projectIssueTextSectionVisibilityModeOverride else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectIssueTextSectionVisibilityModeOverride()
+        }
+    }
+    var projectIssueTextSectionOrderOverride: [IssueTextSection]? {
+        didSet {
+            if let projectIssueTextSectionOrderOverride {
+                let normalized = IssueTextSectionPreferences.normalizedOrder(projectIssueTextSectionOrderOverride)
+                if normalized != projectIssueTextSectionOrderOverride {
+                    self.projectIssueTextSectionOrderOverride = normalized
+                }
+            }
+            guard oldValue != projectIssueTextSectionOrderOverride else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectIssueTextSectionOrderOverride()
+        }
+    }
+    var projectIssueTextSectionSuggestionOverrides: [String: [IssueTextSection]] = [:] {
+        didSet {
+            let normalized = ProjectIssueTextSectionOverrides(
+                visibilityMode: nil,
+                order: nil,
+                suggestionsByType: projectIssueTextSectionSuggestionOverrides
+            ).normalized().suggestionsByType
+            if normalized != projectIssueTextSectionSuggestionOverrides {
+                projectIssueTextSectionSuggestionOverrides = normalized
+            }
+            guard oldValue != projectIssueTextSectionSuggestionOverrides else { return }
+            guard !isLoadingProjectPreferences else { return }
+            persistProjectIssueTextSectionSuggestionOverrides()
+        }
+    }
+    var creationValidationSettings = BeadsCreationValidationSettings.beadsDefault
+    var creationValidationLoadState = BeadsCreationValidationLoadState.idle
+    var isSavingCreationValidationSettings = false
     var staleCutoffDays = BeadProjectIndex.defaultStaleCutoffDays {
         didSet {
             guard oldValue != staleCutoffDays else { return }
@@ -1363,6 +1427,17 @@ final class BeadStore {
             modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
             valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
         ) ?? .unassigned
+        issueTextSectionVisibilityMode = userDefaults.string(
+            forKey: BeadazzlePreferenceKeys.issueTextSectionVisibilityMode
+        ).flatMap(IssueTextSectionVisibilityMode.init(rawValue:)) ?? .suggestedForType
+        issueTextSectionOrder = Self.loadIssueTextSectionOrder(
+            from: userDefaults,
+            key: BeadazzlePreferenceKeys.issueTextSectionOrder
+        ) ?? IssueTextSection.canonicalOrder
+        issueTextSectionSuggestions = Self.loadIssueTextSectionSuggestionMatrix(
+            from: userDefaults,
+            key: BeadazzlePreferenceKeys.issueTextSectionSuggestions
+        ) ?? .beadsDefault
         showsBackNavigationButton = Self.boolValue(
             userDefaults,
             preference: BeadazzleAppBoolPreferences.showsBackNavigationButton

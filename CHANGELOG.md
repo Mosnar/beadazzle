@@ -13,6 +13,9 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Bead editors can now show suggested sections by type, add or hide empty sections, and use a customizable section order with app defaults and per-project overrides.
+- New, untouched bead drafts now refresh their suggested sections immediately when the bead type changes.
+- Project Content settings can now manage Beads' shared description requirement and creation-validation behavior, with successful validation warnings shown without losing the new bead.
 - Added display settings for navigation controls, bead-list behavior, bead IDs, detail breadcrumbs, and sidebar sections.
 - Copyable bead IDs now stay aligned when confirming a copy.
 - About Beadazzle now includes project and problem-reporting links, author contact details, acknowledgments, and license information.

@@ -1,6 +1,29 @@
 import Foundation
 
 extension BeadStore {
+    var appIssueTextSectionPreferences: IssueTextSectionPreferences {
+        IssueTextSectionPreferences(
+            visibilityMode: issueTextSectionVisibilityMode,
+            order: issueTextSectionOrder,
+            suggestions: issueTextSectionSuggestions
+        ).normalized()
+    }
+
+    var projectIssueTextSectionOverrides: ProjectIssueTextSectionOverrides {
+        ProjectIssueTextSectionOverrides(
+            visibilityMode: projectIssueTextSectionVisibilityModeOverride,
+            order: projectIssueTextSectionOrderOverride,
+            suggestionsByType: projectIssueTextSectionSuggestionOverrides
+        ).normalized()
+    }
+
+    var effectiveIssueTextSectionPreferences: IssueTextSectionPreferences {
+        IssueTextSectionPresentationPolicy.effectivePreferences(
+            app: appIssueTextSectionPreferences,
+            project: projectIssueTextSectionOverrides
+        )
+    }
+
     internal static func loadNewBeadAssigneePreference(
         from userDefaults: UserDefaults,
         modeKey: String,
@@ -99,6 +122,56 @@ extension BeadStore {
         userDefaults.set(value, forKey: preference.key)
     }
 
+    internal func persistIssueTextSectionVisibilityMode() {
+        userDefaults.set(
+            issueTextSectionVisibilityMode.rawValue,
+            forKey: BeadazzlePreferenceKeys.issueTextSectionVisibilityMode
+        )
+    }
+
+    internal func persistIssueTextSectionOrder() {
+        userDefaults.set(
+            issueTextSectionOrder.map(\.rawValue),
+            forKey: BeadazzlePreferenceKeys.issueTextSectionOrder
+        )
+    }
+
+    internal func persistIssueTextSectionSuggestions() {
+        guard let data = try? JSONEncoder().encode(issueTextSectionSuggestions.normalized()) else { return }
+        userDefaults.set(data, forKey: BeadazzlePreferenceKeys.issueTextSectionSuggestions)
+    }
+
+    internal func persistProjectIssueTextSectionVisibilityModeOverride() {
+        guard let projectURL else { return }
+        let key = BeadazzlePreferenceKeys.issueTextSectionVisibilityModeOverride(projectURL: projectURL)
+        if let mode = projectIssueTextSectionVisibilityModeOverride {
+            userDefaults.set(mode.rawValue, forKey: key)
+        } else {
+            userDefaults.removeObject(forKey: key)
+        }
+    }
+
+    internal func persistProjectIssueTextSectionOrderOverride() {
+        guard let projectURL else { return }
+        let key = BeadazzlePreferenceKeys.issueTextSectionOrderOverride(projectURL: projectURL)
+        if let order = projectIssueTextSectionOrderOverride {
+            userDefaults.set(order.map(\.rawValue), forKey: key)
+        } else {
+            userDefaults.removeObject(forKey: key)
+        }
+    }
+
+    internal func persistProjectIssueTextSectionSuggestionOverrides() {
+        guard let projectURL else { return }
+        let key = BeadazzlePreferenceKeys.issueTextSectionSuggestionOverrides(projectURL: projectURL)
+        guard !projectIssueTextSectionSuggestionOverrides.isEmpty else {
+            userDefaults.removeObject(forKey: key)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(projectIssueTextSectionSuggestionOverrides) else { return }
+        userDefaults.set(data, forKey: key)
+    }
+
     internal func persistProjectNewBeadAssigneeOverride() {
         guard let projectURL else { return }
         let modeKey = BeadazzlePreferenceKeys.newBeadAssigneeOverrideMode(projectURL: projectURL)
@@ -130,6 +203,7 @@ extension BeadStore {
         loadReadyParentRollUpPreference(for: url)
         loadExternalRefreshPreference(for: url)
         loadNewBeadAssigneeOverride(for: url)
+        loadIssueTextSectionOverrides(for: url)
         loadPinnedStateDimensions(for: url)
         loadStateDimensionDisplayNames(for: url)
         loadStateValueDisplayNames(for: url)
@@ -143,6 +217,85 @@ extension BeadStore {
             modeKey: BeadazzlePreferenceKeys.newBeadAssigneeOverrideMode(projectURL: url),
             valueKey: BeadazzlePreferenceKeys.newBeadAssigneeOverrideValue(projectURL: url)
         )
+    }
+
+    private func loadIssueTextSectionOverrides(for url: URL) {
+        projectIssueTextSectionVisibilityModeOverride = userDefaults.string(
+            forKey: BeadazzlePreferenceKeys.issueTextSectionVisibilityModeOverride(projectURL: url)
+        ).flatMap(IssueTextSectionVisibilityMode.init(rawValue:))
+        projectIssueTextSectionOrderOverride = Self.loadIssueTextSectionOrder(
+            from: userDefaults,
+            key: BeadazzlePreferenceKeys.issueTextSectionOrderOverride(projectURL: url)
+        )
+        let key = BeadazzlePreferenceKeys.issueTextSectionSuggestionOverrides(projectURL: url)
+        if let data = userDefaults.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([String: [IssueTextSection]].self, from: data) {
+            projectIssueTextSectionSuggestionOverrides = decoded
+        } else {
+            projectIssueTextSectionSuggestionOverrides = [:]
+        }
+    }
+
+    static func loadIssueTextSectionOrder(from defaults: UserDefaults, key: String) -> [IssueTextSection]? {
+        guard let rawValues = defaults.stringArray(forKey: key) else { return nil }
+        let sections = rawValues.compactMap(IssueTextSection.init(rawValue:))
+        return IssueTextSectionPreferences.normalizedOrder(sections)
+    }
+
+    static func loadIssueTextSectionSuggestionMatrix(
+        from defaults: UserDefaults,
+        key: String
+    ) -> IssueTextSectionSuggestionMatrix? {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(IssueTextSectionSuggestionMatrix.self, from: data),
+              decoded.version == IssueTextSectionSuggestionMatrix.currentVersion
+        else {
+            return nil
+        }
+        return decoded.normalized()
+    }
+
+    func resetAppIssueTextSectionSuggestions() {
+        issueTextSectionSuggestions = .beadsDefault
+    }
+
+    func resetAppIssueTextSectionOrder() {
+        issueTextSectionOrder = IssueTextSection.canonicalOrder
+    }
+
+    func resetProjectIssueTextSectionOverrides() {
+        projectIssueTextSectionVisibilityModeOverride = nil
+        projectIssueTextSectionOrderOverride = nil
+        projectIssueTextSectionSuggestionOverrides = [:]
+    }
+
+    func appSuggestedSections(for issueType: String) -> Set<IssueTextSection> {
+        issueTextSectionSuggestions.sections(for: issueType)
+    }
+
+    func setAppSuggestedSections(_ sections: Set<IssueTextSection>, for issueType: String) {
+        var suggestions = issueTextSectionSuggestions
+        suggestions.setSections(sections, for: issueType)
+        issueTextSectionSuggestions = suggestions
+    }
+
+    func projectSuggestedSectionOverride(for issueType: String) -> Set<IssueTextSection>? {
+        let key = IssueTextSectionSuggestionMatrix.normalizedTypeName(issueType)
+        return projectIssueTextSectionSuggestionOverrides[key].map(Set.init)
+    }
+
+    func setProjectSuggestedSectionOverride(
+        _ sections: Set<IssueTextSection>?,
+        for issueType: String
+    ) {
+        let key = IssueTextSectionSuggestionMatrix.normalizedTypeName(issueType)
+        guard !key.isEmpty else { return }
+        if let sections {
+            projectIssueTextSectionSuggestionOverrides[key] =
+                IssueTextSection.canonicalOrder.filter(sections.contains)
+        } else {
+            projectIssueTextSectionSuggestionOverrides.removeValue(forKey: key)
+        }
     }
 
     private func loadPinnedStateDimensions(for url: URL) {

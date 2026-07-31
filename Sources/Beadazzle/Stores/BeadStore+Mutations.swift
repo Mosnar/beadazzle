@@ -788,13 +788,13 @@ extension BeadStore {
             guard let self else { return false }
             defer { self.endMutation(generation: mutationLifetimeGeneration) }
             do {
-                let persistedIssueID = try await self.enqueueMutationWrite {
-                    try await commands.create(projectURL: projectURL, draft: commandDraft)
+                let result = try await self.enqueueMutationWrite {
+                    try await commands.createWithFeedback(projectURL: projectURL, draft: commandDraft)
                 }
-                guard persistedIssueID == createdIssueID else {
+                guard result.issueID == createdIssueID else {
                     throw BeadError.commandFailed(
                         command: "bd create --id \(createdIssueID)",
-                        output: "bd reported the unexpected issue id \(persistedIssueID)."
+                        output: "bd reported the unexpected issue id \(result.issueID)."
                     )
                 }
                 guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {
@@ -803,6 +803,14 @@ extension BeadStore {
                 self.settleOptimisticProjection(id: projectionID, succeeded: true)
                 self.reconcileState.request(.mutation)
                 self.announceCompletion("Created bead \(createdIssueID)")
+                if let warning = result.warning?.nilIfBlank {
+                    self.enqueueFailure(BeadMutationFailure(
+                        title: "Created bead with a warning",
+                        message: "The bead was created successfully, but Beads reported a validation warning.",
+                        output: warning,
+                        retry: nil
+                    ))
+                }
                 return true
             } catch {
                 guard self.ownsMutation(projectURL: projectURL, generation: mutationGeneration) else {

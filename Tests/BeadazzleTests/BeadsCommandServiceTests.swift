@@ -24,6 +24,87 @@ final class BeadsCommandServiceTests: XCTestCase {
         }
     }
 
+    func testCreateReturnsIDFromStandardOutputAndWarningFromStandardError() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        printf '%s\n' 'bd-created'
+        printf '%s\n' 'description is recommended' >&2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+        var draft = IssueDraft.blank(defaultType: "feature", defaultStatus: "open")
+        draft.id = "bd-created"
+        draft.title = "Created with warning"
+
+        let result = try await service.createWithFeedback(projectURL: projectURL, draft: draft)
+
+        XCTAssertEqual(result.issueID, "bd-created")
+        XCTAssertEqual(result.warning, "description is recommended")
+    }
+
+    func testCreationValidationSettingsLoadFromSharedBeadsConfig() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly config get create.require-description")
+            printf '%s\n' 'true'
+            ;;
+          "--readonly config get validation.on-create")
+            printf '%s\n' 'warn'
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let settings = try await service.loadCreationValidationSettings(projectURL: projectURL)
+
+        XCTAssertEqual(
+            settings,
+            BeadsCreationValidationSettings(requiresDescription: true, mode: .warn)
+        )
+    }
+
+    func testSavingCreationValidationWritesOnlyChangedSharedConfigKey() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let logURL = projectURL.appendingPathComponent("config-writes.log")
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly config get create.require-description")
+            printf '%s\n' 'false'
+            ;;
+          "--readonly config get validation.on-create")
+            printf '%s\n' 'none'
+            ;;
+          "config set validation.on-create warn")
+            printf '%s\n' "$*" >> '\(logURL.path)'
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        try await service.saveCreationValidationSettings(
+            projectURL: projectURL,
+            settings: BeadsCreationValidationSettings(
+                requiresDescription: false,
+                mode: .warn
+            )
+        )
+
+        XCTAssertEqual(
+            try String(contentsOf: logURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            "config set validation.on-create warn"
+        )
+    }
+
     func testProjectContextIncludesAuthoritativeIssuePrefixFromWhere() async throws {
         let projectURL = try makeProjectWithBeadsDirectory()
         let stubURL = try makeExecutableScript(in: projectURL, contents: """

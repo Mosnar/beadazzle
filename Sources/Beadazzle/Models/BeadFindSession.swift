@@ -27,6 +27,20 @@ struct BeadFindScope: Equatable {
     /// Prefix the markdown engine's document IDs are built from, which must
     /// match what `IssueBodySections` hands each field.
     var documentIDPrefix: String
+    /// Visible body sections in their exact display order.
+    var sectionOrder: [IssueTextSection]
+
+    init(
+        projectKey: String,
+        documentIDPrefix: String,
+        sectionOrder: [IssueTextSection] = IssueTextSection.canonicalOrder
+    ) {
+        self.projectKey = projectKey
+        self.documentIDPrefix = documentIDPrefix
+        let requested = Set(sectionOrder)
+        self.sectionOrder = IssueTextSectionPreferences.normalizedOrder(sectionOrder)
+            .filter(requested.contains)
+    }
 }
 
 /// Sends find requests to the markdown engine. A protocol so `BeadFindSession`
@@ -39,7 +53,7 @@ protocol BeadFindDispatching: AnyObject {
 
 /// Per-window state for "find in current bead".
 ///
-/// The four body fields are separate markdown-engine text views, and each one
+/// The visible body fields are separate markdown-engine text views, and each one
 /// counts its own matches in *display* coordinates. The engine is the only
 /// thing that knows how many matches a field really has: concealed Markdown
 /// markers make the displayed text differ from the source, so counting the
@@ -52,12 +66,7 @@ protocol BeadFindDispatching: AnyObject {
 final class BeadFindSession {
     /// The order find walks the fields, matching how `IssueBodySections`
     /// renders them so Find Next moves down the page.
-    static let sectionOrder: [IssueTextSection] = [
-        .description,
-        .acceptanceCriteria,
-        .design,
-        .notes
-    ]
+    static let sectionOrder = IssueTextSection.canonicalOrder
 
     /// Text the user typed. Debounced before it reaches the engine so typing in
     /// a large bead doesn't re-scan four documents on every keystroke.
@@ -105,6 +114,10 @@ final class BeadFindSession {
     private var requestGeneration = 0
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     @ObservationIgnored private var settleTask: Task<Void, Never>?
+
+    private var activeSectionOrder: [IssueTextSection] {
+        scope?.sectionOrder ?? []
+    }
 
     init(
         bus: BeadFindBus = BeadFindBus(),
@@ -215,7 +228,7 @@ final class BeadFindSession {
                 focusToken += 1
             }
         }
-        if receivedSections.count == Self.sectionOrder.count {
+        if receivedSections.count == activeSectionOrder.count {
             settleTask?.cancel()
             settleTask = nil
             isSettled = true
@@ -230,7 +243,7 @@ final class BeadFindSession {
     var focusTarget: (section: IssueTextSection, localIndex: Int)? {
         guard let focusedMatchIndex, totalMatchCount > 0 else { return nil }
         var remaining = focusedMatchIndex
-        for section in Self.sectionOrder {
+        for section in activeSectionOrder {
             let count = counts[section] ?? 0
             if remaining < count {
                 return (section, remaining)
@@ -315,7 +328,8 @@ final class BeadFindSession {
         // No counts have come back yet, so focus the first field optimistically.
         // `recomputeTotals` re-posts if the real counts put the first match
         // somewhere else — usually they don't, so this costs nothing.
-        let target = focusTarget ?? (section: Self.sectionOrder[0], localIndex: 0)
+        guard let firstSection = activeSectionOrder.first else { return }
+        let target = focusTarget ?? (section: firstSection, localIndex: 0)
         send(BeadFindRequest(
             text: query,
             token: requestGeneration,
@@ -397,7 +411,7 @@ final class BeadFindSession {
     }
 
     private func recomputeTotals() {
-        totalMatchCount = Self.sectionOrder.reduce(0) { $0 + (counts[$1] ?? 0) }
+        totalMatchCount = activeSectionOrder.reduce(0) { $0 + (counts[$1] ?? 0) }
 
         let previousIndex = focusedMatchIndex
         if totalMatchCount == 0 {
@@ -452,7 +466,7 @@ final class BeadFindSession {
 
     private func section(forDocumentID documentID: String) -> IssueTextSection? {
         guard let prefix = scope?.documentIDPrefix else { return nil }
-        return Self.sectionOrder.first { $0.documentID(prefix: prefix) == documentID }
+        return activeSectionOrder.first { $0.documentID(prefix: prefix) == documentID }
     }
 
     private func withQueryObserverSuppressed(_ body: () -> Void) {

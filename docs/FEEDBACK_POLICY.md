@@ -10,7 +10,7 @@ model, and the `MutationErrorDialog` view.
 
 ## Dispositions
 
-Every mutation surface follows one of four dispositions.
+Every mutation surface follows one of five dispositions.
 
 ### 1. Quiet success (the default)
 
@@ -58,7 +58,15 @@ Form-field validation inside a modal config sheet (adding a custom type/status) 
 deliberate exception: it shows the message inline in the sheet's footer, where the user is
 typing, and pops the failure from the shared queue so it does not later resurface as a dialog.
 
-### 4. Quiet reconciliation
+### 4. Successful command with warning
+
+Some `bd` commands can succeed while reporting a validation warning. Beadazzle keeps
+standard output and standard error separate for these commands: the create result is read
+from standard output, while non-empty standard error is presented as a non-retryable
+warning. The successful optimistic state is settled and reconciled normally; it is never
+rolled back merely because the command emitted a warning.
+
+### 5. Quiet reconciliation
 
 After a write, the app silently re-exports and reloads the readable snapshot. This expected
 self-initiated reconciliation must not flash the "Snapshot may be stale" notice: it reuses the

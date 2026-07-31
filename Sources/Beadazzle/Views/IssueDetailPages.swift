@@ -3,6 +3,9 @@ import SwiftUI
 struct IssueDetailPage: View {
     let issue: BeadIssue
     @Binding var draft: IssueDraft
+    let textSectionLayout: IssueTextSectionLayout
+    let revealTextSection: (IssueTextSection) -> Void
+    let hideTextSection: (IssueTextSection) -> Void
     let isDirty: Bool
     let saveAction: () -> Void
     let revertAction: () -> Void
@@ -24,6 +27,9 @@ struct IssueDetailPage: View {
             IssueDetailContent(
                 issue: issue,
                 draft: $draft,
+                textSectionLayout: textSectionLayout,
+                revealTextSection: revealTextSection,
+                hideTextSection: hideTextSection,
                 usesInspectorRail: usesInspectorRail
             )
         }
@@ -32,6 +38,9 @@ struct IssueDetailPage: View {
 
 struct IssueCreationPage: View {
     @Binding var draft: IssueDraft
+    let textSectionLayout: IssueTextSectionLayout
+    let revealTextSection: (IssueTextSection) -> Void
+    let hideTextSection: (IssueTextSection) -> Void
     let isCreating: Bool
     let createAction: () -> Void
     let cancelAction: () -> Void
@@ -48,6 +57,9 @@ struct IssueCreationPage: View {
         } content: { usesInspectorRail in
             IssueCreationContent(
                 draft: $draft,
+                textSectionLayout: textSectionLayout,
+                revealTextSection: revealTextSection,
+                hideTextSection: hideTextSection,
                 usesInspectorRail: usesInspectorRail
             )
         }
@@ -174,6 +186,9 @@ private extension IssueEditingPageShell where CompactAccessory == EmptyView {
 struct IssueDetailContent: View {
     let issue: BeadIssue
     @Binding var draft: IssueDraft
+    let textSectionLayout: IssueTextSectionLayout
+    let revealTextSection: (IssueTextSection) -> Void
+    let hideTextSection: (IssueTextSection) -> Void
     let usesInspectorRail: Bool
 
     var body: some View {
@@ -183,7 +198,10 @@ struct IssueDetailContent: View {
                     IssueDetailBody(
                         documentIDPrefix: issue.id,
                         issue: issue,
-                        draft: $draft
+                        draft: $draft,
+                        textSectionLayout: textSectionLayout,
+                        revealTextSection: revealTextSection,
+                        hideTextSection: hideTextSection
                     )
                 }
                 .frame(
@@ -206,7 +224,10 @@ struct IssueDetailContent: View {
                 IssueDetailBody(
                     documentIDPrefix: issue.id,
                     issue: issue,
-                    draft: $draft
+                    draft: $draft,
+                    textSectionLayout: textSectionLayout,
+                    revealTextSection: revealTextSection,
+                    hideTextSection: hideTextSection
                 )
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -220,6 +241,9 @@ private struct IssueDetailBody: View {
     let documentIDPrefix: String
     let issue: BeadIssue
     @Binding var draft: IssueDraft
+    let textSectionLayout: IssueTextSectionLayout
+    let revealTextSection: (IssueTextSection) -> Void
+    let hideTextSection: (IssueTextSection) -> Void
     @State private var isRunningBlockedAction = false
     @State private var decisionGateForApproval: BeadGate?
     @State private var decisionGateForRejection: BeadGate?
@@ -238,7 +262,10 @@ private struct IssueDetailBody: View {
             IssueBodySections(
                 documentIDPrefix: documentIDPrefix,
                 issue: issue,
-                draft: $draft
+                draft: $draft,
+                textSectionLayout: textSectionLayout,
+                revealTextSection: revealTextSection,
+                hideTextSection: hideTextSection
             )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -326,6 +353,9 @@ private struct IssueDetailBody: View {
 
 struct IssueCreationContent: View {
     @Binding var draft: IssueDraft
+    let textSectionLayout: IssueTextSectionLayout
+    let revealTextSection: (IssueTextSection) -> Void
+    let hideTextSection: (IssueTextSection) -> Void
     let usesInspectorRail: Bool
 
     var body: some View {
@@ -335,7 +365,10 @@ struct IssueCreationContent: View {
                     IssueBodySections(
                         documentIDPrefix: IssueTextSection.creationDocumentIDPrefix,
                         issue: nil,
-                        draft: $draft
+                        draft: $draft,
+                        textSectionLayout: textSectionLayout,
+                        revealTextSection: revealTextSection,
+                        hideTextSection: hideTextSection
                     )
                 }
                 .frame(
@@ -360,7 +393,10 @@ struct IssueCreationContent: View {
                 IssueBodySections(
                     documentIDPrefix: IssueTextSection.creationDocumentIDPrefix,
                     issue: nil,
-                    draft: $draft
+                    draft: $draft,
+                    textSectionLayout: textSectionLayout,
+                    revealTextSection: revealTextSection,
+                    hideTextSection: hideTextSection
                 )
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -396,49 +432,5 @@ struct IssueMainColumn<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-}
-
-struct IssueBodySections: View {
-    let documentIDPrefix: String
-    let issue: BeadIssue?
-    @Binding var draft: IssueDraft
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 26) {
-            EditableTextSection(
-                section: .description,
-                text: $draft.description,
-                documentID: documentID(for: .description)
-            )
-
-            EditableTextSection(
-                section: .acceptanceCriteria,
-                text: $draft.acceptanceCriteria,
-                documentID: documentID(for: .acceptanceCriteria)
-            )
-
-            EditableTextSection(
-                section: .design,
-                text: $draft.design,
-                documentID: documentID(for: .design)
-            )
-
-            EditableTextSection(
-                section: .notes,
-                text: $draft.notes,
-                documentID: documentID(for: .notes)
-            )
-
-            if let issue {
-                SubIssuesView(issue: issue)
-                ActivityView(issue: issue)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private func documentID(for section: IssueTextSection) -> String {
-        section.documentID(prefix: documentIDPrefix)
     }
 }
