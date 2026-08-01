@@ -117,6 +117,321 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         XCTAssertEqual(store.projectDoltRemotes?.value?.remotes, [])
         XCTAssertFalse(store.hasConfiguredProjectDoltRemote)
         XCTAssertFalse(store.canSynchronizeProjectIssues)
+        XCTAssertEqual(store.doltRemoteFreshness.result, .notConfigured)
+        let remoteGenerationCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(remoteGenerationCallCount, 0)
+    }
+
+    func testAutomaticRemoteCheckIsQuietUntilSyncEstablishesBaseline() async throws {
+        let projectURL = try makeProject(named: "RemoteFreshnessProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+
+        XCTAssertEqual(store.doltRemoteFreshness.result, .unknown)
+        let initialCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(initialCallCount, 0)
+
+        store.checkProjectDoltRemoteFreshness(
+            .automatic,
+            now: Date().addingTimeInterval(60)
+        )
+        let cachedCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(cachedCallCount, 0)
+
+        let didSync = await store.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+        guard case .unchangedSinceSync = store.doltRemoteFreshness.result else {
+            return XCTFail("A successful sync should establish the remote checkpoint")
+        }
+
+        await commands.setDoltRemoteGeneration(String(repeating: "b", count: 40))
+        store.checkProjectDoltRemoteFreshness(.manual)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+
+        guard case .remoteChanged = store.doltRemoteFreshness.result else {
+            return XCTFail("A different remote generation should be reported as available")
+        }
+    }
+
+    func testAutomaticRemoteCheckPreservesTransientFailureDuringBackoff() async throws {
+        let projectURL = try makeProject(named: "RemoteFreshnessFailureProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+
+        await commands.setDoltRemoteGenerationError(ProjectHealthTestError.failedRemoteCheck)
+        let failureTime = Date()
+        store.checkProjectDoltRemoteFreshness(.manual, now: failureTime)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+        guard case .unavailable = store.doltRemoteFreshness.result else {
+            return XCTFail("The failed remote check should remain visible")
+        }
+
+        store.checkProjectDoltRemoteFreshness(
+            .automatic,
+            now: failureTime.addingTimeInterval(60)
+        )
+
+        guard case .unavailable = store.doltRemoteFreshness.result else {
+            return XCTFail("Backoff should not replace the transient failure with stale cached state")
+        }
+        let callCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(callCount, 1)
+    }
+
+    func testAutomaticRemoteChecksCanBeDisabledWithoutDisablingManualChecks() async throws {
+        let projectURL = try makeProject(named: "ManualRemoteFreshnessProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let defaults = makeUserDefaults()
+        defaults.set(
+            false,
+            forKey: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.key
+        )
+        let store = BeadStore(userDefaults: defaults, commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+
+        XCTAssertFalse(store.automaticallyChecksDoltRemotes)
+        let automaticCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(automaticCallCount, 0)
+
+        store.checkProjectDoltRemoteFreshness(.manual)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+        let manualCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(manualCallCount, 1)
+        XCTAssertEqual(store.doltRemoteFreshness.result, .unknown)
+    }
+
+    func testContributorProjectsGracefullySkipChecksUntilSyncCheckpointExists() async throws {
+        let projectURL = try makeProject(named: "ContributorFreshnessProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(role: "contributor")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+
+        XCTAssertEqual(store.projectEnvironment?.role, .contributor)
+        let automaticCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(automaticCallCount, 0)
+        XCTAssertEqual(store.doltRemoteFreshness.result, .unknown)
+    }
+
+    func testActiveProjectPeriodicallyChecksRemoteAfterSyncCheckpoint() async throws {
+        let projectURL = try makeProject(named: "PeriodicRemoteFreshnessProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: commands,
+            doltRemoteFreshnessCheckInterval: 0.05
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        let sceneID = UUID()
+        store.setDoltRemoteFreshnessSceneActive(true, sceneID: sceneID)
+
+        let didSync = await store.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+        guard case .unchangedSinceSync = store.doltRemoteFreshness.result else {
+            store.setDoltRemoteFreshnessSceneActive(false, sceneID: sceneID)
+            return XCTFail("Sync should establish the periodic check checkpoint")
+        }
+
+        await commands.setDoltRemoteGeneration(String(repeating: "b", count: 40))
+        try await waitUntil(timeout: 1) {
+            store.doltRemoteFreshness.result.hasRemoteChanges
+        }
+        store.setDoltRemoteFreshnessSceneActive(false, sceneID: sceneID)
+
+        let periodicCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertGreaterThanOrEqual(periodicCallCount, 2)
+    }
+
+    func testClosingOneOfTwoActiveScenesKeepsRemoteMonitoringAlive() async throws {
+        let projectURL = try makeProject(named: "MultiSceneRemoteProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+
+        let firstSceneID = UUID()
+        let secondSceneID = UUID()
+        store.setDoltRemoteFreshnessSceneActive(true, sceneID: firstSceneID)
+        store.setDoltRemoteFreshnessSceneActive(true, sceneID: secondSceneID)
+        let didSync = await store.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+        XCTAssertNotNil(store.doltRemoteFreshnessMonitorTask)
+
+        store.setDoltRemoteFreshnessSceneActive(false, sceneID: firstSceneID)
+
+        XCTAssertTrue(store.isDoltRemoteFreshnessSceneActive)
+        XCTAssertNotNil(store.doltRemoteFreshnessMonitorTask)
+
+        store.setDoltRemoteFreshnessSceneActive(false, sceneID: secondSceneID)
+
+        XCTAssertFalse(store.isDoltRemoteFreshnessSceneActive)
+        XCTAssertNil(store.doltRemoteFreshnessMonitorTask)
+    }
+
+    func testMonitorStopsWhenCurrentRemoteNoLongerHasCheckpoint() async throws {
+        let originalRemote = BeadsDoltRemote(
+            name: "origin",
+            url: "git+ssh://git@github.com/example/original.git",
+            sqlURL: nil,
+            status: "ok"
+        )
+        let projectURL = try makeProject(named: "ChangedRemoteMonitorProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(configuredDoltRemotes: [originalRemote])
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: commands,
+            doltRemoteFreshnessCheckInterval: 5
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        let sceneID = UUID()
+        store.setDoltRemoteFreshnessSceneActive(true, sceneID: sceneID)
+        let didSync = await store.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+        XCTAssertNotNil(store.doltRemoteFreshnessMonitorTask)
+
+        await commands.setDoltRemoteGenerationDelay(.milliseconds(300))
+        store.checkProjectDoltRemoteFreshness(.manual)
+        while await commands.doltRemoteGenerationCallCount < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(store.doltRemoteFreshness.isChecking)
+
+        await commands.setConfiguredDoltRemotes([
+            BeadsDoltRemote(
+                name: "origin",
+                url: "git+ssh://git@github.com/example/replacement.git",
+                sqlURL: nil,
+                status: "ok"
+            )
+        ])
+        store.loadProjectDoltRemotesIfNeeded(force: true)
+        await store.waitForPendingProjectDoltRemotesLoad()
+        try await waitUntil(timeout: 1) {
+            store.doltRemoteFreshnessMonitorTask == nil
+        }
+
+        XCTAssertEqual(store.doltRemoteFreshness.result, .unknown)
+        XCTAssertFalse(store.doltRemoteFreshness.isChecking)
+        let callCountAfterRemoteChange = await commands.doltRemoteGenerationCallCount
+        try await Task.sleep(for: .milliseconds(100))
+        let finalCallCount = await commands.doltRemoteGenerationCallCount
+        XCTAssertEqual(finalCallCount, callCountAfterRemoteChange)
+        store.setDoltRemoteFreshnessSceneActive(false, sceneID: sceneID)
+    }
+
+    func testRemoteCheckpointPersistsAcrossWorktreesForSameTracker() async throws {
+        let firstProjectURL = try makeProject(named: "FirstTrackerWorktree", issueID: "bd-1")
+        let secondProjectURL = try makeProject(named: "SecondTrackerWorktree", issueID: "bd-2")
+        let defaults = makeUserDefaults()
+        defaults.set(
+            false,
+            forKey: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.key
+        )
+
+        let firstCommands = ProjectHealthTestCommands(projectID: "shared-tracker-id")
+        let firstStore = BeadStore(userDefaults: defaults, commands: firstCommands)
+        firstStore.openProject(firstProjectURL)
+        try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-1") != nil }
+        await firstStore.waitForPendingProjectDoltRemotesLoad()
+        let didSync = await firstStore.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await firstStore.waitForPendingDoltRemoteFreshnessCheck()
+        guard case .unchangedSinceSync = firstStore.doltRemoteFreshness.result else {
+            return XCTFail("The first worktree should save a sync checkpoint")
+        }
+
+        let secondCommands = ProjectHealthTestCommands(projectID: "shared-tracker-id")
+        let secondStore = BeadStore(userDefaults: defaults, commands: secondCommands)
+        secondStore.openProject(secondProjectURL)
+        try await waitUntil { !secondStore.isLoading && secondStore.issue(with: "bd-2") != nil }
+        await secondStore.waitForPendingProjectDoltRemotesLoad()
+
+        guard case .unchangedSinceSync = secondStore.doltRemoteFreshness.result else {
+            return XCTFail("A second worktree should load the tracker checkpoint")
+        }
+        let secondCallCount = await secondCommands.doltRemoteGenerationCallCount
+        XCTAssertEqual(secondCallCount, 0)
+    }
+
+    func testRemoteCheckUsesConfiguredSyncRemoteInMultiRemoteProject() async throws {
+        let projectURL = try makeProject(named: "ConfiguredSyncRemoteProject", issueID: "bd-1")
+        let commands = ProjectHealthTestCommands(
+            configuredDoltRemotes: [
+                BeadsDoltRemote(
+                    name: "origin",
+                    url: "git+ssh://git@github.com/example/origin.git",
+                    sqlURL: nil,
+                    status: "ok"
+                ),
+                BeadsDoltRemote(
+                    name: "team",
+                    url: "git+ssh://git@github.com/example/team.git",
+                    sqlURL: nil,
+                    status: "ok"
+                )
+            ]
+        )
+        await commands.setContextSyncRemote("team")
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+
+        let didSync = await store.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+
+        let checkedRemoteName = await commands.lastDoltRemoteGenerationRemoteName
+        XCTAssertEqual(checkedRemoteName, "team")
+    }
+
+    func testProjectSwitchCancelsInFlightRemoteFreshnessCheck() async throws {
+        let firstProjectURL = try makeProject(named: "SlowRemoteProject", issueID: "bd-1")
+        let secondProjectURL = try makeProject(named: "ReplacementRemoteProject", issueID: "bd-2")
+        let commands = ProjectHealthTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        let didSync = await store.synchronizeProjectIssues()
+        XCTAssertTrue(didSync)
+        await store.waitForPendingDoltRemoteFreshnessCheck()
+
+        await commands.setDoltRemoteGenerationDelay(.milliseconds(300))
+        store.checkProjectDoltRemoteFreshness(.manual)
+        while await commands.doltRemoteGenerationCallCount < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+        await store.waitForPendingProjectDoltRemotesLoad()
+        try await Task.sleep(for: .milliseconds(350))
+
+        XCTAssertEqual(store.projectURL, secondProjectURL)
+        XCTAssertEqual(store.doltRemoteFreshness.result, .unknown)
+        XCTAssertFalse(store.doltRemoteFreshness.isChecking)
     }
 
     func testSyncIssuesPullsPushesExportsAndReloadsBeforeReturning() async throws {
@@ -248,12 +563,17 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         await store.waitForPendingProjectDoltRemotesLoad()
         XCTAssertNil(store.projectHealthSnapshot)
+        await commands.setDoltRemoteGenerationDelay(.milliseconds(100))
 
         let didSync = await store.synchronizeProjectIssues(completionRefresh: .fullHealth)
         await store.waitForPendingProjectHealthLoad()
+        await store.waitForPendingDoltRemoteFreshnessCheck()
 
         XCTAssertTrue(didSync)
         XCTAssertNotNil(store.projectHealthSnapshot)
+        guard case .unchangedSinceSync = store.doltRemoteFreshness.result else {
+            return XCTFail("Refreshing health for the same remote should preserve checkpoint setup")
+        }
     }
 
     func testSyncReloadOwnsQueuedExternalReconcileFromSnapshotExport() async throws {
@@ -969,6 +1289,12 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     private let removesSnapshotOnExport: Bool
     private let doltRemoteNames: [String]
     private let doltRemoteDelays: [Duration?]
+    private var configuredDoltRemotes: [BeadsDoltRemote]?
+    private let role: String
+    private let projectID: String?
+    private var doltRemoteGeneration = String(repeating: "a", count: 40)
+    private var doltRemoteGenerationError: Error?
+    private var doltRemoteGenerationDelay: Duration?
     private let compactPreview: BeadsDoltCompactPreview
     private let flattenPreview: BeadsDoltFlattenPreview
     private var contextSyncRemote: String?
@@ -982,6 +1308,8 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
     private(set) var compactCallCount = 0
     private(set) var flattenCallCount = 0
     private(set) var doltRemoteCallCount = 0
+    private(set) var doltRemoteGenerationCallCount = 0
+    private(set) var lastDoltRemoteGenerationRemoteName: String?
     private(set) var statusDefinitionsLoadStarted = false
     private(set) var commandEvents: [String] = []
     private(set) var syntheticWriteStarted = false
@@ -1001,6 +1329,9 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         removesSnapshotOnExport: Bool = false,
         doltRemoteNames: [String] = ["origin"],
         doltRemoteDelays: [Duration?] = [],
+        configuredDoltRemotes: [BeadsDoltRemote]? = nil,
+        role: String = "maintainer",
+        projectID: String? = nil,
         compactPreview: BeadsDoltCompactPreview = BeadsDoltCompactPreview(
             totalCommits: 160,
             oldCommits: 40,
@@ -1026,6 +1357,9 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         self.removesSnapshotOnExport = removesSnapshotOnExport
         self.doltRemoteNames = doltRemoteNames
         self.doltRemoteDelays = doltRemoteDelays
+        self.configuredDoltRemotes = configuredDoltRemotes
+        self.role = role
+        self.projectID = projectID
         self.compactPreview = compactPreview
         self.flattenPreview = flattenPreview
     }
@@ -1126,9 +1460,9 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
             doltMode: "embedded",
             isRedirected: false,
             isWorktree: false,
-            projectID: "project-id",
+            projectID: projectID ?? "project-\(projectURL.lastPathComponent)",
             repoRoot: projectURL.path,
-            role: "maintainer",
+            role: role,
             schemaVersion: 1,
             syncRemote: contextSyncRemote
         )
@@ -1136,6 +1470,10 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
 
     func setContextSyncRemote(_ value: String?) {
         contextSyncRemote = value
+    }
+
+    func setConfiguredDoltRemotes(_ remotes: [BeadsDoltRemote]?) {
+        configuredDoltRemotes = remotes
     }
 
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig {
@@ -1169,6 +1507,9 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
            let delay = doltRemoteDelays[callIndex] {
             try await Task.sleep(for: delay)
         }
+        if let configuredDoltRemotes {
+            return BeadsDoltRemotes(remotes: configuredDoltRemotes)
+        }
         let remoteName = doltRemoteNames.indices.contains(callIndex)
             ? doltRemoteNames[callIndex]
             : doltRemoteNames.last ?? "origin"
@@ -1180,6 +1521,33 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
                 status: "ok"
             )
         ])
+    }
+
+    func loadDoltRemoteGeneration(
+        projectURL: URL,
+        remote: BeadsDoltRemote
+    ) async throws -> String {
+        doltRemoteGenerationCallCount += 1
+        lastDoltRemoteGenerationRemoteName = remote.name
+        if let doltRemoteGenerationDelay {
+            try await Task.sleep(for: doltRemoteGenerationDelay)
+        }
+        if let doltRemoteGenerationError {
+            throw doltRemoteGenerationError
+        }
+        return doltRemoteGeneration
+    }
+
+    func setDoltRemoteGeneration(_ generation: String) {
+        doltRemoteGeneration = generation
+    }
+
+    func setDoltRemoteGenerationError(_ error: Error?) {
+        doltRemoteGenerationError = error
+    }
+
+    func setDoltRemoteGenerationDelay(_ delay: Duration?) {
+        doltRemoteGenerationDelay = delay
     }
 
     func setStatusDefinitionsDelay(_ delay: Duration?) {
@@ -1276,4 +1644,5 @@ private enum ProjectHealthTestError: Error {
     case failedPull
     case failedPush
     case failedBackup
+    case failedRemoteCheck
 }

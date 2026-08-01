@@ -142,6 +142,7 @@ protocol BeadsCommanding: Sendable {
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig
     func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes
+    func loadDoltRemoteGeneration(projectURL: URL, remote: BeadsDoltRemote) async throws -> String
     func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus
     func loadBackupStatus(projectURL: URL) async throws -> BeadsBackupStatus
     func installHooks(projectURL: URL) async throws
@@ -175,6 +176,13 @@ extension BeadsCommanding {
         projectURL _: URL,
         settings _: BeadsCreationValidationSettings
     ) async throws {}
+
+    func loadDoltRemoteGeneration(
+        projectURL _: URL,
+        remote _: BeadsDoltRemote
+    ) async throws -> String {
+        throw DoltRemoteGenerationProbeError.unsupportedRemote
+    }
 
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL _: URL) async throws {
         try await exportReadableSnapshot(projectURL: projectURL)
@@ -742,6 +750,16 @@ struct BeadsCommandService {
         return try BeadsDoltRemotes.decode(from: text)
     }
 
+    func loadDoltRemoteGeneration(
+        projectURL: URL,
+        remote: BeadsDoltRemote
+    ) async throws -> String {
+        try await GitDoltRemoteGenerationProbe.generation(
+            remote: remote,
+            projectURL: projectURL
+        )
+    }
+
     func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus {
         let text = try await runOutput(
             projectURL: projectURL,
@@ -845,7 +863,9 @@ struct BeadsCommandService {
     /// - Parameter terminatesOnCancel: when `true`, cancelling the surrounding task kills
     ///   the `bd` subprocess instead of letting `readDataToEndOfFile` block until it exits
     ///   on its own. Only safe for read-only reads — never for writes, which must not be
-    ///   interrupted mid-flight. Defaults to `false`.
+    ///   interrupted mid-flight. Commands with stdin retain the non-cancellable write
+    ///   path so broken-pipe errors can be reconciled with the child's exit status.
+    ///   Defaults to `false`.
     private func runOutput(
         projectURL: URL,
         arguments: [String],
@@ -854,19 +874,17 @@ struct BeadsCommandService {
         timeout: Duration? = nil
     ) async throws -> String {
         let executable = executable()
-        if terminatesOnCancel {
+        if terminatesOnCancel, standardInput == nil {
             guard let timeout else {
                 return try await Self.runOutputTerminatingOnCancel(
                     projectURL: projectURL,
                     arguments: arguments,
-                    standardInput: standardInput,
                     executable: executable
                 )
             }
             return try await Self.runOutputTerminatingOnCancel(
                 projectURL: projectURL,
                 arguments: arguments,
-                standardInput: standardInput,
                 executable: executable,
                 timeout: timeout
             )
@@ -1035,7 +1053,6 @@ struct BeadsCommandService {
     private static func runOutputTerminatingOnCancel(
         projectURL: URL,
         arguments: [String],
-        standardInput: String?,
         executable: CommandExecutable,
         timeout: Duration
     ) async throws -> String {
@@ -1044,7 +1061,6 @@ struct BeadsCommandService {
                 try await runOutputTerminatingOnCancel(
                     projectURL: projectURL,
                     arguments: arguments,
-                    standardInput: standardInput,
                     executable: executable
                 )
             }
@@ -1069,80 +1085,21 @@ struct BeadsCommandService {
     private static func runOutputTerminatingOnCancel(
         projectURL: URL,
         arguments: [String],
-        standardInput: String?,
         executable: CommandExecutable
     ) async throws -> String {
-        let process = Process()
-        process.executableURL = executable.url
-        process.arguments = executable.prefix + arguments
-        process.currentDirectoryURL = projectURL
-
-        process.environment = BeadsCLI.subprocessEnvironment(executableURL: executable.url)
-
-        let output = Pipe()
-        let input = standardInput.map { _ in Pipe() }
-        if let input {
-            process.standardInput = input
+        let result = try await CancellableProcessRunner.run(
+            executableURL: executable.url,
+            arguments: executable.prefix + arguments,
+            currentDirectoryURL: projectURL,
+            environment: BeadsCLI.subprocessEnvironment(executableURL: executable.url)
+        )
+        guard result.terminationStatus == 0 else {
+            throw BeadError.commandFailed(
+                command: commandDescription(arguments),
+                output: result.output
+            )
         }
-        process.standardOutput = output
-        process.standardError = output
-
-        // `launched` gates `terminate()`: `Process.terminate()` raises if the process was
-        // never launched, and `onCancel` can fire before (or racing) `process.run()` — most
-        // obviously when the task is already cancelled on entry, where the handler runs
-        // immediately. `cancelled` lets the worker bail before launching and distinguishes a
-        // termination we caused from a genuine `bd` failure.
-        let state = SubprocessRunState()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        guard !state.isCancelled else {
-                            continuation.resume(throwing: CancellationError())
-                            return
-                        }
-                        try process.run()
-                        if state.markLaunchedAndShouldTerminate() {
-                            process.terminate()
-                        }
-                        if state.isCancelled {
-                            process.waitUntilExit()
-                            continuation.resume(throwing: CancellationError())
-                            return
-                        }
-                        var standardInputDelivered = true
-                        if let standardInput, let input {
-                            standardInputDelivered = writeStandardInput(standardInput, to: input)
-                        }
-                        let data = output.fileHandleForReading.readDataToEndOfFile()
-                        process.waitUntilExit()
-                        if state.isCancelled {
-                            continuation.resume(throwing: CancellationError())
-                            return
-                        }
-                        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        guard process.terminationStatus == 0 else {
-                            continuation.resume(throwing: BeadError.commandFailed(command: commandDescription(arguments), output: text))
-                            return
-                        }
-                        guard standardInputDelivered else {
-                            continuation.resume(throwing: BeadError.commandFailed(
-                                command: commandDescription(arguments),
-                                output: "`bd` stopped reading its input before it was fully delivered."
-                            ))
-                            return
-                        }
-                        continuation.resume(returning: text)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-        } onCancel: {
-            if state.markCancelledAndShouldTerminate() {
-                process.terminate()
-            }
-        }
+        return result.output
     }
 
     private static func commandDescription(_ arguments: [String]) -> String {
@@ -2115,35 +2072,5 @@ private final class SubprocessWatchdogState: @unchecked Sendable {
 extension Duration {
     var timeInterval: TimeInterval {
         TimeInterval(components.seconds) + TimeInterval(components.attoseconds) * 1e-18
-    }
-}
-
-private final class SubprocessRunState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var launched = false
-    private var cancelled = false
-
-    /// Records launch and reports whether cancellation already happened before the launch
-    /// was visible to the cancellation handler.
-    func markLaunchedAndShouldTerminate() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        launched = true
-        return cancelled
-    }
-
-    var isCancelled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return cancelled
-    }
-
-    /// Records cancellation and reports whether the caller should terminate the process —
-    /// true only if it has already been launched, so `terminate()` is always safe to call.
-    func markCancelledAndShouldTerminate() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        cancelled = true
-        return launched
     }
 }

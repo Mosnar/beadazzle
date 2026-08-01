@@ -48,6 +48,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         store.issueTextSectionVisibilityMode = .descriptionOnly
         store.issueTextSectionOrder = [.notes, .description, .acceptanceCriteria, .design]
         store.setAppSuggestedSections([.description, .design], for: "feature")
+        store.automaticallyChecksDoltRemotes = false
         store.showsBackNavigationButton = true
         store.showsForwardNavigationButton = true
         store.showsAllChildrenInOutline = false
@@ -72,6 +73,7 @@ final class BeadStorePreferencesTests: XCTestCase {
             reloadedStore.issueTextSectionSuggestions.sections(for: "feature"),
             [.description, .design]
         )
+        XCTAssertFalse(reloadedStore.automaticallyChecksDoltRemotes)
         XCTAssertTrue(reloadedStore.showsBackNavigationButton)
         XCTAssertTrue(reloadedStore.showsForwardNavigationButton)
         XCTAssertFalse(reloadedStore.showsAllChildrenInOutline)
@@ -877,6 +879,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let entries = BeadazzleOptionInventory.entries
         let expectedIDs: Set<String> = [
             "bdCLIPath",
+            "automaticallyChecksDoltRemotes",
             "automaticallyChecksForUpdates",
             "receivesBetaUpdates",
             "defaultNewBeadAssignee",
@@ -928,17 +931,20 @@ final class BeadStorePreferencesTests: XCTestCase {
             BeadazzleAppBoolPreferences.all.count,
             Set(BeadazzleAppBoolPreferences.all.map(\.key)).count
         )
+        let displayPreferences = BeadazzleAppBoolPreferences.all.filter {
+            $0.key.hasPrefix("Display.")
+        }
         XCTAssertEqual(
-            Set(BeadazzleAppBoolPreferences.all.map(\.id)),
+            Set(displayPreferences.map(\.id)),
             Set(entries.filter { $0.persistence.hasPrefix("Display.") }.map(\.id))
         )
         XCTAssertEqual(
-            Set(BeadazzleAppBoolPreferences.all.map(\.key)),
+            Set(displayPreferences.map(\.key)),
             Set(entries.filter { $0.persistence.hasPrefix("Display.") }.map(\.persistence))
         )
         XCTAssertEqual(
             Dictionary(
-                uniqueKeysWithValues: BeadazzleAppBoolPreferences.all.map {
+                uniqueKeysWithValues: displayPreferences.map {
                     ($0.id, $0.defaultValueDescription)
                 }
             ),

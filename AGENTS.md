@@ -35,8 +35,13 @@ Beadazzle is a SwiftPM native macOS app. Prefer small, focused SwiftUI files and
 - Ask `bd context --json` for the effective tracker directory before reading, so worktree redirects and explicitly routed `.beads` paths stay on the same source `bd` writes.
 - Read issues from the JSONL snapshot in that directory (`issues.jsonl`, `beads.jsonl`, or `beads.base.jsonl`).
 - Beadazzle produces that snapshot itself by running `bd export` — when a project opens with no snapshot, after mutations, and on manual refresh — so users do not need `bd` auto-export configured.
+- Combined Sync runs `bd dolt pull`, then `bd dolt push` when pull succeeds, and finally exports and reloads the readable snapshot. Pull also reconciles the snapshot; Push does not need to reload it.
+- Lightweight remote-change checks are not sync: for eligible embedded projects they read the Git-backed remote's `refs/dolt/data` without pulling database objects. Automatic checks require an active scene, the app preference, a compatible remote, and a machine-local checkpoint established by a successful Beadazzle remote action.
+- Treat no-remote, unsupported-remote, server/shared-server, and contributor-routed projects as valid states. Follow the effective `bd context`; do not invent a fallback remote or tracker path.
 - Do not write directly to Beads internals unless the user explicitly asks for a low-level repair.
 - Route creates, updates, deletes, close actions, bulk changes, and dependency changes through the `bd` CLI.
+
+See `docs/BEADS_SYNC.md` for the Git-versus-Dolt model, team setup, tracked and ignored files, hook semantics, and Beadazzle reconciliation behavior.
 
 ## UI Direction
 

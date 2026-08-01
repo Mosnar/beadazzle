@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var savedViewEditorRequest: SavedViewEditorRequest?
     @State private var folderEditorRequest: FolderBookmarkEditorRequest?
     @State private var bulkEditRequest: BulkEditRequest?
+    @State private var doltRemoteFreshnessSceneID = UUID()
 
     var body: some View {
         @Bindable var store = store
@@ -166,9 +167,20 @@ struct ContentView: View {
             folderEditorRequest = nil
             bulkEditRequest = nil
         }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            let isActive = phase == .active
+            store.setDoltRemoteFreshnessSceneActive(
+                isActive,
+                sceneID: doltRemoteFreshnessSceneID
+            )
+            guard isActive else { return }
             store.refreshServerProjectOnActivation()
+        }
+        .onDisappear {
+            store.setDoltRemoteFreshnessSceneActive(
+                false,
+                sceneID: doltRemoteFreshnessSceneID
+            )
         }
         .onChange(of: workspace.requestedSavedViewEditorID) { _, id in
             guard let id else { return }

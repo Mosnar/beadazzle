@@ -13,6 +13,7 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+- Beadazzle can now periodically check Git-backed Dolt remotes for changes without pulling, show changes since its last Sync checkpoint, and let you check again from the Sync menu or Project Settings. Automatic checks can be turned off in application Settings.
 - New beads created in Beadazzle now use the project's native Beads ID format instead of longer app-generated IDs.
 - Bead creation now stays safe across project switches and ambiguous command failures, preserving drafts without offering retries that could create duplicates.
 - Sync Beads with one toolbar action that pulls before pushing; separate Pull and Push commands and shortcuts remain available.

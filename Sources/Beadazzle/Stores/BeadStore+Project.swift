@@ -223,6 +223,8 @@ extension BeadStore {
         projectDoltRemotesTask = nil
         _projectDoltRemotes = nil
         _isLoadingProjectDoltRemotes = false
+        project.cancelDoltRemoteFreshnessCheck()
+        _doltRemoteFreshness = .unknown
         _ownerIdentity = .unavailable
         _snapshotFreshness = .unknown
         cachedDefinitions = nil

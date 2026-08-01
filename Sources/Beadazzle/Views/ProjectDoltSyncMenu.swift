@@ -29,13 +29,35 @@ struct ProjectDoltSyncMenu: View {
         Menu {
             syncButton(.pull)
             syncButton(.push)
+
+            Divider()
+
+            Button("Check for Remote Changes", systemImage: "arrow.clockwise") {
+                store.checkProjectDoltRemoteFreshness(.manual)
+            }
+            .disabled(
+                store.doltRemoteFreshness.isChecking
+                    || !store.doltRemoteFreshness.result.canCheckAgain
+            )
+            .help(store.doltRemoteFreshness.result.detail)
+
+            Text(remoteStatusSummary)
         } label: {
             Label {
                 Text(title)
             } icon: {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.triangle.2.circlepath")
-                    if activeSyncAction != nil {
+                        .overlay(alignment: .topTrailing) {
+                            if store.doltRemoteFreshness.result.hasRemoteChanges {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: 3, y: -3)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    if activeSyncAction != nil || store.doltRemoteFreshness.isChecking {
                         ProgressView()
                             .controlSize(.small)
                             .accessibilityHidden(true)
@@ -48,7 +70,7 @@ struct ProjectDoltSyncMenu: View {
         }
         .disabled(isExternallyDisabled || !store.canSynchronizeProjectIssues)
         .help(syncHelp)
-        .accessibilityLabel(activeSyncAction?.title ?? idleAccessibilityLabel)
+        .accessibilityLabel(activeSyncAction?.title ?? accessibilityLabel)
         .accessibilityHint(activeSyncAction == nil ? syncHelp : "Please wait")
     }
 
@@ -65,12 +87,29 @@ struct ProjectDoltSyncMenu: View {
         if store.isLoadingProjectDoltRemotes {
             return "Checking this project for a Dolt remote"
         }
-        return activeSyncAction?.title
-            ?? "Pull changes, push Dolt history, then refresh Beadazzle's readable snapshot"
+        if let activeSyncAction { return activeSyncAction.title }
+        if store.doltRemoteFreshness.isChecking { return "Checking the Dolt remote for changes" }
+        if store.doltRemoteFreshness.result.hasRemoteChanges {
+            return "Remote changes are available. Sync to pull them, push local history, and refresh the readable snapshot."
+        }
+        return "Pull changes, push Dolt history, then refresh Beadazzle's readable snapshot"
     }
 
     private var idleAccessibilityLabel: String {
         title == "Sync" ? "Beads Sync" : title
+    }
+
+    private var accessibilityLabel: String {
+        store.doltRemoteFreshness.result.hasRemoteChanges
+            ? "\(idleAccessibilityLabel), remote changes available"
+            : idleAccessibilityLabel
+    }
+
+    private var remoteStatusSummary: String {
+        if store.doltRemoteFreshness.isChecking {
+            return "Checking remote…"
+        }
+        return "Remote: \(store.doltRemoteFreshness.result.summary)"
     }
 
     private func syncButton(_ command: ProjectDoltSyncCommand) -> some View {

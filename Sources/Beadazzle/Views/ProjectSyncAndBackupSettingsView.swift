@@ -142,6 +142,37 @@ private struct ProjectDoltSyncSection: View {
                 }
             }
 
+            LabeledContent("Remote changes") {
+                HStack(spacing: 8) {
+                    if project.doltRemoteFreshness.isChecking {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityHidden(true)
+                    }
+                    ProjectHealthValueText(project.doltRemoteFreshness.result.summary)
+                    if project.doltRemoteFreshness.result.hasRemoteChanges {
+                        ProjectHealthBadge(title: "Available", style: .warning)
+                    }
+                    if let checkedAt = project.doltRemoteFreshness.result.checkedAt {
+                        Text(checkedAt, style: .relative)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Check Now", systemImage: "arrow.clockwise") {
+                        store.checkProjectDoltRemoteFreshness(.manual)
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(
+                        project.doltRemoteFreshness.isChecking
+                            || !project.doltRemoteFreshness.result.canCheckAgain
+                    )
+                    .help(remoteCheckHelp)
+                }
+                .help(project.doltRemoteFreshness.result.detail)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Remote changes")
+                .accessibilityValue(remoteChangesAccessibilityValue)
+            }
+
             if hasRemotes {
                 ProjectDoltSyncMenu(
                     title: "Sync Now",
@@ -161,6 +192,19 @@ private struct ProjectDoltSyncSection: View {
 
     private var hasRemotes: Bool {
         project.projectHealthSnapshot?.doltRemotes.value?.remotes.isEmpty == false
+    }
+
+    private var remoteChangesAccessibilityValue: String {
+        if project.doltRemoteFreshness.isChecking {
+            return "Checking remote"
+        }
+        return project.doltRemoteFreshness.result.summary
+    }
+
+    private var remoteCheckHelp: String {
+        project.doltRemoteFreshness.result.canCheckAgain
+            ? "Check for remote changes now"
+            : project.doltRemoteFreshness.result.detail
     }
 }
 

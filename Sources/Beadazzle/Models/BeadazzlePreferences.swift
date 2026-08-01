@@ -8,6 +8,7 @@ enum BeadazzlePreferenceKeys {
     static let issueTextSectionVisibilityMode = "Editor.BeadContent.EmptySectionMode"
     static let issueTextSectionOrder = "Editor.BeadContent.SectionOrder"
     static let issueTextSectionSuggestions = "Editor.BeadContent.TypeSuggestions"
+    static let remoteFreshnessRecordPrefix = "Sync.Dolt.RemoteFreshness"
     static let legacyStaleCutoffDays = "StaleCutoffDays"
     static let legacyShowsOwnerInBeadList = "ShowsOwnerInBeadList"
     static let legacyShowsAssigneeInBeadList = "ShowsAssigneeInBeadList"
@@ -105,6 +106,10 @@ enum BeadazzlePreferenceKeys {
     static func legacySemanticDefinitions(projectURL: URL) -> String {
         "SemanticDefinitions.\(projectURL.standardizedFileURL.path)"
     }
+
+    static func remoteFreshnessRecord(trackerIdentity: String) -> String {
+        "\(remoteFreshnessRecordPrefix).\(ProjectDoltRemoteFreshnessRecord.fingerprint(trackerIdentity))"
+    }
 }
 
 struct BeadazzleBoolPreferenceDescriptor: Equatable, Sendable {
@@ -118,6 +123,11 @@ struct BeadazzleBoolPreferenceDescriptor: Equatable, Sendable {
 }
 
 enum BeadazzleAppBoolPreferences {
+    static let automaticallyChecksDoltRemotes = BeadazzleBoolPreferenceDescriptor(
+        id: "automaticallyChecksDoltRemotes",
+        key: "Sync.Dolt.AutomaticallyChecksRemoteChanges",
+        defaultValue: true
+    )
     static let showsBackNavigationButton = BeadazzleBoolPreferenceDescriptor(
         id: "showsBackNavigationButton",
         key: "Display.Navigation.ShowsBackButton",
@@ -170,6 +180,7 @@ enum BeadazzleAppBoolPreferences {
     )
 
     static let all: [BeadazzleBoolPreferenceDescriptor] = [
+        automaticallyChecksDoltRemotes,
         showsBackNavigationButton,
         showsForwardNavigationButton,
         showsAllChildrenInOutline,
@@ -218,6 +229,15 @@ enum BeadazzleOptionInventory {
             defaultValue: "Automatic",
             uiLocation: "Settings > General",
             behavior: "Chooses the bd executable used by the app."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.id,
+            title: "Automatically check Dolt remotes for changes",
+            scope: .appPreference,
+            persistence: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.key,
+            defaultValue: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.defaultValueDescription,
+            uiLocation: "Settings > General",
+            behavior: "Periodically checks the lightweight Dolt data ref for Git-backed remotes while Beadazzle is active, without pulling."
         ),
         BeadazzleOptionInventoryEntry(
             id: "automaticallyChecksForUpdates",

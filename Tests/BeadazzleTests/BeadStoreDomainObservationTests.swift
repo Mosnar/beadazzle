@@ -61,6 +61,24 @@ final class BeadStoreDomainObservationTests: XCTestCase {
         XCTAssertEqual(store.project.projectURL, store.projectURL)
     }
 
+    func testRemoteFreshnessFacadeTracksProjectRegistrar() {
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        let invalidation = expectation(description: "Remote freshness invalidates its toolbar reader")
+
+        withObservationTracking {
+            _ = store.doltRemoteFreshness
+        } onChange: {
+            invalidation.fulfill()
+        }
+
+        store._doltRemoteFreshness = ProjectDoltRemoteFreshnessState(
+            result: .remoteChanged(checkedAt: Date())
+        )
+
+        wait(for: [invalidation], timeout: 0.1)
+        XCTAssertTrue(store.doltRemoteFreshness.result.hasRemoteChanges)
+    }
+
     func testIndexReplacementInvalidatesIssueReferenceLookupObservation() async {
         let store = BeadStore(userDefaults: makeUserDefaults())
         let invalidation = expectation(description: "Issue-reference lookup invalidates")

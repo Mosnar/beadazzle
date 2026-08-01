@@ -33,6 +33,9 @@ extension BeadStore {
                 snapshot.doltRemotes = currentRemotes
             }
             self._projectHealthSnapshot = snapshot
+            let previousRemote = self.projectDoltRemotes?.value.flatMap {
+                self.doltRemoteFreshnessRemote(in: $0)
+            }
             self.project.acceptProjectDoltRemotesFromHealthLoad(
                 snapshot.doltRemotes,
                 generation: remotesGeneration
@@ -41,6 +44,7 @@ extension BeadStore {
                let storageConfig = snapshot.storageConfig.value {
                 self._projectEnvironment = environment.applying(storageConfig: storageConfig)
             }
+            self.projectDoltRemotesDidLoad(previousRemote: previousRemote)
             self._isLoadingProjectHealth = false
         }
     }
@@ -74,11 +78,15 @@ extension BeadStore {
                   ) else {
                 return
             }
+            let previousRemote = self.projectDoltRemotes?.value.flatMap {
+                self.doltRemoteFreshnessRemote(in: $0)
+            }
             self._projectDoltRemotes = remotes
             if var healthSnapshot = self._projectHealthSnapshot {
                 healthSnapshot.doltRemotes = remotes
                 self._projectHealthSnapshot = healthSnapshot
             }
+            self.projectDoltRemotesDidLoad(previousRemote: previousRemote)
         }
     }
 
@@ -290,6 +298,9 @@ extension BeadStore {
                 pushesAfterPull: true
             )
             guard self.projectURL == projectURL else { return false }
+            if outcome.pullFailure == nil, outcome.pushFailure == nil {
+                checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
+            }
             endMutation(generation: mutationLifetimeGeneration)
             mutationLifetimeEnded = true
             markSemanticDefinitionsCacheStale()
@@ -383,6 +394,9 @@ extension BeadStore {
                 pushesAfterPull: false
             )
             guard self.projectURL == projectURL else { return false }
+            if outcome.pullFailure == nil {
+                checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
+            }
             endMutation(generation: mutationLifetimeGeneration)
             mutationLifetimeEnded = true
             markSemanticDefinitionsCacheStale()
@@ -632,6 +646,7 @@ extension BeadStore {
                 try await commands.pushDoltRemote(projectURL: projectURL)
             }
             guard self.projectURL == projectURL else { return false }
+            checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
             announceCompletion("Pushed beads to remote")
             return true
         } catch {

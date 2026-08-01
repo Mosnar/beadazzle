@@ -159,6 +159,17 @@ private struct GeneralSettingsPane: View {
                     Text("Seeds new drafts only. Owner uses the Git identity resolved by bd; projects can override this default.")
                 }
             }
+
+            Section {
+                Toggle(
+                    "Check Dolt remotes for changes automatically",
+                    isOn: $store.automaticallyChecksDoltRemotes
+                )
+            } header: {
+                Text("Remote Changes")
+            } footer: {
+                Text("While Beadazzle is active, periodically checks Git-backed Dolt remotes without pulling or downloading database objects. Projects without a compatible remote are skipped; after Sync establishes a checkpoint, you can also check again from Sync.")
+            }
         }
         .settingsGroupedForm()
         .task(id: store.bdCLIPath) {

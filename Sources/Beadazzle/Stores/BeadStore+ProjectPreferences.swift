@@ -115,7 +115,7 @@ extension BeadStore {
         )
     }
 
-    internal func persistAppDisplayPreference(
+    internal func persistAppBoolPreference(
         _ value: Bool,
         preference: BeadazzleBoolPreferenceDescriptor
     ) {

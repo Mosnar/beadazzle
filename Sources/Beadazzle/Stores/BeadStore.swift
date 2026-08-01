@@ -54,6 +54,7 @@ final class BeadProjectStore {
     fileprivate(set) var projectHealthActionError: ProjectHealthActionFailure?
     fileprivate(set) var projectDoltRemotes: ProjectHealthValue<BeadsDoltRemotes>?
     fileprivate(set) var isLoadingProjectDoltRemotes = false
+    fileprivate(set) var doltRemoteFreshness = ProjectDoltRemoteFreshnessState.unknown
     fileprivate(set) var isLoading = false
     fileprivate(set) var isInitializingBeads = false
     fileprivate(set) var hiddenTypeNames: Set<String> = []
@@ -74,6 +75,10 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var projectHealthTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var projectDoltRemotesTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var projectDoltRemotesGeneration = 0
+    @ObservationIgnored fileprivate(set) var doltRemoteFreshnessTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var doltRemoteFreshnessGeneration = 0
+    @ObservationIgnored fileprivate(set) var doltRemoteFreshnessMonitorTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var doltRemoteFreshnessMonitorGeneration = 0
     @ObservationIgnored fileprivate(set) var ownerIdentityTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var ownerIdentityGeneration = 0
     @ObservationIgnored fileprivate(set) var dataSourceMonitor: BeadsDataSourceMonitor?
@@ -120,6 +125,13 @@ final class BeadProjectStore {
         projectDoltRemotesTask?.cancel()
         projectDoltRemotesTask = nil
         isLoadingProjectDoltRemotes = false
+        doltRemoteFreshnessGeneration &+= 1
+        doltRemoteFreshnessTask?.cancel()
+        doltRemoteFreshnessTask = nil
+        doltRemoteFreshness.isChecking = false
+        doltRemoteFreshnessMonitorGeneration &+= 1
+        doltRemoteFreshnessMonitorTask?.cancel()
+        doltRemoteFreshnessMonitorTask = nil
         ownerIdentityGeneration &+= 1
         ownerIdentityTask?.cancel()
         ownerIdentityTask = nil
@@ -231,6 +243,50 @@ final class BeadProjectStore {
         projectDoltRemotesTask = nil
         isLoadingProjectDoltRemotes = false
         projectDoltRemotes = remotes
+    }
+
+    func beginDoltRemoteFreshnessCheck() -> Int {
+        doltRemoteFreshnessGeneration &+= 1
+        doltRemoteFreshnessTask?.cancel()
+        return doltRemoteFreshnessGeneration
+    }
+
+    func ownsDoltRemoteFreshnessCheck(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
+        projectURL == expectedProjectURL && doltRemoteFreshnessGeneration == generation
+    }
+
+    func finishDoltRemoteFreshnessCheck(generation: Int) {
+        guard doltRemoteFreshnessGeneration == generation else { return }
+        doltRemoteFreshnessTask = nil
+        doltRemoteFreshness.isChecking = false
+    }
+
+    func cancelDoltRemoteFreshnessCheck() {
+        doltRemoteFreshnessGeneration &+= 1
+        doltRemoteFreshnessTask?.cancel()
+        doltRemoteFreshnessTask = nil
+        doltRemoteFreshness.isChecking = false
+    }
+
+    func beginDoltRemoteFreshnessMonitoring() -> Int {
+        doltRemoteFreshnessMonitorGeneration &+= 1
+        doltRemoteFreshnessMonitorTask?.cancel()
+        return doltRemoteFreshnessMonitorGeneration
+    }
+
+    func ownsDoltRemoteFreshnessMonitoring(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
+        projectURL == expectedProjectURL && doltRemoteFreshnessMonitorGeneration == generation
+    }
+
+    func finishDoltRemoteFreshnessMonitoring(generation: Int) {
+        guard doltRemoteFreshnessMonitorGeneration == generation else { return }
+        doltRemoteFreshnessMonitorTask = nil
+    }
+
+    func cancelDoltRemoteFreshnessMonitoring() {
+        doltRemoteFreshnessMonitorGeneration &+= 1
+        doltRemoteFreshnessMonitorTask?.cancel()
+        doltRemoteFreshnessMonitorTask = nil
     }
 }
 
@@ -988,6 +1044,11 @@ final class BeadStore {
         get { project.isLoadingProjectDoltRemotes }
         set { project.isLoadingProjectDoltRemotes = newValue }
     }
+    var doltRemoteFreshness: ProjectDoltRemoteFreshnessState { project.doltRemoteFreshness }
+    internal var _doltRemoteFreshness: ProjectDoltRemoteFreshnessState {
+        get { project.doltRemoteFreshness }
+        set { project.doltRemoteFreshness = newValue }
+    }
     /// Gate detail cache keyed by gate bead id. The issue snapshot is the source of truth
     /// for display fields; `bd gate show` only enriches the selected gate with waiters.
     var gatesByID: [String: BeadGate] { detail.gatesByID }
@@ -1095,10 +1156,20 @@ final class BeadStore {
             persistIssueTextSectionSuggestions()
         }
     }
+    var automaticallyChecksDoltRemotes = BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.defaultValue {
+        didSet {
+            guard oldValue != automaticallyChecksDoltRemotes else { return }
+            persistAppBoolPreference(
+                automaticallyChecksDoltRemotes,
+                preference: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes
+            )
+            automaticDoltRemoteFreshnessPreferenceDidChange()
+        }
+    }
     var showsBackNavigationButton = BeadazzleAppBoolPreferences.showsBackNavigationButton.defaultValue {
         didSet {
             guard oldValue != showsBackNavigationButton else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsBackNavigationButton,
                 preference: BeadazzleAppBoolPreferences.showsBackNavigationButton
             )
@@ -1107,7 +1178,7 @@ final class BeadStore {
     var showsForwardNavigationButton = BeadazzleAppBoolPreferences.showsForwardNavigationButton.defaultValue {
         didSet {
             guard oldValue != showsForwardNavigationButton else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsForwardNavigationButton,
                 preference: BeadazzleAppBoolPreferences.showsForwardNavigationButton
             )
@@ -1116,7 +1187,7 @@ final class BeadStore {
     var showsAllChildrenInOutline = BeadazzleAppBoolPreferences.showsAllChildrenInOutline.defaultValue {
         didSet {
             guard oldValue != showsAllChildrenInOutline else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsAllChildrenInOutline,
                 preference: BeadazzleAppBoolPreferences.showsAllChildrenInOutline
             )
@@ -1126,7 +1197,7 @@ final class BeadStore {
     var opensSplitViewOnSingleClick = BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick.defaultValue {
         didSet {
             guard oldValue != opensSplitViewOnSingleClick else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 opensSplitViewOnSingleClick,
                 preference: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick
             )
@@ -1135,7 +1206,7 @@ final class BeadStore {
     var showsBeadIDUnderTitle = BeadazzleAppBoolPreferences.showsBeadIDUnderTitle.defaultValue {
         didSet {
             guard oldValue != showsBeadIDUnderTitle else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsBeadIDUnderTitle,
                 preference: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle
             )
@@ -1145,7 +1216,7 @@ final class BeadStore {
         BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs.defaultValue {
         didSet {
             guard oldValue != showsCopyBeadIDButtonInBreadcrumbs else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsCopyBeadIDButtonInBreadcrumbs,
                 preference: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs
             )
@@ -1154,7 +1225,7 @@ final class BeadStore {
     var showsProjectNameInBreadcrumbs = BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs.defaultValue {
         didSet {
             guard oldValue != showsProjectNameInBreadcrumbs else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsProjectNameInBreadcrumbs,
                 preference: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs
             )
@@ -1163,7 +1234,7 @@ final class BeadStore {
     var showsClosedBeadsInSidebar = BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar.defaultValue {
         didSet {
             guard oldValue != showsClosedBeadsInSidebar else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsClosedBeadsInSidebar,
                 preference: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar
             )
@@ -1172,7 +1243,7 @@ final class BeadStore {
     var showsGatesInSidebar = BeadazzleAppBoolPreferences.showsGatesInSidebar.defaultValue {
         didSet {
             guard oldValue != showsGatesInSidebar else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsGatesInSidebar,
                 preference: BeadazzleAppBoolPreferences.showsGatesInSidebar
             )
@@ -1182,7 +1253,7 @@ final class BeadStore {
         BeadazzleAppBoolPreferences.showsZeroCountSidebarSections.defaultValue {
         didSet {
             guard oldValue != showsZeroCountSidebarSections else { return }
-            persistAppDisplayPreference(
+            persistAppBoolPreference(
                 showsZeroCountSidebarSections,
                 preference: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections
             )
@@ -1391,6 +1462,11 @@ final class BeadStore {
     var issueReferenceLookup: IssueReferenceLookup { project.issueReferenceLookup }
 
     @ObservationIgnored internal let commands: any BeadsCommanding
+    @ObservationIgnored internal var activeDoltRemoteFreshnessSceneIDs: Set<UUID> = []
+    internal var isDoltRemoteFreshnessSceneActive: Bool {
+        !activeDoltRemoteFreshnessSceneIDs.isEmpty
+    }
+    @ObservationIgnored internal let doltRemoteFreshnessCheckInterval: TimeInterval
     @ObservationIgnored internal let projectLoader: BeadProjectLoader
     @ObservationIgnored internal let activityHistoryRepository: BeadActivityHistoryRepository
     @ObservationIgnored internal let ownerIdentityResolver: any BeadOwnerIdentityResolving
@@ -1424,6 +1500,14 @@ final class BeadStore {
     internal var projectDoltRemotesTask: Task<Void, Never>? {
         get { project.projectDoltRemotesTask }
         set { project.projectDoltRemotesTask = newValue }
+    }
+    internal var doltRemoteFreshnessTask: Task<Void, Never>? {
+        get { project.doltRemoteFreshnessTask }
+        set { project.doltRemoteFreshnessTask = newValue }
+    }
+    internal var doltRemoteFreshnessMonitorTask: Task<Void, Never>? {
+        get { project.doltRemoteFreshnessMonitorTask }
+        set { project.doltRemoteFreshnessMonitorTask = newValue }
     }
     internal var ownerIdentityTask: Task<Void, Never>? {
         get { project.ownerIdentityTask }
@@ -1500,13 +1584,15 @@ final class BeadStore {
         userDefaults: UserDefaults = .standard,
         commands: any BeadsCommanding = BeadsCommandService(),
         activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository(),
-        ownerIdentityResolver: any BeadOwnerIdentityResolving = BeadOwnerIdentityResolver()
+        ownerIdentityResolver: any BeadOwnerIdentityResolving = BeadOwnerIdentityResolver(),
+        doltRemoteFreshnessCheckInterval: TimeInterval = 5 * 60
     ) {
         self.userDefaults = userDefaults
         self.commands = commands
         self.projectLoader = BeadProjectLoader(commands: commands)
         self.activityHistoryRepository = activityHistoryRepository
         self.ownerIdentityResolver = ownerIdentityResolver
+        self.doltRemoteFreshnessCheckInterval = doltRemoteFreshnessCheckInterval
         self.savedViewRepository = BeadSavedViewRepository(userDefaults: userDefaults)
         self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
         self.semanticDefinitionsRepository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
@@ -1527,6 +1613,10 @@ final class BeadStore {
             from: userDefaults,
             key: BeadazzlePreferenceKeys.issueTextSectionSuggestions
         ) ?? .beadsDefault
+        automaticallyChecksDoltRemotes = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes
+        )
         showsBackNavigationButton = Self.boolValue(
             userDefaults,
             preference: BeadazzleAppBoolPreferences.showsBackNavigationButton
