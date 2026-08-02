@@ -110,6 +110,18 @@ enum BeadazzlePreferenceKeys {
     static func remoteFreshnessRecord(trackerIdentity: String) -> String {
         "\(remoteFreshnessRecordPrefix).\(ProjectDoltRemoteFreshnessRecord.fingerprint(trackerIdentity))"
     }
+
+    static func beadsSetupIntent(projectURL: URL) -> String {
+        "BeadsSetup.Intent.\(setupProjectFingerprint(projectURL))"
+    }
+
+    static func beadsSetupDismissedFingerprint(projectURL: URL) -> String {
+        "BeadsSetup.Dismissed.\(setupProjectFingerprint(projectURL))"
+    }
+
+    private static func setupProjectFingerprint(_ projectURL: URL) -> String {
+        StableFingerprint.sha256(projectURL.standardizedFileURL.path)
+    }
 }
 
 struct BeadazzleBoolPreferenceDescriptor: Equatable, Sendable {

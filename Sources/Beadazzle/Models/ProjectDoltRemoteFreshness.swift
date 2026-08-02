@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 enum ProjectDoltRemoteFreshnessResult: Equatable, Sendable {
@@ -100,8 +99,6 @@ struct ProjectDoltRemoteFreshnessRecord: Codable, Equatable, Sendable {
     }
 
     static func fingerprint(_ remoteURL: String) -> String {
-        SHA256.hash(data: Data(remoteURL.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        StableFingerprint.sha256(remoteURL)
     }
 }

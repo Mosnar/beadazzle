@@ -673,6 +673,152 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertEqual(ProjectStorageConfig.bool(from: "off"), false)
     }
 
+    func testSetupInspectionRunsBootstrapInReadonlyMode() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly bootstrap --dry-run --json")
+            printf '%s\n' '{"action":"none","has_existing":false}'
+            exit 1
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let assessment = try await service.inspectSetup(
+            projectURL: projectURL,
+            scope: .wizard,
+            candidateRemote: nil,
+            preloadedEnvironment: nil
+        )
+
+        XCTAssertFalse(assessment.isInitialized)
+    }
+
+    func testSetupInspectionPrefersReadableLocalDatabaseOverBootstrapAdvice() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly bootstrap --dry-run --json")
+            printf '%s\n' '{"action":"sync","has_existing":false,"database":"sales_radar"}'
+            ;;
+          "--readonly context --json")
+            printf '%s\n' '{"backend":"dolt","beads_dir":".beads","database":"sales_radar","dolt_mode":"embedded","role":"maintainer"}'
+            ;;
+          "--readonly count --json")
+            printf '%s\n' '{"count":223}'
+            ;;
+          "--readonly config show --json")
+            printf '%s\n' '[]'
+            ;;
+          "--readonly dolt remote list --json")
+            printf '%s\n' '[]'
+            ;;
+          "--readonly hooks list")
+            printf '%s\n' 'pre-commit: installed'
+            ;;
+          "--readonly backup status --json")
+            printf '%s\n' '{}'
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let assessment = try await service.inspectSetup(
+            projectURL: projectURL,
+            scope: .wizard,
+            candidateRemote: nil,
+            preloadedEnvironment: nil
+        )
+        let plan = BeadsSetupPlanner.plan(
+            draft: BeadsSetupDraft(profile: .local),
+            assessment: assessment
+        )
+
+        XCTAssertTrue(assessment.isInitialized)
+        XCTAssertFalse(plan.steps.contains { $0.id == "bootstrap" || $0.id == "initialize" })
+    }
+
+    func testReviewedSetupCommandUsesTheExactArgumentsThatRun() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let argumentsURL = projectURL.appendingPathComponent("setup-arguments.txt")
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        printf '%s\n' "$@" > "\(argumentsURL.path)"
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+        let operation = BeadsSetupOperation.initializeBackup(destination: "/tmp/Team's Backup")
+        let step = BeadsSetupStep(
+            id: "backup",
+            title: "Configure backup",
+            detail: "Configure the reviewed destination.",
+            scopes: [.checkoutLocal],
+            operation: operation
+        )
+
+        _ = try await service.applySetup(
+            projectURL: projectURL,
+            plan: BeadsSetupPlan(profile: .advanced, findings: [], steps: [step]),
+            cancellationToken: BeadsSetupCancellationToken()
+        )
+
+        let executedArguments = try String(contentsOf: argumentsURL, encoding: .utf8)
+            .split(whereSeparator: \Character.isNewline)
+            .map(String.init)
+        XCTAssertEqual(executedArguments, operation.arguments)
+        XCTAssertEqual(
+            step.command,
+            ShellCommand.render(executable: "bd", arguments: executedArguments)
+        )
+    }
+
+    func testSetupFailureReportsStepsThatAlreadyCompleted() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        if [ "$*" = "--sandbox hooks install" ]; then
+          exit 9
+        fi
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+        let steps = [
+            BeadsSetupStep(
+                id: "config",
+                title: "Set configuration",
+                detail: "Set configuration.",
+                scopes: [.gitTracked],
+                operation: .setConfig(key: "dolt.auto-push", value: "false")
+            ),
+            BeadsSetupStep(
+                id: "hooks",
+                title: "Install hooks",
+                detail: "Install hooks.",
+                scopes: [.checkoutLocal],
+                operation: .installHooks
+            )
+        ]
+
+        do {
+            _ = try await service.applySetup(
+                projectURL: projectURL,
+                plan: BeadsSetupPlan(profile: .team, findings: [], steps: steps),
+                cancellationToken: BeadsSetupCancellationToken()
+            )
+            XCTFail("Expected the second setup step to fail")
+        } catch let failure as BeadsSetupApplyFailure {
+            XCTAssertEqual(failure.report.completedStepIDs, ["config"])
+            XCTAssertTrue(failure.localizedDescription.contains("1 setup change completed"))
+        }
+    }
+
     private func makeExecutableScript(in projectURL: URL, contents: String) throws -> URL {
         let stubURL = projectURL.appendingPathComponent("bd-stub-\(UUID().uuidString)")
         try contents.write(to: stubURL, atomically: true, encoding: .utf8)

@@ -606,8 +606,8 @@ final class BeadsCommandArgumentsTests: XCTestCase {
 
     func testInitializeArgumentsUseStandardNonInteractiveDefaults() {
         XCTAssertEqual(
-            BeadsCommandArguments.initialize(options: BeadsInitOptions()),
-            ["init", "--non-interactive", "--role", "maintainer"]
+            BeadsSetupOperation.initialize(role: "maintainer", options: BeadsInitOptions()).arguments,
+            ["--sandbox", "init", "--non-interactive", "--role", "maintainer"]
         )
     }
 
@@ -620,8 +620,9 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            BeadsCommandArguments.initialize(options: options),
+            BeadsSetupOperation.initialize(role: "maintainer", options: options).arguments,
             [
+                "--sandbox",
                 "init",
                 "--non-interactive",
                 "--role",
@@ -638,8 +639,20 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         let options = BeadsInitOptions(skipsHooks: true)
 
         XCTAssertEqual(
-            BeadsCommandArguments.initialize(options: options),
-            ["init", "--non-interactive", "--role", "maintainer", "--skip-hooks"]
+            BeadsSetupOperation.initialize(role: "maintainer", options: options).arguments,
+            ["--sandbox", "init", "--non-interactive", "--role", "maintainer", "--skip-hooks"]
+        )
+    }
+
+    func testInitializeArgumentsIncludeReviewedRemoteURL() {
+        let options = BeadsInitOptions(remoteURL: "git@github.com:acme/project.git")
+
+        XCTAssertEqual(
+            BeadsSetupOperation.initialize(role: "maintainer", options: options).arguments,
+            [
+                "--sandbox", "init", "--non-interactive", "--role", "maintainer",
+                "--remote", "git@github.com:acme/project.git"
+            ]
         )
     }
 
@@ -647,8 +660,8 @@ final class BeadsCommandArgumentsTests: XCTestCase {
         let options = BeadsInitOptions(prefix: "  \n")
 
         XCTAssertEqual(
-            BeadsCommandArguments.initialize(options: options),
-            ["init", "--non-interactive", "--role", "maintainer"]
+            BeadsSetupOperation.initialize(role: "maintainer", options: options).arguments,
+            ["--sandbox", "init", "--non-interactive", "--role", "maintainer"]
         )
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 
 extension BeadStore {
-    func loadProjectHealthStatus() {
+    func loadProjectHealthStatus(allowsCachedConfiguration: Bool = false) {
         guard let projectURL else {
             resetProjectHealthStatus()
             return
@@ -14,6 +14,8 @@ extension BeadStore {
 
         let commands = commands
         let activeDataSource = currentDataSource
+        let availableCachedConfiguration = project.takeCachedProjectConfigurationInspection()
+        let cachedConfiguration = allowsCachedConfiguration ? availableCachedConfiguration : nil
         projectHealthTask = Task { @MainActor [weak self] in
             defer {
                 self?.project.finishProjectHealthLoad(generation: healthGeneration)
@@ -23,7 +25,8 @@ extension BeadStore {
                 projectURL: projectURL,
                 environment: self?.projectEnvironment,
                 activeDataSource: activeDataSource,
-                commands: commands
+                commands: commands,
+                preloadedConfiguration: cachedConfiguration
             )
             guard !Task.isCancelled, let self, self.projectURL == projectURL else { return }
             if !self.project.ownsProjectDoltRemotesLoad(
@@ -99,7 +102,7 @@ extension BeadStore {
         hasReadableProject
             && hasConfiguredProjectDoltRemote
             && !isLoading
-            && !isInitializingBeads
+            && !isApplyingBeadsSetup
             && activeMutationCount == 0
             && projectHealthAction == nil
     }

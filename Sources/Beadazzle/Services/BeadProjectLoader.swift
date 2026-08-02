@@ -178,20 +178,6 @@ struct BeadProjectLoader: Sendable {
         }
     }
 
-    func initializeAndLoadProject(
-        projectURL: URL,
-        options: BeadsInitOptions,
-        staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,
-        hidesParentsWithOnlyBlockedChildrenInReady: Bool = true
-    ) async throws -> LoadedProject {
-        try await commands.initialize(projectURL: projectURL, options: options)
-        return try await loadProject(
-            projectURL: projectURL,
-            staleCutoffDays: staleCutoffDays,
-            hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
-        )
-    }
-
     func exportAndLoadProject(
         projectURL: URL,
         staleCutoffDays: Int = BeadProjectIndex.defaultStaleCutoffDays,

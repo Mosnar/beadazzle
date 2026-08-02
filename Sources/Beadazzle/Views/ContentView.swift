@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var savedViewEditorRequest: SavedViewEditorRequest?
     @State private var folderEditorRequest: FolderBookmarkEditorRequest?
     @State private var bulkEditRequest: BulkEditRequest?
+    @State private var beadsSetupRequest: BeadsSetupRequest?
     @State private var doltRemoteFreshnessSceneID = UUID()
 
     var body: some View {
@@ -138,6 +139,9 @@ struct ContentView: View {
         .sheet(item: $bulkEditRequest) { request in
             BulkEditSheet(request: request)
         }
+        .sheet(item: $beadsSetupRequest) { request in
+            BeadsSetupWizard(request: request)
+        }
         .mutationErrorDialog(store: store)
         .onAppear {
             store.openDefaultProjectIfAvailable()
@@ -166,6 +170,7 @@ struct ContentView: View {
             savedViewEditorRequest = nil
             folderEditorRequest = nil
             bulkEditRequest = nil
+            beadsSetupRequest = nil
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let isActive = phase == .active
@@ -272,29 +277,39 @@ struct ContentView: View {
     private var workspaceContent: some View {
         let presentation = workspacePresentation
 
-        HSplitView {
-            if presentation.showsIssueList {
-                IssueListView(
-                    requestClose: requestClose,
-                    requestSetStatus: requestSetStatus,
-                    requestBulkEdit: requestBulkEdit,
-                    requestDelete: requestDelete,
-                    openDetail: openDetail
+        VStack(spacing: 0) {
+            if store.showsBeadsSetupAdvisory {
+                BeadsSetupAdvisoryBanner(
+                    findings: store.actionableBeadsSetupFindings,
+                    openSetup: presentBeadsSetup,
+                    dismiss: store.dismissBeadsSetupAdvisory
                 )
-                    .frame(
-                        minWidth: presentation.showsDetail ? ContentLayout.listMinWidth : 0,
-                        idealWidth: presentation.showsDetail ? ContentLayout.listIdealWidth : nil,
-                        maxWidth: presentation.showsDetail ? ContentLayout.listMaxWidth : .infinity,
-                        maxHeight: .infinity
-                    )
             }
 
-            if presentation.showsDetail {
-                workspaceDetailContent(for: presentation)
-                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            HSplitView {
+                if presentation.showsIssueList {
+                    IssueListView(
+                        requestClose: requestClose,
+                        requestSetStatus: requestSetStatus,
+                        requestBulkEdit: requestBulkEdit,
+                        requestDelete: requestDelete,
+                        openDetail: openDetail
+                    )
+                        .frame(
+                            minWidth: presentation.showsDetail ? ContentLayout.listMinWidth : 0,
+                            idealWidth: presentation.showsDetail ? ContentLayout.listIdealWidth : nil,
+                            maxWidth: presentation.showsDetail ? ContentLayout.listMaxWidth : .infinity,
+                            maxHeight: .infinity
+                        )
+                }
+
+                if presentation.showsDetail {
+                    workspaceDetailContent(for: presentation)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -304,9 +319,10 @@ struct ContentView: View {
             if let missingDataSourceURL = project.projectReadiness.missingDataSourceURL {
                 MissingDatabaseView(
                     projectURL: missingDataSourceURL,
-                    isInitializing: project.isInitializingBeads,
-                    isRecovering: project.isLoading && !project.isInitializingBeads,
-                    onInitialize: store.initializeBeads,
+                    isBusy: project.isApplyingBeadsSetup || project.isLoading,
+                    onSetUp: {
+                        beadsSetupRequest = BeadsSetupRequest(projectURL: missingDataSourceURL)
+                    },
                     onOpenProject: openProject
                 )
             }
@@ -384,7 +400,7 @@ struct ContentView: View {
     }
 
     private var canRefresh: Bool {
-        project.projectURL != nil && !project.isInitializingBeads && !project.isLoading
+        project.projectURL != nil && !project.isApplyingBeadsSetup && !project.isLoading
     }
 
     private var deleteConfirmationBinding: Binding<Bool> {
@@ -434,6 +450,14 @@ struct ContentView: View {
         guard let url = PanelService.chooseProjectFolder() else { return }
         hierarchySheetRequest = nil
         store.openProject(url)
+    }
+
+    private func presentBeadsSetup() {
+        guard let projectURL = project.projectURL else { return }
+        beadsSetupRequest = BeadsSetupRequest(
+            projectURL: projectURL,
+            initialIntent: store.beadsSetupIntent
+        )
     }
 
     private func requestClose(_ issue: BeadIssue) {

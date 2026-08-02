@@ -96,13 +96,13 @@ final class BeadStoreDomainObservationTests: XCTestCase {
 
     func testProjectSwitchCancelsTrackedInitialization() {
         let store = BeadStore(userDefaults: makeUserDefaults())
-        let initializationTask = Task { _ = try? await Task.sleep(for: .seconds(10)) }
-        store.initializationTask = initializationTask
+        let setupApplicationTask = Task { _ = try? await Task.sleep(for: .seconds(10)) }
+        store.setupApplicationTask = setupApplicationTask
 
         store.openProject(temporaryProjectURL())
 
-        XCTAssertTrue(initializationTask.isCancelled)
-        XCTAssertNil(store.initializationTask)
+        XCTAssertTrue(setupApplicationTask.isCancelled)
+        XCTAssertNil(store.setupApplicationTask)
     }
 
     func testStaleRefreshCannotTerminateNewProjectReconciliation() {

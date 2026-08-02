@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The single standardized error surface for mutation/command failures. Presented as a
@@ -50,13 +49,15 @@ private struct MutationErrorDialogView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if hasTechnicalDetails {
-                technicalDetails
+            if !technicalDetails.isEmpty {
+                BeadCommandFailureDetailsView(details: technicalDetails)
             }
 
             HStack(spacing: 10) {
-                if hasTechnicalDetails {
-                    Button("Copy", systemImage: "doc.on.doc", action: copyDetails)
+                if !technicalDetails.isEmpty {
+                    Button("Copy", systemImage: "doc.on.doc") {
+                        technicalDetails.copyToPasteboard()
+                    }
                         .help("Copy the command and its output")
                 }
 
@@ -81,75 +82,8 @@ private struct MutationErrorDialogView: View {
         .accessibilityLabel(failure.accessibilityAnnouncement)
     }
 
-    private var trimmedCommand: String? {
-        failure.command?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-    }
-
-    private var trimmedOutput: String? {
-        failure.output?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-    }
-
-    private var hasTechnicalDetails: Bool {
-        trimmedCommand != nil || trimmedOutput != nil
-    }
-
-    /// Short output renders inline; long output gets a fixed-height scroll region so a
-    /// verbose `bd` failure can't grow the sheet past usefulness.
-    private var outputNeedsScrolling: Bool {
-        guard let trimmedOutput else { return false }
-        return trimmedOutput.count > 600
-            || trimmedOutput.components(separatedBy: "\n").count > 8
-    }
-
-    private var technicalDetails: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let trimmedCommand {
-                Text(trimmedCommand)
-                    .font(.callout.monospaced())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .accessibilityLabel("Command: \(trimmedCommand)")
-            }
-
-            if let trimmedOutput {
-                if trimmedCommand != nil {
-                    Divider()
-                }
-                if outputNeedsScrolling {
-                    ScrollView {
-                        outputText(trimmedOutput)
-                            .padding(10)
-                    }
-                    .frame(height: 150)
-                } else {
-                    outputText(trimmedOutput)
-                        .padding(10)
-                }
-            }
-        }
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(.separator, lineWidth: 1)
-        }
-    }
-
-    private func outputText(_ output: String) -> some View {
-        Text(output)
-            .font(.callout.monospaced())
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("Output: \(output)")
-    }
-
-    private func copyDetails() {
-        let details = [trimmedCommand, trimmedOutput].compactMap(\.self).joined(separator: "\n\n")
-        guard !details.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(details, forType: .string)
+    private var technicalDetails: BeadCommandFailureDetails {
+        BeadCommandFailureDetails(command: failure.command, output: failure.output)
     }
 }
 

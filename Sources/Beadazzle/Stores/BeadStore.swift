@@ -56,7 +56,17 @@ final class BeadProjectStore {
     fileprivate(set) var isLoadingProjectDoltRemotes = false
     fileprivate(set) var doltRemoteFreshness = ProjectDoltRemoteFreshnessState.unknown
     fileprivate(set) var isLoading = false
-    fileprivate(set) var isInitializingBeads = false
+    fileprivate(set) var isApplyingBeadsSetup = false
+    fileprivate(set) var beadsSetupIntent: BeadsSetupIntent?
+    fileprivate(set) var beadsSetupAssessment: BeadsSetupAssessment?
+    fileprivate(set) var beadsSetupFindings: [BeadsSetupFinding] = [] {
+        didSet {
+            beadsSetupFindingsFingerprint = BeadsSetupPlanner.findingsFingerprint(beadsSetupFindings)
+        }
+    }
+    fileprivate(set) var beadsSetupFindingsFingerprint: String?
+    fileprivate(set) var beadsSetupDismissedFingerprint: String?
+    fileprivate(set) var isInspectingBeadsSetup = false
     fileprivate(set) var hiddenTypeNames: Set<String> = []
     fileprivate(set) var hiddenStatusNames: Set<String> = []
     fileprivate(set) var issueReferenceLookup = IssueReferenceLookup.empty
@@ -66,9 +76,13 @@ final class BeadProjectStore {
     fileprivate(set) var stateLabelOverridesByIssueID: [String: [String: BeadStateLabelOverride]] = [:]
 
     @ObservationIgnored fileprivate(set) var refreshTask: Task<Bool, Never>?
-    @ObservationIgnored fileprivate(set) var initializationTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var setupApplicationTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var setupApplicationCancellation: (@Sendable () -> Void)?
     @ObservationIgnored fileprivate(set) var refreshGeneration = 0
-    @ObservationIgnored fileprivate(set) var initializationGeneration = 0
+    @ObservationIgnored fileprivate(set) var setupApplicationGeneration = 0
+    @ObservationIgnored fileprivate(set) var beadsSetupInspectionTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate(set) var beadsSetupInspectionGeneration = 0
+    @ObservationIgnored fileprivate(set) var cachedProjectConfigurationInspection: BeadsProjectConfigurationInspection?
     @ObservationIgnored fileprivate(set) var projectHealthGeneration = 0
     @ObservationIgnored fileprivate(set) var reconcileDebounceTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var reconcileState = SnapshotReconcileState()
@@ -112,9 +126,15 @@ final class BeadProjectStore {
     }
 
     func cancelLifecycleWork() {
-        initializationGeneration &+= 1
-        initializationTask?.cancel()
-        initializationTask = nil
+        setupApplicationGeneration &+= 1
+        setupApplicationCancellation?()
+        setupApplicationCancellation = nil
+        setupApplicationTask?.cancel()
+        setupApplicationTask = nil
+        beadsSetupInspectionGeneration &+= 1
+        beadsSetupInspectionTask?.cancel()
+        beadsSetupInspectionTask = nil
+        isInspectingBeadsSetup = false
         refreshGeneration &+= 1
         refreshTask?.cancel()
         refreshTask = nil
@@ -148,6 +168,15 @@ final class BeadProjectStore {
         reconcileDebounceTask = nil
     }
 
+    func cacheProjectConfigurationInspection(_ inspection: BeadsProjectConfigurationInspection?) {
+        cachedProjectConfigurationInspection = inspection
+    }
+
+    func takeCachedProjectConfigurationInspection() -> BeadsProjectConfigurationInspection? {
+        defer { cachedProjectConfigurationInspection = nil }
+        return cachedProjectConfigurationInspection
+    }
+
     func beginRefresh() -> Int {
         refreshGeneration &+= 1
         refreshTask?.cancel()
@@ -162,14 +191,16 @@ final class BeadProjectStore {
         projectURL == expectedProjectURL && refreshGeneration == generation
     }
 
-    func beginInitialization() -> Int {
-        initializationGeneration &+= 1
-        initializationTask?.cancel()
-        return initializationGeneration
+    func beginSetupApplication() -> Int {
+        setupApplicationGeneration &+= 1
+        setupApplicationCancellation?()
+        setupApplicationCancellation = nil
+        setupApplicationTask?.cancel()
+        return setupApplicationGeneration
     }
 
-    func ownsInitialization(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
-        projectURL == expectedProjectURL && initializationGeneration == generation
+    func ownsSetupApplication(projectURL expectedProjectURL: URL, generation: Int) -> Bool {
+        projectURL == expectedProjectURL && setupApplicationGeneration == generation
     }
 
     func finishRefresh(generation: Int) {
@@ -177,9 +208,10 @@ final class BeadProjectStore {
         refreshTask = nil
     }
 
-    func finishInitialization(generation: Int) {
-        guard initializationGeneration == generation else { return }
-        initializationTask = nil
+    func finishSetupApplication(generation: Int) {
+        guard setupApplicationGeneration == generation else { return }
+        setupApplicationCancellation = nil
+        setupApplicationTask = nil
     }
 
     func beginOwnerIdentityLoad() -> Int {
@@ -1400,8 +1432,21 @@ final class BeadStore {
     }
     var isLoading: Bool { project.isLoading }
     internal var _isLoading: Bool { get { project.isLoading } set { project.isLoading = newValue } }
-    var isInitializingBeads: Bool { project.isInitializingBeads }
-    internal var _isInitializingBeads: Bool { get { project.isInitializingBeads } set { project.isInitializingBeads = newValue } }
+    var isApplyingBeadsSetup: Bool { project.isApplyingBeadsSetup }
+    internal var _isApplyingBeadsSetup: Bool { get { project.isApplyingBeadsSetup } set { project.isApplyingBeadsSetup = newValue } }
+    var beadsSetupIntent: BeadsSetupIntent? { project.beadsSetupIntent }
+    internal var _beadsSetupIntent: BeadsSetupIntent? { get { project.beadsSetupIntent } set { project.beadsSetupIntent = newValue } }
+    var beadsSetupAssessment: BeadsSetupAssessment? { project.beadsSetupAssessment }
+    internal var _beadsSetupAssessment: BeadsSetupAssessment? { get { project.beadsSetupAssessment } set { project.beadsSetupAssessment = newValue } }
+    var beadsSetupFindings: [BeadsSetupFinding] { project.beadsSetupFindings }
+    var actionableBeadsSetupFindings: [BeadsSetupFinding] {
+        project.beadsSetupFindings.filter(\.isActionable)
+    }
+    internal var _beadsSetupFindings: [BeadsSetupFinding] { get { project.beadsSetupFindings } set { project.beadsSetupFindings = newValue } }
+    internal var beadsSetupFindingsFingerprint: String? { project.beadsSetupFindingsFingerprint }
+    internal var beadsSetupDismissedFingerprint: String? { get { project.beadsSetupDismissedFingerprint } set { project.beadsSetupDismissedFingerprint = newValue } }
+    var isInspectingBeadsSetup: Bool { project.isInspectingBeadsSetup }
+    internal var _isInspectingBeadsSetup: Bool { get { project.isInspectingBeadsSetup } set { project.isInspectingBeadsSetup = newValue } }
     var isLoadingComments: Bool { detail.isLoadingComments }
     internal var _isLoadingComments: Bool { get { detail.isLoadingComments } set { detail.isLoadingComments = newValue } }
     var isAddingComment: Bool { detail.isAddingComment }
@@ -1462,6 +1507,7 @@ final class BeadStore {
     var issueReferenceLookup: IssueReferenceLookup { project.issueReferenceLookup }
 
     @ObservationIgnored internal let commands: any BeadsCommanding
+    @ObservationIgnored internal let beadsSetupService: any BeadsSetupServicing
     @ObservationIgnored internal var activeDoltRemoteFreshnessSceneIDs: Set<UUID> = []
     internal var isDoltRemoteFreshnessSceneActive: Bool {
         !activeDoltRemoteFreshnessSceneIDs.isEmpty
@@ -1473,12 +1519,16 @@ final class BeadStore {
     @ObservationIgnored internal let savedViewRepository: BeadSavedViewRepository
     @ObservationIgnored internal let workspaceStateRepository: BeadWorkspaceStateRepository
     @ObservationIgnored internal let semanticDefinitionsRepository: BeadSemanticDefinitionsRepository
+    @ObservationIgnored internal let beadsSetupPreferenceRepository: BeadsSetupPreferenceRepository
     /// Set in `openProject` from the persisted payload and consumed once by `applyLoadedProject`
     /// after the index loads, so restoration runs a single time per open (not on live reloads).
     @ObservationIgnored internal var pendingRestoredWorkspaceSnapshot: BeadWorkspaceSnapshot?
     @ObservationIgnored internal var workspaceStatePersistTask: Task<Void, Never>?
     internal var refreshTask: Task<Bool, Never>? { get { project.refreshTask } set { project.refreshTask = newValue } }
-    internal var initializationTask: Task<Void, Never>? { get { project.initializationTask } set { project.initializationTask = newValue } }
+    internal var setupApplicationTask: Task<Void, Never>? { get { project.setupApplicationTask } set { project.setupApplicationTask = newValue } }
+    internal var setupApplicationCancellation: (@Sendable () -> Void)? { get { project.setupApplicationCancellation } set { project.setupApplicationCancellation = newValue } }
+    internal var beadsSetupInspectionTask: Task<Void, Never>? { get { project.beadsSetupInspectionTask } set { project.beadsSetupInspectionTask = newValue } }
+    internal var beadsSetupInspectionGeneration: Int { get { project.beadsSetupInspectionGeneration } set { project.beadsSetupInspectionGeneration = newValue } }
     internal var reconcileDebounceTask: Task<Void, Never>? { get { project.reconcileDebounceTask } set { project.reconcileDebounceTask = newValue } }
     internal var activeMutationCount: Int { get { mutations.activeMutationCount } set { mutations.activeMutationCount = newValue } }
     internal var reconcileState: SnapshotReconcileState { get { project.reconcileState } set { project.reconcileState = newValue } }
@@ -1583,12 +1633,14 @@ final class BeadStore {
     init(
         userDefaults: UserDefaults = .standard,
         commands: any BeadsCommanding = BeadsCommandService(),
+        beadsSetupService: (any BeadsSetupServicing)? = nil,
         activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository(),
         ownerIdentityResolver: any BeadOwnerIdentityResolving = BeadOwnerIdentityResolver(),
         doltRemoteFreshnessCheckInterval: TimeInterval = 5 * 60
     ) {
         self.userDefaults = userDefaults
         self.commands = commands
+        self.beadsSetupService = beadsSetupService ?? commands
         self.projectLoader = BeadProjectLoader(commands: commands)
         self.activityHistoryRepository = activityHistoryRepository
         self.ownerIdentityResolver = ownerIdentityResolver
@@ -1596,6 +1648,7 @@ final class BeadStore {
         self.savedViewRepository = BeadSavedViewRepository(userDefaults: userDefaults)
         self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
         self.semanticDefinitionsRepository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
+        self.beadsSetupPreferenceRepository = BeadsSetupPreferenceRepository(userDefaults: userDefaults)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
         defaultNewBeadAssignee = Self.loadNewBeadAssigneePreference(
             from: userDefaults,

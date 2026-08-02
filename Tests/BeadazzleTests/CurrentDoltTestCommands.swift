@@ -4,7 +4,6 @@ import Foundation
 /// Minimal command surface for store tests whose fixtures are readable JSONL snapshots,
 /// but are not initialized on disk as real Beads repositories.
 struct CurrentDoltTestCommands: BeadsCommanding {
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
     func exportReadableSnapshot(projectURL: URL) async throws {}
     func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {}

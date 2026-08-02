@@ -332,7 +332,6 @@ private struct MetadataTestCommands: BeadsCommanding {
     var exportError: Error? = nil
     var doltMode = "embedded"
 
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
     func exportReadableSnapshot(projectURL: URL) async throws {
         callCounter?.recordExport()

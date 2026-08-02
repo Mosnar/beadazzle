@@ -141,7 +141,8 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
         projectURL: URL,
         environment: BeadsProjectEnvironment?,
         activeDataSource: BeadsDataSource?,
-        commands: any BeadsCommanding
+        commands: any BeadsCommanding,
+        preloadedConfiguration: BeadsProjectConfigurationInspection? = nil
     ) async -> ProjectHealthSnapshot {
         let snapshotFile = ProjectSnapshotFileStatus.load(
             projectURL: projectURL,
@@ -152,20 +153,14 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
         async let storageConfig = ProjectHealthValue.capture {
             try await commands.loadProjectStorageConfig(projectURL: projectURL)
         }
-        async let doltRemotes = ProjectHealthValue.capture {
-            try await commands.loadDoltRemotes(projectURL: projectURL)
-        }
-        async let hooks = ProjectHealthValue.capture {
-            try await commands.loadHooksStatus(projectURL: projectURL)
-        }
-        async let backup = ProjectHealthValue.capture {
-            try await commands.loadBackupStatus(projectURL: projectURL)
-        }
+        async let configuration: BeadsProjectConfigurationInspection = {
+            if let preloadedConfiguration { return preloadedConfiguration }
+            return await BeadsProjectConfigurationInspection.load(
+                projectURL: projectURL,
+                commands: commands
+            )
+        }()
         async let maintenance = commands.loadDoltMaintenancePreview(projectURL: projectURL)
-
-        async let context = ProjectHealthValue.capture {
-            try await commands.loadProjectContext(projectURL: projectURL)
-        }
 
         var maintenancePreview = await maintenance
         if environment?.storageMode == .embedded,
@@ -181,13 +176,14 @@ struct ProjectHealthSnapshot: Equatable, Sendable {
             }
         }
 
+        let configurationResult = await configuration
         return ProjectHealthSnapshot(
             loadedAt: Date(),
-            context: await context,
+            context: configurationResult.context,
             storageConfig: await storageConfig,
-            doltRemotes: await doltRemotes,
-            hooks: await hooks,
-            backup: await backup,
+            doltRemotes: configurationResult.doltRemotes,
+            hooks: configurationResult.hooks,
+            backup: configurationResult.backup,
             snapshotFile: snapshotFile,
             maintenance: maintenancePreview
         )
@@ -369,7 +365,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                 status: .blocked,
                 summary: "Beads is not initialized",
                 detail: "The selected folder does not have a readable snapshot in its active Beads tracker directory.",
-                actionHint: "Initialize Beads for this project."
+                actionHint: "Set up Beads for this project."
             )
         }
         if let activeDataSource {
@@ -388,7 +384,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             isLoading: isLoading,
             unloadedSummary: "No readable Beads data source found",
             unloadedStatus: .blocked,
-            unloadedActionHint: "Initialize Beads or export a snapshot."
+            unloadedActionHint: "Set up Beads or export a snapshot."
         )
     }
 
@@ -406,7 +402,7 @@ struct ProjectPreflightHealth: Equatable, Sendable {
                 status: .blocked,
                 summary: "No snapshot yet",
                 detail: "Beadazzle has no Beads data to read for this folder.",
-                actionHint: "Initialize Beads for this project."
+                actionHint: "Set up Beads for this project."
             )
         }
         switch freshness.state {
@@ -763,6 +759,48 @@ struct ProjectHealthValue<Value: Equatable & Sendable>: Equatable, Sendable {
     }
 }
 
+struct BeadsProjectConfigurationInspection: Equatable, Sendable {
+    var context: ProjectHealthValue<BeadsProjectContext>
+    var doltRemotes: ProjectHealthValue<BeadsDoltRemotes>
+    var hooks: ProjectHealthValue<BeadsHooksStatus>
+    var backup: ProjectHealthValue<BeadsBackupStatus>
+
+    static func load(
+        projectURL: URL,
+        commands: any BeadsCommanding,
+        context preloadedContext: ProjectHealthValue<BeadsProjectContext>? = nil,
+        loadsDoltRemotes: Bool = true
+    ) async -> BeadsProjectConfigurationInspection {
+        async let context: ProjectHealthValue<BeadsProjectContext> = {
+            if let preloadedContext { return preloadedContext }
+            return await ProjectHealthValue.capture {
+                try await commands.loadProjectContext(projectURL: projectURL)
+            }
+        }()
+        async let doltRemotes: ProjectHealthValue<BeadsDoltRemotes> = {
+            guard loadsDoltRemotes else {
+                return .available(BeadsDoltRemotes(remotes: []))
+            }
+            return await ProjectHealthValue.capture {
+                try await commands.loadDoltRemotes(projectURL: projectURL)
+            }
+        }()
+        async let hooks = ProjectHealthValue.capture {
+            try await commands.loadHooksStatus(projectURL: projectURL)
+        }
+        async let backup = ProjectHealthValue.capture {
+            try await commands.loadBackupStatus(projectURL: projectURL)
+        }
+
+        return BeadsProjectConfigurationInspection(
+            context: await context,
+            doltRemotes: await doltRemotes,
+            hooks: await hooks,
+            backup: await backup
+        )
+    }
+}
+
 struct BeadsProjectContext: Codable, Equatable, Sendable {
     var backend: String?
     var bdVersion: String?
@@ -1063,6 +1101,14 @@ struct BeadsHooksStatus: Equatable, Sendable {
 
     var hasMissingHooks: Bool {
         !missingHooks.isEmpty
+    }
+
+    var allInstalled: Bool {
+        !hooks.isEmpty && hooks.allSatisfy { $0.state == .installed }
+    }
+
+    var anyInstalled: Bool {
+        hooks.contains { $0.state == .installed }
     }
 
     var summary: String {

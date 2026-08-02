@@ -7,7 +7,7 @@ private struct ProjectHealthLoadingModifier: ViewModifier {
         content.task(id: store.project.projectURL) {
             guard store.project.projectHealthSnapshot == nil,
                   !store.project.isLoadingProjectHealth else { return }
-            store.loadProjectHealthStatus()
+            store.loadProjectHealthStatus(allowsCachedConfiguration: true)
         }
     }
 }

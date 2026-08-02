@@ -1364,7 +1364,6 @@ private actor ProjectHealthTestCommands: BeadsCommanding {
         self.flattenPreview = flattenPreview
     }
 
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
     func exportReadableSnapshot(projectURL: URL) async throws {
         exportCallCount += 1

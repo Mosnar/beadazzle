@@ -141,75 +141,6 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         }
     }
 
-    func testProjectSwitchCancelsInitializeBeadsCommand() async throws {
-        let firstProjectURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeadStoreInitializeTests-\(UUID().uuidString)", isDirectory: true)
-        let secondProjectURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeadStoreInitializeTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: firstProjectURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: secondProjectURL, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: firstProjectURL)
-            try? FileManager.default.removeItem(at: secondProjectURL)
-        }
-
-        let commands = RecordingBeadsCommands()
-        await commands.setInitializationDelay(.seconds(10))
-        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
-        store.openProject(firstProjectURL)
-        store.initializeBeads(options: BeadsInitOptions())
-        try await waitUntilAsync { await commands.initializeCalls.count == 1 }
-
-        store.openProject(secondProjectURL)
-        try await waitUntilAsync { await commands.initializeWasCancelled }
-
-        XCTAssertEqual(store.projectURL, secondProjectURL)
-        XCTAssertFalse(store.isInitializingBeads)
-        XCTAssertNil(store.initializationTask)
-    }
-
-    func testSuccessfulInitializationRefreshesOwnerIdentity() async throws {
-        let projectURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeadStoreInitializeTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
-        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
-        try FileManager.default.createDirectory(at: beadsURL, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: projectURL)
-        }
-
-        let resolver = SequencedOwnerIdentityResolver(identities: [
-            .resolved(value: "before-init@example.com", source: .gitConfiguration),
-            .resolved(value: "after-init@example.com", source: .gitConfiguration)
-        ])
-        let store = BeadStore(
-            userDefaults: makeUserDefaults(),
-            commands: RecordingBeadsCommands(),
-            ownerIdentityResolver: resolver
-        )
-        store.defaultNewBeadAssignee = .owner
-        store.openProject(projectURL)
-        try await waitUntil { store.missingDataSourceURL != nil }
-        try await waitUntilAsync { await resolver.resolveCallCount == 1 }
-
-        try issueLine(id: "bd-1", title: "Initialized").write(
-            to: beadsURL.appendingPathComponent("issues.jsonl"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        store.initializeBeads(options: BeadsInitOptions())
-
-        try await waitUntil {
-            !store.isInitializingBeads
-                && store.issue(with: "bd-1") != nil
-                && store.ownerIdentity.value == "after-init@example.com"
-        }
-        let resolveCallCount = await resolver.resolveCallCount
-        XCTAssertEqual(resolveCallCount, 2)
-        XCTAssertEqual(store.blankDraft().assignee, "after-init@example.com")
-    }
-
     func testBulkSetReturnsTrueAndInvokesCommandOnSuccess() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -5137,8 +5068,6 @@ private actor SequencedOwnerIdentityResolver: BeadOwnerIdentityResolving {
 }
 
 private actor RecordingBeadsCommands: BeadsCommanding {
-    private(set) var initializeCalls: [URL] = []
-    private(set) var initializeWasCancelled = false
     private(set) var createCalls: [(projectURL: URL, draft: IssueDraft)] = []
     private(set) var updateCalls: [(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?)] = []
     private(set) var metadataUpdateCalls: [
@@ -5219,15 +5148,10 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var commentLoadDelay: Duration?
     private var gateDetail: BeadGate?
     private var checkGatesOutput = ""
-    private var initializationDelay: Duration?
     private var definitionLoadDelay: Duration?
     private var statusDefinitions: [BeadStatusDefinition] = []
     private var typeDefinitions: [BeadTypeDefinition] = []
     private var appendsCreatedIssue = true
-
-    func setInitializationDelay(_ delay: Duration?) {
-        initializationDelay = delay
-    }
 
     func setDefinitionLoadDelay(_ delay: Duration?) {
         definitionLoadDelay = delay
@@ -5383,18 +5307,6 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setCheckGatesOutput(_ output: String) {
         checkGatesOutput = output
-    }
-
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {
-        initializeCalls.append(projectURL)
-        do {
-            if let initializationDelay {
-                try await Task.sleep(for: initializationDelay)
-            }
-        } catch is CancellationError {
-            initializeWasCancelled = true
-            throw CancellationError()
-        }
     }
 
     func exportReadableSnapshot(projectURL: URL) async throws {

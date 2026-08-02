@@ -6,6 +6,10 @@ struct CancellableProcessResult: Sendable {
     var outputWasTruncated: Bool
 }
 
+enum CancellableProcessRunnerError: Error, Equatable, Sendable {
+    case timedOut
+}
+
 /// Runs read-only subprocesses without occupying Swift's cooperative executor.
 /// Cancellation returns immediately, terminates the child when it has launched,
 /// and closes its pipes so descendants cannot keep the caller waiting.
@@ -15,7 +19,44 @@ enum CancellableProcessRunner {
         arguments: [String],
         currentDirectoryURL: URL,
         environment: [String: String],
-        outputLimit: Int? = nil
+        outputLimit: Int? = nil,
+        timeout: Duration? = nil
+    ) async throws -> CancellableProcessResult {
+        guard let timeout else {
+            return try await runWithoutTimeout(
+                executableURL: executableURL,
+                arguments: arguments,
+                currentDirectoryURL: currentDirectoryURL,
+                environment: environment,
+                outputLimit: outputLimit
+            )
+        }
+        return try await withThrowingTaskGroup(of: CancellableProcessResult.self) { group in
+            group.addTask {
+                try await runWithoutTimeout(
+                    executableURL: executableURL,
+                    arguments: arguments,
+                    currentDirectoryURL: currentDirectoryURL,
+                    environment: environment,
+                    outputLimit: outputLimit
+                )
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw CancellableProcessRunnerError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw CancellationError() }
+            return result
+        }
+    }
+
+    private static func runWithoutTimeout(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL,
+        environment: [String: String],
+        outputLimit: Int?
     ) async throws -> CancellableProcessResult {
         let process = Process()
         process.executableURL = executableURL

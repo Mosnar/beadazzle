@@ -880,7 +880,6 @@ private struct TestBeadsCommands: BeadsCommanding {
         self.exportReadableSnapshotHandler = exportReadableSnapshotHandler
     }
 
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
     func exportReadableSnapshot(projectURL: URL) async throws {
         try await exportReadableSnapshotHandler(projectURL)

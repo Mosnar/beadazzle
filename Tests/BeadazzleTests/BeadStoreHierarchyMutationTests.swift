@@ -511,7 +511,6 @@ private actor RecordingHierarchyBeadsCommands: BeadsCommanding {
     private(set) var addDependencyCalls: [(projectURL: URL, issueID: String, dependsOnID: String, type: String)] = []
     private(set) var resolveGateCalls: [(projectURL: URL, id: String, reason: String?)] = []
 
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
     func exportReadableSnapshot(projectURL: URL) async throws {}
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
         .testContext(projectURL: projectURL)

@@ -8,6 +8,8 @@ struct ProjectOverviewSettingsPane: View {
         Form {
             ProjectOverviewPreflightSection(preflight: preflight)
 
+            ProjectOverviewBeadsSetupSection()
+
             if !isInitialProjectHealthLoad {
                 ProjectOverviewSummarySection()
             }
@@ -34,6 +36,69 @@ struct ProjectOverviewSettingsPane: View {
         project.isLoadingProjectHealth
             && project.projectHealthSnapshot == nil
             && project.projectHealthAction == nil
+    }
+}
+
+private struct ProjectOverviewBeadsSetupSection: View {
+    @Environment(BeadStore.self) private var store: BeadStore
+    @State private var setupRequest: BeadsSetupRequest?
+
+    var body: some View {
+        Section {
+            LabeledContent("Intended use") {
+                Text(store.beadsSetupIntent?.profile.title ?? "Not recorded")
+                    .foregroundStyle(store.beadsSetupIntent == nil ? .secondary : .primary)
+            }
+
+            if store.isInspectingBeadsSetup {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking setup…").foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(store.actionableBeadsSetupFindings.prefix(3)) { finding in
+                    BeadsSetupSettingsFindingRow(finding: finding)
+                }
+            }
+
+            HStack {
+                Button(store.beadsSetupIntent == nil ? "Set Up Beads…" : "Review Setup…") {
+                    guard let projectURL = store.projectURL else { return }
+                    setupRequest = BeadsSetupRequest(
+                        projectURL: projectURL,
+                        initialIntent: store.beadsSetupIntent
+                    )
+                }
+                Spacer()
+                Button("Check Again") { store.refreshBeadsSetupAudit() }
+                    .disabled(store.beadsSetupIntent == nil || store.isInspectingBeadsSetup)
+            }
+        } header: {
+            Text("Beads Setup")
+        } footer: {
+            Text("The selected use case is stored only on this Mac for this checkout. Project configuration and remote operations are reviewed separately before changes are applied.")
+        }
+        .sheet(item: $setupRequest) { request in
+            BeadsSetupWizard(request: request)
+        }
+    }
+}
+
+private struct BeadsSetupSettingsFindingRow: View {
+    let finding: BeadsSetupFinding
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(finding.title)
+                Text(finding.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: finding.severity == .blocking ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(finding.severity == .blocking ? .red : .orange)
+        }
     }
 }
 

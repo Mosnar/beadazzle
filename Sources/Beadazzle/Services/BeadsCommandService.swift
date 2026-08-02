@@ -83,8 +83,7 @@ private final class LockedProcessData: @unchecked Sendable {
     }
 }
 
-protocol BeadsCommanding: Sendable {
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws
+protocol BeadsCommanding: BeadsSetupServicing, Sendable {
     func exportReadableSnapshot(projectURL: URL) async throws
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws
     func exportReadableSnapshotWithResult(
@@ -161,6 +160,29 @@ protocol BeadsCommanding: Sendable {
 }
 
 extension BeadsCommanding {
+    func inspect(
+        projectURL _: URL,
+        scope _: BeadsSetupInspectionScope,
+        candidateRemote _: BeadsDoltRemote?,
+        preloadedEnvironment _: BeadsProjectEnvironment?
+    ) async throws -> BeadsSetupAssessment {
+        throw BeadError.commandFailed(
+            command: "bd setup inspect",
+            output: "Setup inspection is not supported by this command service."
+        )
+    }
+
+    func apply(
+        projectURL _: URL,
+        plan _: BeadsSetupPlan,
+        cancellationToken _: BeadsSetupCancellationToken
+    ) async throws -> BeadsSetupApplyReport {
+        throw BeadError.commandFailed(
+            command: "bd setup",
+            output: "Setup changes are not supported by this command service."
+        )
+    }
+
     func createWithFeedback(projectURL: URL, draft: IssueDraft) async throws -> BeadsCreateResult {
         BeadsCreateResult(
             issueID: try await create(projectURL: projectURL, draft: draft),
@@ -336,6 +358,11 @@ private struct BeadsProjectLocation: Decodable {
     var prefix: String?
 }
 
+private struct BeadsSetupBootstrapInspection: Sendable {
+    var preview: BeadsSetupBootstrapPreview
+    var warning: String?
+}
+
 struct BeadsCommandService {
     typealias CommandExecutable = (url: URL, prefix: [String])
 
@@ -359,9 +386,337 @@ struct BeadsCommandService {
         self.executable = executable
     }
 
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {
-        try await run(projectURL: projectURL, arguments: BeadsCommandArguments.initialize(options: options))
-        try await exportReadableSnapshot(projectURL: projectURL)
+    func inspectSetup(
+        projectURL: URL,
+        scope: BeadsSetupInspectionScope,
+        candidateRemote: BeadsDoltRemote?,
+        preloadedEnvironment: BeadsProjectEnvironment? = nil
+    ) async throws -> BeadsSetupAssessment {
+        let isWizardInspection = scope == .wizard
+        async let bootstrapResult = inspectBootstrap(
+            projectURL: projectURL,
+            isRequired: isWizardInspection
+        )
+        async let gitOrigin = isWizardInspection
+            ? gitRemoteURL(named: "origin", projectURL: projectURL)
+            : nil
+        async let gitUpstream = isWizardInspection
+            ? gitRemoteURL(named: "upstream", projectURL: projectURL)
+            : nil
+        async let contextResult: ProjectHealthValue<BeadsProjectContext> = {
+            if let preloadedEnvironment {
+                return .available(preloadedEnvironment.context)
+            }
+            return await ProjectHealthValue.capture {
+                try await loadProjectContext(projectURL: projectURL)
+            }
+        }()
+
+        let bootstrapInspection = try await bootstrapResult
+        let bootstrap = bootstrapInspection.preview
+        let gitOriginURL = await gitOrigin
+        let gitUpstreamURL = await gitUpstream
+        let context = await contextResult
+        var warnings: [String] = []
+        if let warning = bootstrapInspection.warning {
+            warnings.append(warning)
+        }
+        var environment = preloadedEnvironment
+        if environment == nil, let contextValue = context.value {
+            do {
+                environment = try BeadsProjectEnvironment(
+                    context: contextValue,
+                    projectURL: projectURL
+                )
+            } catch {
+                warnings.append(error.localizedDescription)
+            }
+        } else if bootstrap.hasExisting == true, let message = context.errorMessage {
+            warnings.append(message)
+        }
+
+        let resolvedEnvironment = environment
+        async let localDatabaseReadability = inspectLocalDatabaseReadability(
+            projectURL: projectURL,
+            environment: resolvedEnvironment,
+            bootstrap: bootstrap
+        )
+        let candidateFingerprint = candidateRemote?.url.nilIfBlank.map(BeadsSetupPlanner.configurationFingerprint)
+        let candidateMatchesOrigin = candidateFingerprint != nil
+            && candidateFingerprint == gitOriginURL.map(BeadsSetupPlanner.configurationFingerprint)
+        let candidateMatchesUpstream = candidateFingerprint != nil
+            && candidateFingerprint == gitUpstreamURL.map(BeadsSetupPlanner.configurationFingerprint)
+        async let gitOriginProbe = probeDoltData(
+            remoteName: "origin",
+            remoteURL: isWizardInspection ? gitOriginURL : nil,
+            projectURL: projectURL
+        )
+        async let gitUpstreamProbe = probeDoltData(
+            remoteName: "upstream",
+            remoteURL: isWizardInspection ? gitUpstreamURL : nil,
+            projectURL: projectURL
+        )
+        async let candidateRemoteProbe = probeDoltData(
+            remoteName: candidateRemote?.name ?? "candidate",
+            remoteURL: isWizardInspection && !candidateMatchesOrigin && !candidateMatchesUpstream
+                ? candidateRemote?.url
+                : nil,
+            projectURL: projectURL
+        )
+        let gitOriginHasDoltData = await gitOriginProbe
+        let gitUpstreamHasDoltData = await gitUpstreamProbe
+        let independentCandidateRemoteHasDoltData = await candidateRemoteProbe
+        let localDatabase = await localDatabaseReadability
+        let candidateRemoteHasDoltData: Bool?
+        if candidateMatchesOrigin {
+            candidateRemoteHasDoltData = gitOriginHasDoltData
+        } else if candidateMatchesUpstream {
+            candidateRemoteHasDoltData = gitUpstreamHasDoltData
+        } else {
+            candidateRemoteHasDoltData = independentCandidateRemoteHasDoltData
+        }
+
+        if let message = localDatabase.errorMessage {
+            warnings.append(message)
+        }
+
+        let hasInspectableTracker = bootstrap.hasExisting == true
+            || localDatabase.value == true
+            || environment.map { $0.storageMode != .embedded } == true
+        guard hasInspectableTracker else {
+            return BeadsSetupAssessment(
+                projectURL: projectURL,
+                inspectedAt: Date(),
+                bootstrap: bootstrap,
+                environment: environment,
+                localDatabaseReadability: localDatabase,
+                config: .unavailable("Project configuration was not inspected."),
+                remotes: nil,
+                hooks: nil,
+                backup: nil,
+                configurationInspection: nil,
+                gitOriginURL: gitOriginURL,
+                gitUpstreamURL: gitUpstreamURL,
+                gitOriginHasDoltData: gitOriginHasDoltData,
+                gitUpstreamHasDoltData: gitUpstreamHasDoltData,
+                candidateRemoteURL: candidateRemote?.url,
+                candidateRemoteHasDoltData: candidateRemoteHasDoltData,
+                warnings: warnings
+            )
+        }
+
+        let shouldLoadEmbeddedRemotes = environment?.storageMode == .embedded || environment == nil
+
+        async let configResult = ProjectHealthValue<[BeadsSetupConfigEntry]>.capture {
+            try await loadSetupConfig(projectURL: projectURL)
+        }
+        async let configuration = BeadsProjectConfigurationInspection.load(
+            projectURL: projectURL,
+            commands: self,
+            context: context,
+            loadsDoltRemotes: shouldLoadEmbeddedRemotes
+        )
+
+        let config = await configResult
+        let configurationResult = await configuration
+        for message in [
+            config.errorMessage,
+            configurationResult.doltRemotes.errorMessage,
+            configurationResult.hooks.errorMessage,
+            configurationResult.backup.errorMessage
+        ].compactMap({ $0 }) {
+            warnings.append(message)
+        }
+
+        return BeadsSetupAssessment(
+            projectURL: projectURL,
+            inspectedAt: Date(),
+            bootstrap: bootstrap,
+            environment: environment,
+            localDatabaseReadability: localDatabase,
+            config: config,
+            remotes: configurationResult.doltRemotes.value,
+            hooks: configurationResult.hooks.value,
+            backup: configurationResult.backup.value,
+            configurationInspection: configurationResult,
+            gitOriginURL: gitOriginURL,
+            gitUpstreamURL: gitUpstreamURL,
+            gitOriginHasDoltData: gitOriginHasDoltData,
+            gitUpstreamHasDoltData: gitUpstreamHasDoltData,
+            candidateRemoteURL: candidateRemote?.url,
+            candidateRemoteHasDoltData: candidateRemoteHasDoltData,
+            warnings: warnings
+        )
+    }
+
+    func applySetup(
+        projectURL: URL,
+        plan: BeadsSetupPlan,
+        cancellationToken: BeadsSetupCancellationToken
+    ) async throws -> BeadsSetupApplyReport {
+        guard plan.canApply else {
+            throw BeadError.commandFailed(
+                command: "bd setup",
+                output: plan.blockingFindings.map(\.detail).joined(separator: "\n")
+            )
+        }
+        var completed: [String] = []
+        for step in plan.steps {
+            try Task.checkCancellation()
+            try cancellationToken.checkCancellation()
+            do {
+                try await run(
+                    projectURL: projectURL,
+                    arguments: step.operation.arguments,
+                    timeout: step.operation.usesRemoteTimeout ? remoteSyncCommandTimeout : nil
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw BeadsSetupApplyFailure(
+                    report: BeadsSetupApplyReport(completedStepIDs: completed),
+                    failedStepTitle: step.title,
+                    underlyingError: error
+                )
+            }
+            completed.append(step.id)
+        }
+        try cancellationToken.checkCancellation()
+        return BeadsSetupApplyReport(completedStepIDs: completed)
+    }
+
+    private func loadSetupConfig(projectURL: URL) async throws -> [BeadsSetupConfigEntry] {
+        let text = try await runOutput(
+            projectURL: projectURL,
+            arguments: ["--readonly", "config", "show", "--json"],
+            terminatesOnCancel: true,
+            timeout: readOnlyCommandTimeout
+        )
+        return try JSONDecoder().decode([BeadsSetupConfigEntry].self, from: Data(text.utf8))
+    }
+
+    private func inspectBootstrap(
+        projectURL: URL,
+        isRequired: Bool
+    ) async throws -> BeadsSetupBootstrapInspection {
+        guard isRequired else {
+            return BeadsSetupBootstrapInspection(
+                preview: BeadsSetupBootstrapPreview(
+                    action: "none",
+                    beadsDirectory: nil,
+                    database: nil,
+                    hasExisting: true,
+                    reason: nil,
+                    suggestion: nil
+                ),
+                warning: nil
+            )
+        }
+        do {
+            let output = try await runOutput(
+                projectURL: projectURL,
+                arguments: ["--readonly", "bootstrap", "--dry-run", "--json"],
+                terminatesOnCancel: true,
+                timeout: readOnlyCommandTimeout
+            )
+            return BeadsSetupBootstrapInspection(
+                preview: try decodeBootstrapPreview(output),
+                warning: nil
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch BeadError.commandFailed(_, let output) {
+            if let preview = try? decodeBootstrapPreview(output) {
+                return BeadsSetupBootstrapInspection(preview: preview, warning: nil)
+            }
+            return BeadsSetupBootstrapInspection(
+                preview: BeadsSetupBootstrapPreview(),
+                warning: "Bootstrap guidance could not be inspected: \(output.nilIfBlank ?? "bd returned no details.")"
+            )
+        } catch {
+            return BeadsSetupBootstrapInspection(
+                preview: BeadsSetupBootstrapPreview(),
+                warning: "Bootstrap guidance could not be inspected: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func decodeBootstrapPreview(_ output: String) throws -> BeadsSetupBootstrapPreview {
+        try JSONDecoder().decode(
+            BeadsSetupBootstrapPreview.self,
+            from: Data(output.utf8)
+        )
+    }
+
+    private func inspectLocalDatabaseReadability(
+        projectURL: URL,
+        environment: BeadsProjectEnvironment?,
+        bootstrap: BeadsSetupBootstrapPreview
+    ) async -> ProjectHealthValue<Bool> {
+        guard environment?.storageMode == .embedded else {
+            return .available(bootstrap.hasExisting == true)
+        }
+        guard bootstrap.hasExisting != true else {
+            return .available(true)
+        }
+        do {
+            _ = try await runOutput(
+                projectURL: projectURL,
+                arguments: ["--readonly", "count", "--json"],
+                terminatesOnCancel: true,
+                timeout: readOnlyCommandTimeout
+            )
+            return .available(true)
+        } catch BeadError.commandFailed(_, let output)
+            where output.localizedCaseInsensitiveContains("no beads database found") {
+            return .available(false)
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    private func gitRemoteURL(named name: String, projectURL: URL) async -> String? {
+        do {
+            let executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            let result = try await CancellableProcessRunner.run(
+                executableURL: executableURL,
+                arguments: ["git", "remote", "get-url", name],
+                currentDirectoryURL: projectURL,
+                environment: BeadsCLI.subprocessEnvironment(executableURL: executableURL),
+                outputLimit: 16 * 1_024,
+                timeout: .seconds(10)
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return result.output.nilIfBlank
+        } catch {
+            return nil
+        }
+    }
+
+    private func probeDoltData(
+        remoteName: String,
+        remoteURL: String?,
+        projectURL: URL
+    ) async -> Bool? {
+        guard let remoteURL else { return nil }
+        do {
+            _ = try await GitDoltRemoteGenerationProbe.generation(
+                remote: BeadsDoltRemote(
+                    name: remoteName,
+                    url: remoteURL,
+                    sqlURL: nil,
+                    status: nil
+                ),
+                projectURL: projectURL
+            )
+            return true
+        } catch DoltRemoteGenerationProbeError.missingDoltReference {
+            return false
+        } catch DoltRemoteGenerationProbeError.unsupportedRemote {
+            return nil
+        } catch {
+            return nil
+        }
     }
 
     func exportReadableSnapshot(projectURL: URL) async throws {
@@ -1056,42 +1411,33 @@ struct BeadsCommandService {
         executable: CommandExecutable,
         timeout: Duration
     ) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask {
-                try await runOutputTerminatingOnCancel(
-                    projectURL: projectURL,
-                    arguments: arguments,
-                    executable: executable
-                )
-            }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw BeadError.commandFailed(
-                    command: commandDescription(arguments),
-                    output: "Timed out waiting for `bd` to finish."
-                )
-            }
-            do {
-                guard let result = try await group.next() else { throw CancellationError() }
-                group.cancelAll()
-                return result
-            } catch {
-                group.cancelAll()
-                throw error
-            }
+        do {
+            return try await runOutputTerminatingOnCancel(
+                projectURL: projectURL,
+                arguments: arguments,
+                executable: executable,
+                runnerTimeout: timeout
+            )
+        } catch CancellableProcessRunnerError.timedOut {
+            throw BeadError.commandFailed(
+                command: commandDescription(arguments),
+                output: "Timed out waiting for `bd` to finish."
+            )
         }
     }
 
     private static func runOutputTerminatingOnCancel(
         projectURL: URL,
         arguments: [String],
-        executable: CommandExecutable
+        executable: CommandExecutable,
+        runnerTimeout: Duration? = nil
     ) async throws -> String {
         let result = try await CancellableProcessRunner.run(
             executableURL: executable.url,
             arguments: executable.prefix + arguments,
             currentDirectoryURL: projectURL,
-            environment: BeadsCLI.subprocessEnvironment(executableURL: executable.url)
+            environment: BeadsCLI.subprocessEnvironment(executableURL: executable.url),
+            timeout: runnerTimeout
         )
         guard result.terminationStatus == 0 else {
             throw BeadError.commandFailed(
@@ -1402,28 +1748,40 @@ struct BeadsCommandService {
     }
 }
 
-extension BeadsCommandService: BeadsCommanding {}
+extension BeadsCommandService: BeadsCommanding {
+    func inspect(
+        projectURL: URL,
+        scope: BeadsSetupInspectionScope,
+        candidateRemote: BeadsDoltRemote?,
+        preloadedEnvironment: BeadsProjectEnvironment?
+    ) async throws -> BeadsSetupAssessment {
+        try await inspectSetup(
+            projectURL: projectURL,
+            scope: scope,
+            candidateRemote: candidateRemote,
+            preloadedEnvironment: preloadedEnvironment
+        )
+    }
+
+    func apply(
+        projectURL: URL,
+        plan: BeadsSetupPlan,
+        cancellationToken: BeadsSetupCancellationToken
+    ) async throws -> BeadsSetupApplyReport {
+        try await applySetup(
+            projectURL: projectURL,
+            plan: plan,
+            cancellationToken: cancellationToken
+        )
+    }
+}
 
 struct BeadsInitOptions: Equatable, Sendable {
     var prefix = ""
     var usesStealthMode = false
     var skipsAgents = false
     var skipsHooks = false
-
-    var commandPreview: String {
-        (["bd"] + BeadsCommandArguments.initialize(options: self))
-            .map(Self.shellEscaped)
-            .joined(separator: " ")
-    }
-
-    private static func shellEscaped(_ argument: String) -> String {
-        guard !argument.isEmpty else { return "''" }
-        let safeCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:-")
-        if argument.unicodeScalars.allSatisfy({ safeCharacters.contains($0) }) {
-            return argument
-        }
-        return "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
+    var remoteURL = ""
 }
 
 enum BeadsCommandArguments {
@@ -1432,8 +1790,8 @@ enum BeadsCommandArguments {
     /// macOS's process argument limit while keeping normal bulk edits to one command.
     static let safeBulkArgumentByteLimit = 64 * 1_024
 
-    static func initialize(options: BeadsInitOptions) -> [String] {
-        var arguments = ["init", "--non-interactive", "--role", "maintainer"]
+    static func initializeOptionArguments(options: BeadsInitOptions) -> [String] {
+        var arguments: [String] = []
         appendNonEmpty(&arguments, flag: "--prefix", value: options.prefix)
         if options.usesStealthMode {
             arguments.append("--stealth")
@@ -1444,6 +1802,7 @@ enum BeadsCommandArguments {
         if options.skipsHooks && !options.usesStealthMode {
             arguments.append("--skip-hooks")
         }
+        appendNonEmpty(&arguments, flag: "--remote", value: options.remoteURL)
         return arguments
     }
 

@@ -104,31 +104,17 @@ enum GitDoltRemoteGenerationProbe {
         projectURL: URL,
         timeout: TimeInterval
     ) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask {
-                try await runCancellableGitLSRemote(
-                    remoteURL: remoteURL,
-                    projectURL: projectURL
-                )
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(timeout))
-                throw DoltRemoteGenerationProbeError.timedOut
-            }
-            do {
-                guard let output = try await group.next() else { throw CancellationError() }
-                group.cancelAll()
-                return output
-            } catch {
-                group.cancelAll()
-                throw error
-            }
-        }
+        try await runCancellableGitLSRemote(
+            remoteURL: remoteURL,
+            projectURL: projectURL,
+            timeout: timeout
+        )
     }
 
     private static func runCancellableGitLSRemote(
         remoteURL: String,
-        projectURL: URL
+        projectURL: URL,
+        timeout: TimeInterval
     ) async throws -> String {
         var environment = BeadsCLI.subprocessEnvironment(
             executableURL: URL(fileURLWithPath: "/usr/bin/env")
@@ -143,7 +129,8 @@ enum GitDoltRemoteGenerationProbe {
                 arguments: ["git", "ls-remote", remoteURL, "refs/dolt/data"],
                 currentDirectoryURL: projectURL,
                 environment: environment,
-                outputLimit: 64 * 1024
+                outputLimit: 64 * 1024,
+                timeout: .seconds(timeout)
             )
             guard result.terminationStatus == 0 else {
                 if result.terminationStatus == 127 {
@@ -158,6 +145,8 @@ enum GitDoltRemoteGenerationProbe {
             return result.output
         } catch is CancellationError {
             throw CancellationError()
+        } catch CancellableProcessRunnerError.timedOut {
+            throw DoltRemoteGenerationProbeError.timedOut
         } catch let error as DoltRemoteGenerationProbeError {
             throw error
         } catch {

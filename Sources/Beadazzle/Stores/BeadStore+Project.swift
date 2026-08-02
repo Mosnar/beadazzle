@@ -38,7 +38,12 @@ extension BeadStore {
         stopDataSourceMonitor()
         _projectURL = url
         resetProjectHealthStatus()
-        _isInitializingBeads = false
+        _isApplyingBeadsSetup = false
+        _beadsSetupIntent = beadsSetupPreferenceRepository.loadIntent(projectURL: url)
+        beadsSetupDismissedFingerprint = beadsSetupPreferenceRepository.dismissedFingerprint(projectURL: url)
+        _beadsSetupAssessment = nil
+        _beadsSetupFindings = []
+        project.cacheProjectConfigurationInspection(nil)
         if projectDirectoryExists(at: url) {
             rememberRecentProject(url)
         }
@@ -110,59 +115,6 @@ extension BeadStore {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    func initializeBeads(options: BeadsInitOptions) {
-        guard let projectURL, !isInitializingBeads else { return }
-        let initializationGeneration = project.beginInitialization()
-        _isInitializingBeads = true
-        lastError = nil
-        let projectLoader = projectLoader
-        let staleCutoffDays = staleCutoffDays
-        let hidesParentsWithOnlyBlockedChildrenInReady = hidesParentsWithOnlyBlockedChildrenInReady
-
-        initializationTask = Task { @MainActor [weak self] in
-            defer { self?.project.finishInitialization(generation: initializationGeneration) }
-            do {
-                let loadedProject = try await projectLoader.initializeAndLoadProject(
-                    projectURL: projectURL,
-                    options: options,
-                    staleCutoffDays: staleCutoffDays,
-                    hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady
-                )
-                guard !Task.isCancelled,
-                      let self,
-                      self.project.ownsInitialization(
-                          projectURL: projectURL,
-                          generation: initializationGeneration
-                      ) else { return }
-                self._isInitializingBeads = false
-                self.rememberRecentProject(projectURL)
-                self.applyLoadedProject(loadedProject, projectURL: projectURL)
-                self.refreshOwnerIdentity(for: projectURL, showsResolvingState: true)
-            } catch is CancellationError {
-                return
-            } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
-                guard !Task.isCancelled,
-                      let self,
-                      self.project.ownsInitialization(
-                          projectURL: projectURL,
-                          generation: initializationGeneration
-                      ) else { return }
-                self._isInitializingBeads = false
-                self.setUnsupportedProject(unsupportedURL, detail: detail)
-            } catch {
-                guard !Task.isCancelled,
-                      let self,
-                      self.project.ownsInitialization(
-                          projectURL: projectURL,
-                          generation: initializationGeneration
-                      ) else { return }
-                self._isInitializingBeads = false
-                self._projectReadiness = .missingDataSource(projectURL)
-                self.lastError = error.localizedDescription
-            }
-        }
-    }
-
     private func setMissingDataSource(_ url: URL) {
         _projectReadiness = .missingDataSource(url)
         _isLoading = false
@@ -219,6 +171,8 @@ extension BeadStore {
         _gatesByID = [:]
         _currentDataSource = nil
         _projectEnvironment = nil
+        _beadsSetupAssessment = nil
+        _beadsSetupFindings = []
         projectDoltRemotesTask?.cancel()
         projectDoltRemotesTask = nil
         _projectDoltRemotes = nil
@@ -607,7 +561,17 @@ extension BeadStore {
             cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
         }
         _projectEnvironment = loadedProject.environment
-        loadProjectDoltRemotesIfNeeded()
+        if isApplyingBeadsSetup {
+            // Setup schedules one audit after the applied project is installed. Avoid
+            // racing it with a duplicate remote inspection during this intermediate load.
+        } else if beadsSetupIntent != nil,
+           beadsSetupAssessment == nil,
+           !isInspectingBeadsSetup,
+           !isApplyingBeadsSetup {
+            refreshBeadsSetupAudit()
+        } else {
+            loadProjectDoltRemotesIfNeeded()
+        }
         _currentDataSource = loadedProject.source
         markSnapshotFreshnessLoaded(
             projectURL: projectURL,

@@ -45,6 +45,7 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 - Restores each project's workspace when reopened: last view or bookmark, search and filters, sort, list mode, outline expansion, selection, and open detail.
 - Project settings for storage, Dolt remote health and synchronization, snapshot freshness, readable export health, optional hooks, backups, and Ready workflow preferences.
 - One-action Beads Sync that pulls before pushing, directional Pull and Push commands, and lightweight Git-backed remote-change checks that do not download the database.
+- Guided setup and repair for private, solo, team, and contributor checkouts, with reviewed commands and local drift reminders.
 - CRUD, bulk actions, comments, dependencies, gates, and workflow mutations routed through the `bd` CLI.
 - Context-aware JSONL snapshot reads, including redirected and worktree tracker directories.
 - Live reload for local Beads source changes without polling idle projects.
@@ -68,18 +69,18 @@ Beadazzle asks `bd context` for the effective tracker directory before it reads 
 - `beads.jsonl`
 - `beads.base.jsonl`
 
-Write support goes through `bd`, not direct file or database writes. Beadazzle currently covers create, edit, close, reopen, delete, bulk status/type/priority updates, labels, assignee, due/defer dates, comments, dependencies, parent/child relationships, custom status/type definitions, combined Dolt Sync plus directional Pull and Push, optional hooks install, backup sync, and common gate workflows.
+Write support goes through `bd`, not direct file or database writes. Beadazzle currently covers create, edit, close, reopen, delete, bulk status/type/priority updates, labels, assignee, due/defer dates, comments, dependencies, parent/child relationships, custom status/type definitions, combined Dolt Sync plus directional Pull and Push, guided setup, optional hooks, backups, and common gate workflows.
 
 Beadazzle asks `bd` to export a fresh readable JSONL snapshot after mutations, Pull or Sync, and manual refreshes. Server-backed projects also export when opened and refresh when the app becomes active, without background polling. The app then reloads that snapshot so Beads remains the source of truth for validation, hooks, history, and storage semantics.
 
-Project Settings show the resolved storage mode, tracker directory, configured Dolt remotes, automatic-push policy, readable snapshot, Git integration, backup destination, and Beads role. Sync, Pull, and Push are explicit actions; Beadazzle does not synchronize in the background. Its optional remote-change check only reads a compatible Git-backed Dolt ref and never pulls database objects. Git hooks are presented as optional integration, and stealth projects hide hook actions that do not apply. Contributor routing is shown for clarity while creation and gate commands remain delegated to `bd`, which chooses the configured planning repository.
+Project Settings show the resolved storage mode, tracker directory, configured Dolt remotes, automatic-push policy, readable snapshot, Git integration, backup destination, and Beads role. The setup wizard can initialize or bootstrap a checkout, add a missing remote, configure safe automatic-push policy, install or remove bd-managed hooks, and register an optional backup after showing the exact commands. Sync, Pull, Push, remote publication, and backup synchronization remain explicit actions; Beadazzle does not synchronize in the background. Its optional remote-change check only reads a compatible Git-backed Dolt ref and never pulls database objects. Contributor routing is shown for clarity while creation and gate commands remain delegated to `bd`, which chooses the configured planning repository.
 
 See [Beads Collaboration and Synchronization](docs/BEADS_SYNC.md) for the complete Git-versus-Dolt model, team setup, tracked and ignored files, Sync reconciliation, remote-change checks, hooks, and contributor behavior.
 
 Generally not implemented in v1:
 
 - Full Beads administration for every `bd config`, storage, migration, import, export, federation, or recovery command.
-- Creating, editing, or removing Dolt remotes and changing automatic-push policy.
+- Replacing or removing existing Dolt remotes, reconciling ambiguous local/remote histories, or migrating storage modes and contributor data.
 - Direct editing of `.beads` internals, Dolt tables, Beads history, or generated JSONL snapshots.
 - Built-in `bd` distribution, remote workers, agent orchestration, or hosted/team/cloud Beads service features.
 - Git, GitHub, pull request, or CI management beyond displaying and acting on Beads data that already exists locally.

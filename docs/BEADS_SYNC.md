@@ -11,7 +11,7 @@ together when multiple people work from separate clones of the same repository.
 | Project source code | Normal Git commits and branches such as `refs/heads/main` | `git pull`, `git push`, and the team's normal Git workflow | Nothing; source-code Git remains separate |
 | Beads issue data | The local Dolt database and its Dolt history | `bd dolt pull` and `bd dolt push` | Runs these through Pull, Push, and Sync |
 | Readable issue snapshot | A JSONL export such as `.beads/issues.jsonl` | It is not the canonical sync channel | Runs `bd export`, validates the result, and reloads it for the UI |
-| Beadazzle state | macOS application preferences | It does not travel with the repository | Stores UI preferences and the local remote-change checkpoint |
+| Beadazzle state | macOS application preferences | It does not travel with the repository | Stores UI preferences, setup intent, dismissals, and the local remote-change checkpoint |
 
 A Git-hosted project can use the same remote URL for source code and Beads,
 but the data remains separate. Source branches use normal Git refs. Dolt stores
@@ -91,6 +91,76 @@ bd config show --json
 The normal handoff is: pull before starting work, then Sync before switching
 machines or handing the tracker to someone else.
 
+## Beadazzle Setup Wizard
+
+Choose **Set Up Beads** when a folder has no readable tracker, or open
+**Project Settings > Overview > Beads Setup** to audit or change an existing
+checkout. The same wizard supports these use cases:
+
+- **Private / Local** keeps the tracker on the current Mac and preserves any
+  existing remote rather than removing it implicitly.
+- **Solo Synced** configures a remote for one person's machines and can opt in
+  to Beads automatic push.
+- **Team Shared** configures explicit synchronization and forces
+  `dolt.auto-push` off for multi-writer safety.
+- **Contributor Planning** follows `bd` contributor routing. A fresh setup
+  requires a Git `upstream` remote so the wizard never invents a destination.
+- **Advanced / Existing** audits the effective setup and preserves current
+  choices unless a safe change is selected.
+
+The wizard arrives at these profiles through conditional questions about
+whether you maintain or contribute to the project, whether contributors should
+join the project's shared task database or keep their planning separate,
+whether you work alone or with a team, whether the team wants one shared task
+database, and whether a personal database should sync through the project's
+Git remote. Users do not need to understand the profile names or Dolt
+terminology before answering.
+
+A contributor who chooses the project's shared task database joins existing
+Dolt history through bootstrap or a reviewed remote clone. Beadazzle will not
+turn that choice into publication of a new empty tracker; if the Git remote is
+known not to contain Dolt data, setup asks for the maintainer's Beads remote.
+
+Before offering changes, Beadazzle runs `bd --readonly bootstrap --dry-run --json` and,
+for an existing tracker, inspects its effective `bd context`, configuration
+with provenance, Dolt remotes, hooks, and backup status. Opening the wizard may
+also read `refs/dolt/data` from a compatible Git remote to distinguish a fresh
+publish from an existing remote database. Routine background setup audits do
+not perform that network probe. Bootstrap guidance is advisory: Beadazzle can
+decode its JSON even when `bd` exits nonzero, and it cross-checks an embedded
+database with a read-only query before proposing initialization or cloning.
+
+The review step labels each change by scope and shows the exact `bd` command.
+The displayed command and the executed command come from the same typed
+argument list. Commands run with `--sandbox`, which prevents incidental automatic pushes;
+remote publication and backup synchronization remain separate, explicit
+reviewed steps. After changes, Beadazzle exports and reloads the snapshot from
+the effective tracker directory.
+
+For a fresh checkout, the wizard probes compatible Git-backed destinations
+before deciding between joining and publishing. Existing Dolt data is joined
+with `bd init --remote` (or the checkout's bootstrap plan). A verified empty
+Git destination—or a non-Git destination explicitly chosen for publication—is
+added only after local initialization, and it is not populated unless the
+review includes the explicit push step.
+
+The wizard deliberately does not:
+
+- migrate embedded storage to server or shared-server mode;
+- relocate existing contributor planning data;
+- replace an existing Dolt remote or backup destination;
+- choose between local and remote histories when both already exist; or
+- stage, commit, pull, or push normal source-code Git branches.
+
+Those states remain valid and are reported with guidance instead of being
+silently rewritten. `bd config validate` and `bd config drift` can still be
+useful diagnostics, but they are advisory rather than setup approval gates.
+
+The selected use case is saved in macOS preferences for that checkout only. It
+is not committed or shared. When a later audit finds an actionable difference,
+Beadazzle shows a dismissible workspace notice and the finding in Project
+Settings. Dismissal lasts until the set of findings changes.
+
 ## What Beadazzle Commands Do
 
 | Action | Remote operation | Snapshot operation | Automatic? |
@@ -101,6 +171,7 @@ machines or handing the tracker to someone else.
 | Pull | `bd dolt pull` | Exports and reloads afterward | User initiated |
 | Push | `bd dolt push` | None | User initiated |
 | Sync | Pull first, then push if pull succeeded | Exports and reloads after the remote commands | User initiated |
+| Setup / Review Setup | Optional explicit remote publish or backup sync | Exports and reloads after setup | User initiated |
 
 The toolbar Sync button is the normal team action. Its menu retains directional
 commands for recovery and advanced workflows:
@@ -190,8 +261,10 @@ bd hooks list
 bd hooks install
 ```
 
-Beadazzle exposes the status and install action, but `bd` owns the generated
-hook contents and their interaction with other hook managers. See the upstream
+Beadazzle exposes whether bd-managed hooks are installed, partially installed,
+or missing; the setup wizard can also install or remove them after showing the
+command. `bd` still owns the generated hook contents and their interaction with
+other hook managers. See the upstream
 [Git Integration reference](https://github.com/gastownhall/beads/blob/main/docs/reference/git-integration.md).
 
 ## Configuration Ownership
@@ -208,8 +281,11 @@ stored in YAML. Use `bd config show` to inspect effective values and provenance;
 do not guess which file won precedence. Secrets belong in environment variables
 or another machine-local source, not tracked project configuration.
 
-Beadazzle currently reports relevant settings and health but does not create,
-edit, or remove Dolt remotes or change Beads' auto-push policy.
+The setup wizard can add a missing Dolt remote, configure `dolt.auto-push`, and
+register a backup after showing the exact command. It never replaces or removes
+an existing remote or backup destination, and Team Shared always keeps
+automatic push off. Directional Pull, Push, and Sync remain explicit workspace
+actions.
 
 For the complete Beads contract, see:
 

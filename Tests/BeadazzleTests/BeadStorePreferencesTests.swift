@@ -1590,7 +1590,6 @@ private actor PreferenceTestCommands: BeadsCommanding {
         self.definitionReadDelay = definitionReadDelay
     }
 
-    func initialize(projectURL: URL, options: BeadsInitOptions) async throws {}
 
     func exportReadableSnapshot(projectURL: URL) async throws {}
 

@@ -43,6 +43,26 @@ final class CancellableProcessRunnerTests: XCTestCase {
         XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1))
     }
 
+    func testTimeoutReturnsWithoutWaitingForChildProcess() async {
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        do {
+            _ = try await CancellableProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["30"],
+                currentDirectoryURL: FileManager.default.temporaryDirectory,
+                environment: ProcessInfo.processInfo.environment,
+                timeout: .milliseconds(50)
+            )
+            XCTFail("A timed-out subprocess should throw")
+        } catch CancellableProcessRunnerError.timedOut {
+            // Expected.
+        } catch {
+            XCTFail("Expected timedOut, received \(error)")
+        }
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1))
+    }
+
     func testWaitsForProcessExitAfterOutputPipeCloses() async throws {
         let result = try await CancellableProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
