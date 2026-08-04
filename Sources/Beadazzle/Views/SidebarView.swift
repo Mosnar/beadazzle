@@ -75,8 +75,11 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ProjectDoltSyncStatusOverlay()
+        }
         .overlay {
-            if project.isLoading {
+            if project.isLoading, project.projectHealthAction?.isDoltSync != true {
                 ProgressView()
             }
         }

@@ -3,6 +3,43 @@ import XCTest
 @testable import Beadazzle
 
 final class BeadsSetupPlannerTests: XCTestCase {
+    func testApplyProgressTracksActiveCompletedAndFailedReviewSteps() {
+        var progress = BeadsSetupApplyProgress()
+
+        progress.record(.validating)
+        XCTAssertEqual(progress.scrollTargetID, "setup-progress-phase")
+        progress.record(.stepStarted("config"))
+        XCTAssertEqual(progress.status(forStepID: "config"), .inProgress)
+        XCTAssertEqual(progress.scrollTargetID, "config")
+        XCTAssertEqual(progress.status(forStepID: "hooks"), .pending)
+
+        progress.record(.stepCompleted("config"))
+        progress.record(.stepStarted("hooks"))
+        progress.record(.stepFailed("hooks"))
+        progress.recordFailure()
+
+        XCTAssertEqual(progress.status(forStepID: "config"), .completed)
+        XCTAssertEqual(progress.status(forStepID: "hooks"), .failed)
+
+        progress.record(.recoveringProject)
+        XCTAssertEqual(progress.status(forStepID: "hooks"), .failed)
+        XCTAssertNotNil(progress.phaseMessage)
+    }
+
+    func testApplyProgressTracksLocalIntentAfterProjectReload() {
+        var progress = BeadsSetupApplyProgress()
+
+        progress.record(.reloadingProject)
+        XCTAssertEqual(progress.localIntentStatus, .pending)
+        XCTAssertNotNil(progress.phaseMessage)
+
+        progress.record(.savingIntent)
+        XCTAssertEqual(progress.localIntentStatus, .inProgress)
+
+        progress.record(.finished)
+        XCTAssertEqual(progress.localIntentStatus, .completed)
+    }
+
     func testGuidedUseCaseAsksContributorsWhetherTheyUseTheProjectTracker() {
         var answers = BeadsSetupUseCaseAnswers()
 

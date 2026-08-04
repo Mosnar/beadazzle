@@ -48,7 +48,6 @@ extension BeadStore {
                 self._projectEnvironment = environment.applying(storageConfig: storageConfig)
             }
             self.projectDoltRemotesDidLoad(previousRemote: previousRemote)
-            self._isLoadingProjectHealth = false
         }
     }
 
@@ -281,10 +280,45 @@ extension BeadStore {
         reportsFailureInWorkspace: Bool = false,
         completionRefresh: ProjectHealthCompletionRefresh = .none
     ) async -> Bool {
+        await performProjectIssuePullAction(
+            .synchronize,
+            reportsFailureInWorkspace: reportsFailureInWorkspace,
+            completionRefresh: completionRefresh
+        )
+    }
+
+    @discardableResult
+    func pullProjectIssues(
+        reportsFailureInWorkspace: Bool = false,
+        completionRefresh: ProjectHealthCompletionRefresh = .none
+    ) async -> Bool {
+        await performProjectIssuePullAction(
+            .pull,
+            reportsFailureInWorkspace: reportsFailureInWorkspace,
+            completionRefresh: completionRefresh
+        )
+    }
+
+    private func performProjectIssuePullAction(
+        _ pullAction: ProjectIssuePullAction,
+        reportsFailureInWorkspace: Bool,
+        completionRefresh: ProjectHealthCompletionRefresh
+    ) async -> Bool {
         guard canSynchronizeProjectIssues else { return false }
         guard let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else { return false }
-        guard let projectURL = beginProjectHealthAction(.synchronizingIssues) else { return false }
-        defer { finishProjectHealthAction(for: projectURL, completionRefresh: completionRefresh) }
+        let remoteAction = pullAction.remoteAction
+        guard let projectURL = beginProjectHealthAction(remoteAction.healthAction) else { return false }
+        var succeeded = false
+        var cancelled = false
+        defer {
+            finishProjectDoltSyncAction(
+                remoteAction,
+                for: projectURL,
+                succeeded: succeeded,
+                cancelled: cancelled,
+                completionRefresh: completionRefresh
+            )
+        }
         let mutationLifetimeGeneration = beginMutation()
         let exportedMutationRevision = mutations.optimisticMutationRevision
         var mutationLifetimeEnded = false
@@ -298,11 +332,13 @@ extension BeadStore {
             let outcome = try await performProjectIssueRemoteWrite(
                 projectURL: projectURL,
                 beadsDirectoryURL: beadsDirectoryURL,
-                pushesAfterPull: true
+                pushesAfterPull: pullAction.pushesAfterPull
             )
             guard self.projectURL == projectURL else { return false }
-            if outcome.pullFailure == nil, outcome.pushFailure == nil {
-                checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
+            let remoteWriteSucceeded = outcome.pullFailure == nil && outcome.pushFailure == nil
+            if outcome.cancelledBeforeRemoteWrite {
+                cancelled = true
+                return false
             }
             endMutation(generation: mutationLifetimeGeneration)
             mutationLifetimeEnded = true
@@ -315,15 +351,25 @@ extension BeadStore {
             )
             guard self.projectURL == projectURL else { return false }
             if case .projectChanged = snapshotResult { return false }
+            let cancellationRequested = outcome.cancellationRequested
+                || projectDoltSyncShouldStop(for: projectURL)
+            if remoteWriteSucceeded, !cancellationRequested {
+                setProjectDoltSyncPhase(
+                    .recordingRemoteCheckpoint(remoteName: projectDoltSyncRemoteName),
+                    for: projectURL
+                )
+                await establishProjectDoltRemoteFreshnessCheckpoint()
+                guard self.projectURL == projectURL else { return false }
+            }
             let snapshotFailure = snapshotResult.failureMessage
             if let pullFailure = outcome.pullFailure {
                 recordProjectIssueCommandFailure(
                     pullFailure,
-                    title: "Couldn't sync beads with remote",
+                    title: remoteAction.failureTitle,
                     snapshotFailure: snapshotFailure,
                     reportsFailureInWorkspace: reportsFailureInWorkspace,
                     retry: { [weak self] in
-                        _ = await self?.synchronizeProjectIssues(reportsFailureInWorkspace: true)
+                        await self?.retryProjectIssuePullAction(pullAction)
                     }
                 )
                 return false
@@ -335,15 +381,13 @@ extension BeadStore {
                     snapshotFailure: snapshotFailure,
                     reportsFailureInWorkspace: reportsFailureInWorkspace,
                     retry: { [weak self] in
-                        _ = await self?.synchronizeProjectIssues(reportsFailureInWorkspace: true)
+                        await self?.retryProjectIssuePullAction(pullAction)
                     }
                 )
                 return false
             }
             if let snapshotFailure {
-                let failure = ProjectHealthActionFailure.syncCompletedButSnapshotRefreshFailed(
-                    snapshotFailure
-                )
+                let failure = pullAction.snapshotRefreshFailure(snapshotFailure)
                 recordProjectIssueSnapshotFailure(
                     failure,
                     reportsFailureInWorkspace: reportsFailureInWorkspace,
@@ -353,18 +397,24 @@ extension BeadStore {
                 )
                 return false
             }
-            announceCompletion("Synced beads with remote")
+            if cancellationRequested {
+                cancelled = true
+                return false
+            }
+            announceCompletion(remoteAction.completionAnnouncement)
+            succeeded = true
             return true
         } catch is CancellationError {
+            cancelled = true
             return false
         } catch {
             setProjectHealthActionError(error, projectURL: projectURL)
             if reportsFailureInWorkspace, self.projectURL == projectURL {
                 reportMutationFailure(
                     error,
-                    title: "Couldn't sync beads with remote",
+                    title: remoteAction.failureTitle,
                     retry: { [weak self] in
-                        _ = await self?.synchronizeProjectIssues(reportsFailureInWorkspace: true)
+                        await self?.retryProjectIssuePullAction(pullAction)
                     }
                 )
             }
@@ -372,87 +422,12 @@ extension BeadStore {
         }
     }
 
-    @discardableResult
-    func pullProjectIssues(
-        reportsFailureInWorkspace: Bool = false,
-        completionRefresh: ProjectHealthCompletionRefresh = .none
-    ) async -> Bool {
-        guard canSynchronizeProjectIssues else { return false }
-        guard let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else { return false }
-        guard let projectURL = beginProjectHealthAction(.pullingIssues) else { return false }
-        defer { finishProjectHealthAction(for: projectURL, completionRefresh: completionRefresh) }
-        let mutationLifetimeGeneration = beginMutation()
-        let exportedMutationRevision = mutations.optimisticMutationRevision
-        var mutationLifetimeEnded = false
-        defer {
-            if !mutationLifetimeEnded {
-                endMutation(generation: mutationLifetimeGeneration)
-            }
-        }
-
-        do {
-            let outcome = try await performProjectIssueRemoteWrite(
-                projectURL: projectURL,
-                beadsDirectoryURL: beadsDirectoryURL,
-                pushesAfterPull: false
-            )
-            guard self.projectURL == projectURL else { return false }
-            if outcome.pullFailure == nil {
-                checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
-            }
-            endMutation(generation: mutationLifetimeGeneration)
-            mutationLifetimeEnded = true
-            markSemanticDefinitionsCacheStale()
-            let snapshotResult = await reloadProjectIssuesAfterRemoteWrite(
-                projectURL: projectURL,
-                exportFailure: outcome.snapshotExportFailure,
-                exportedMutationRevision: exportedMutationRevision,
-                exportResult: outcome.snapshotExportResult
-            )
-            guard self.projectURL == projectURL else { return false }
-            if case .projectChanged = snapshotResult { return false }
-            let snapshotFailure = snapshotResult.failureMessage
-            if let pullFailure = outcome.pullFailure {
-                recordProjectIssueCommandFailure(
-                    pullFailure,
-                    title: "Couldn't pull beads from remote",
-                    snapshotFailure: snapshotFailure,
-                    reportsFailureInWorkspace: reportsFailureInWorkspace,
-                    retry: { [weak self] in
-                        _ = await self?.pullProjectIssues(reportsFailureInWorkspace: true)
-                    }
-                )
-                return false
-            }
-            if let snapshotFailure {
-                let failure = ProjectHealthActionFailure.pullCompletedButSnapshotRefreshFailed(
-                    snapshotFailure
-                )
-                recordProjectIssueSnapshotFailure(
-                    failure,
-                    reportsFailureInWorkspace: reportsFailureInWorkspace,
-                    retry: { [weak self] in
-                        await self?.retryProjectIssueSnapshotRefresh()
-                    }
-                )
-                return false
-            }
-            announceCompletion("Pulled beads from remote")
-            return true
-        } catch is CancellationError {
-            return false
-        } catch {
-            setProjectHealthActionError(error, projectURL: projectURL)
-            if reportsFailureInWorkspace, self.projectURL == projectURL {
-                reportMutationFailure(
-                    error,
-                    title: "Couldn't pull beads from remote",
-                    retry: { [weak self] in
-                        _ = await self?.pullProjectIssues(reportsFailureInWorkspace: true)
-                    }
-                )
-            }
-            return false
+    private func retryProjectIssuePullAction(_ action: ProjectIssuePullAction) async {
+        switch action {
+        case .synchronize:
+            _ = await synchronizeProjectIssues(reportsFailureInWorkspace: true)
+        case .pull:
+            _ = await pullProjectIssues(reportsFailureInWorkspace: true)
         }
     }
 
@@ -462,10 +437,40 @@ extension BeadStore {
         pushesAfterPull: Bool
     ) async throws -> ProjectIssueRemoteWriteOutcome {
         let commands = commands
+        let remote = projectDoltSyncRemote
+        let remoteName = remote?.name ?? "configured remote"
+        let shouldStop: @Sendable () async -> Bool = { [weak self] in
+            await self?.projectDoltSyncShouldStop(for: projectURL) ?? true
+        }
+        let reportPhase: @Sendable (ProjectDoltSyncPhase) async -> Void = { [weak self] phase in
+            await self?.setProjectDoltSyncPhase(phase, for: projectURL)
+        }
         return try await enqueueMutationWrite {
+            if await shouldStop() {
+                return ProjectIssueRemoteWriteOutcome(cancelledBeforeRemoteWrite: true)
+            }
+            if let remote {
+                await reportPhase(.checkingRemoteAccess(remoteName: remoteName))
+                do {
+                    try await commands.verifyDoltRemoteAccess(
+                        projectURL: projectURL,
+                        remote: remote
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    return ProjectIssueRemoteWriteOutcome(
+                        pullFailure: ProjectIssueSyncCommandFailure(error)
+                    )
+                }
+                if await shouldStop() {
+                    return ProjectIssueRemoteWriteOutcome(cancelledBeforeRemoteWrite: true)
+                }
+            }
+            await reportPhase(.pulling(remoteName: remoteName))
             var pullFailure: ProjectIssueSyncCommandFailure?
             do {
-                try await commands.pullDoltRemote(projectURL: projectURL)
+                try await commands.pullDoltRemote(projectURL: projectURL, remote: remote)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -473,9 +478,11 @@ extension BeadStore {
             }
 
             var pushFailure: ProjectIssueSyncCommandFailure?
-            if pullFailure == nil, pushesAfterPull {
+            let cancellationAfterPull = await shouldStop()
+            if pullFailure == nil, pushesAfterPull, !cancellationAfterPull {
+                await reportPhase(.pushing(remoteName: remoteName))
                 do {
-                    try await commands.pushDoltRemote(projectURL: projectURL)
+                    try await commands.pushDoltRemote(projectURL: projectURL, remote: remote)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -485,6 +492,7 @@ extension BeadStore {
 
             var snapshotExportFailure: String?
             var snapshotExportResult: ReadableSnapshotExportResult?
+            await reportPhase(.exportingSnapshot)
             do {
                 snapshotExportResult = try await commands.exportReadableSnapshotWithResult(
                     projectURL: projectURL,
@@ -496,11 +504,13 @@ extension BeadStore {
                 snapshotExportFailure = error.localizedDescription
             }
 
+            let cancellationAfterExport = await shouldStop()
             return ProjectIssueRemoteWriteOutcome(
                 pullFailure: pullFailure,
                 pushFailure: pushFailure,
                 snapshotExportFailure: snapshotExportFailure,
-                snapshotExportResult: snapshotExportResult
+                snapshotExportResult: snapshotExportResult,
+                cancellationRequested: cancellationAfterPull || cancellationAfterExport
             )
         }
     }
@@ -518,6 +528,9 @@ extension BeadStore {
             return .failed(message)
         }
         while self.projectURL == projectURL {
+            if activeMutationCount > 0 {
+                setProjectDoltSyncPhase(.waitingForLocalChanges, for: projectURL)
+            }
             await waitForActiveMutationsToFinish()
             guard self.projectURL == projectURL else { return .projectChanged }
 
@@ -538,6 +551,10 @@ extension BeadStore {
                completeClaimedReconcileWithoutReload(projectURL: projectURL, source: source) {
                 return .refreshed
             }
+            setProjectDoltSyncPhase(
+                .reloadingIssueList(includesNewExport: requiresFreshExport),
+                for: projectURL
+            )
             guard let refreshTask = refresh(
                 reason: requiresFreshExport ? .reconcile : .dataSourceChanged,
                 showsLoadingIndicator: true,
@@ -568,12 +585,17 @@ extension BeadStore {
         reportsFailureInWorkspace: Bool,
         retry: (() async -> Void)?
     ) {
-        let healthMessage = [failure.message, snapshotFailure]
+        let healthMessage = [
+            failure.command == nil ? failure.message : "The Beads command failed.",
+            snapshotFailure
+        ]
             .compactMap(\.self)
             .joined(separator: " ")
         _projectHealthActionError = ProjectHealthActionFailure(
             title: title,
-            message: healthMessage
+            message: healthMessage,
+            command: failure.command,
+            output: failure.output
         )
         guard reportsFailureInWorkspace else { return }
         let workspaceMessage = [
@@ -614,6 +636,14 @@ extension BeadStore {
         guard self.projectURL == projectURL else { return }
         if didRefresh {
             _projectHealthActionError = nil
+            if let outcome = project.projectDoltSyncOutcome,
+               outcome.result == .failed,
+               (outcome.action == .synchronizingIssues || outcome.action == .pullingIssues) {
+                presentProjectDoltSyncOutcome(
+                    .succeeded(outcome.action, elapsed: outcome.elapsed),
+                    for: projectURL
+                )
+            }
             announceCompletion("Refreshed beads")
             return
         }
@@ -638,26 +668,76 @@ extension BeadStore {
         completionRefresh: ProjectHealthCompletionRefresh = .none
     ) async -> Bool {
         guard canSynchronizeProjectIssues else { return false }
-        guard let projectURL = beginProjectHealthAction(.pushingIssues) else { return false }
-        defer { finishProjectHealthAction(for: projectURL, completionRefresh: completionRefresh) }
+        let remoteAction = ProjectDoltRemoteAction.pushingIssues
+        guard let projectURL = beginProjectHealthAction(remoteAction.healthAction) else { return false }
+        var succeeded = false
+        var cancelled = false
+        defer {
+            finishProjectDoltSyncAction(
+                remoteAction,
+                for: projectURL,
+                succeeded: succeeded,
+                cancelled: cancelled,
+                completionRefresh: completionRefresh
+            )
+        }
         let mutationLifetimeGeneration = beginMutation()
         defer { endMutation(generation: mutationLifetimeGeneration) }
 
         do {
             let commands = commands
+            let remote = projectDoltSyncRemote
+            let remoteName = remote?.name ?? "configured remote"
+            let shouldStop: @Sendable () async -> Bool = { [weak self] in
+                await self?.projectDoltSyncShouldStop(for: projectURL) ?? true
+            }
+            let reportPhase: @Sendable (ProjectDoltSyncPhase) async -> Void = { [weak self] phase in
+                await self?.setProjectDoltSyncPhase(phase, for: projectURL)
+            }
             try await enqueueMutationWrite {
-                try await commands.pushDoltRemote(projectURL: projectURL)
+                guard !(await shouldStop()) else {
+                    return
+                }
+                if let remote {
+                    await reportPhase(.checkingRemoteAccess(remoteName: remoteName))
+                    try await commands.verifyDoltRemoteAccess(
+                        projectURL: projectURL,
+                        remote: remote
+                    )
+                    guard !(await shouldStop()) else {
+                        return
+                    }
+                }
+                await reportPhase(.pushing(remoteName: remoteName))
+                try await commands.pushDoltRemote(projectURL: projectURL, remote: remote)
             }
             guard self.projectURL == projectURL else { return false }
-            checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
-            announceCompletion("Pushed beads to remote")
+            if projectDoltSyncShouldStop(for: projectURL) {
+                cancelled = true
+                return false
+            }
+            setProjectDoltSyncPhase(
+                .recordingRemoteCheckpoint(remoteName: remoteName),
+                for: projectURL
+            )
+            await establishProjectDoltRemoteFreshnessCheckpoint()
+            guard self.projectURL == projectURL else { return false }
+            if projectDoltSyncShouldStop(for: projectURL) {
+                cancelled = true
+                return false
+            }
+            announceCompletion(remoteAction.completionAnnouncement)
+            succeeded = true
             return true
+        } catch is CancellationError {
+            cancelled = true
+            return false
         } catch {
             setProjectHealthActionError(error, projectURL: projectURL)
             if reportsFailureInWorkspace, self.projectURL == projectURL {
                 reportMutationFailure(
                     error,
-                    title: "Couldn't push beads to remote",
+                    title: remoteAction.failureTitle,
                     retry: { [weak self] in
                         _ = await self?.pushProjectIssues(reportsFailureInWorkspace: true)
                     }
@@ -674,17 +754,101 @@ extension BeadStore {
     internal func resetProjectHealthStatus() {
         projectHealthTask?.cancel()
         projectHealthTask = nil
+        project.projectDoltSyncOutcomeDismissalTask?.cancel()
+        project.projectDoltSyncOutcomeDismissalTask = nil
         _projectHealthSnapshot = nil
         _isLoadingProjectHealth = false
         _projectHealthAction = nil
+        project.projectHealthActionStartedAt = nil
+        project.projectDoltSyncPhase = nil
+        project.projectDoltSyncPhaseStartedAt = nil
+        project.isProjectDoltSyncCancellationRequested = false
         _projectHealthActionError = nil
+        project.projectDoltSyncOutcome = nil
     }
 
     private func beginProjectHealthAction(_ action: ProjectHealthAction) -> URL? {
         guard let projectURL, projectHealthAction == nil else { return nil }
         _projectHealthAction = action
+        project.projectHealthActionStartedAt = Date()
         _projectHealthActionError = nil
+        if action.isDoltSync {
+            project.projectDoltSyncOutcomeDismissalTask?.cancel()
+            project.projectDoltSyncOutcomeDismissalTask = nil
+            project.projectDoltSyncOutcome = nil
+            project.projectDoltSyncPhase = .waitingForWriteQueue
+            project.projectDoltSyncPhaseStartedAt = project.projectHealthActionStartedAt
+            project.isProjectDoltSyncCancellationRequested = false
+        }
         return projectURL
+    }
+
+    private var projectDoltSyncRemoteName: String {
+        projectDoltSyncRemote?.name ?? "configured remote"
+    }
+
+    private var projectDoltSyncRemote: BeadsDoltRemote? {
+        projectDoltRemotes?.value.flatMap { doltRemoteFreshnessRemote(in: $0) }
+    }
+
+    private func setProjectDoltSyncPhase(
+        _ phase: ProjectDoltSyncPhase,
+        for actionProjectURL: URL
+    ) {
+        guard projectURL == actionProjectURL,
+              projectHealthAction?.isDoltSync == true,
+              project.projectDoltSyncPhase != phase else {
+            return
+        }
+        project.projectDoltSyncPhase = phase
+        project.projectDoltSyncPhaseStartedAt = Date()
+    }
+
+    func cancelProjectDoltSync() {
+        guard projectHealthAction?.isDoltSync == true else {
+            return
+        }
+        project.isProjectDoltSyncCancellationRequested = true
+    }
+
+    func dismissProjectDoltSyncOutcome(id: UUID? = nil) {
+        guard id == nil || project.projectDoltSyncOutcome?.id == id else { return }
+        project.projectDoltSyncOutcomeDismissalTask?.cancel()
+        project.projectDoltSyncOutcomeDismissalTask = nil
+        project.projectDoltSyncOutcome = nil
+    }
+
+    private func projectDoltSyncShouldStop(for actionProjectURL: URL) -> Bool {
+        projectURL != actionProjectURL || project.isProjectDoltSyncCancellationRequested
+    }
+
+    private func finishProjectDoltSyncAction(
+        _ action: ProjectDoltRemoteAction,
+        for actionProjectURL: URL,
+        succeeded: Bool,
+        cancelled: Bool,
+        completionRefresh: ProjectHealthCompletionRefresh
+    ) {
+        guard projectURL == actionProjectURL else { return }
+        let failure = projectHealthActionError
+        let elapsed = project.projectHealthActionStartedAt.map { Date().timeIntervalSince($0) }
+        finishProjectHealthAction(
+            for: actionProjectURL,
+            completionRefresh: completionRefresh
+        )
+        let outcome: ProjectDoltSyncOutcome?
+        if succeeded {
+            outcome = .succeeded(action, elapsed: elapsed)
+        } else if cancelled {
+            outcome = .cancelled(action, elapsed: elapsed)
+        } else if let failure {
+            outcome = .failed(action, failure: failure, elapsed: elapsed)
+        } else {
+            outcome = nil
+        }
+        if let outcome {
+            presentProjectDoltSyncOutcome(outcome, for: actionProjectURL)
+        }
     }
 
     private func finishProjectHealthAction(
@@ -694,10 +858,38 @@ extension BeadStore {
         guard projectURL == actionProjectURL else { return }
         let actionError = projectHealthActionError
         _projectHealthAction = nil
+        project.projectHealthActionStartedAt = nil
+        project.projectDoltSyncPhase = nil
+        project.projectDoltSyncPhaseStartedAt = nil
+        project.isProjectDoltSyncCancellationRequested = false
         if completionRefresh == .fullHealth {
             loadProjectHealthStatus()
         }
         _projectHealthActionError = actionError
+    }
+
+    private func presentProjectDoltSyncOutcome(
+        _ outcome: ProjectDoltSyncOutcome,
+        for actionProjectURL: URL
+    ) {
+        project.projectDoltSyncOutcomeDismissalTask?.cancel()
+        project.projectDoltSyncOutcomeDismissalTask = nil
+        project.projectDoltSyncOutcome = outcome
+        guard let delay = outcome.automaticDismissDelay else { return }
+        project.projectDoltSyncOutcomeDismissalTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.projectURL == actionProjectURL,
+                  self.project.projectDoltSyncOutcome?.id == outcome.id else {
+                return
+            }
+            self.project.projectDoltSyncOutcome = nil
+            self.project.projectDoltSyncOutcomeDismissalTask = nil
+        }
     }
 
     private func setProjectHealthActionError(_ error: Error, projectURL actionProjectURL: URL) {
@@ -708,10 +900,37 @@ extension BeadStore {
 }
 
 private struct ProjectIssueRemoteWriteOutcome: Sendable {
-    var pullFailure: ProjectIssueSyncCommandFailure?
-    var pushFailure: ProjectIssueSyncCommandFailure?
-    var snapshotExportFailure: String?
-    var snapshotExportResult: ReadableSnapshotExportResult?
+    var pullFailure: ProjectIssueSyncCommandFailure? = nil
+    var pushFailure: ProjectIssueSyncCommandFailure? = nil
+    var snapshotExportFailure: String? = nil
+    var snapshotExportResult: ReadableSnapshotExportResult? = nil
+    var cancellationRequested = false
+    var cancelledBeforeRemoteWrite = false
+}
+
+private enum ProjectIssuePullAction: Sendable {
+    case synchronize
+    case pull
+
+    var remoteAction: ProjectDoltRemoteAction {
+        switch self {
+        case .synchronize: .synchronizingIssues
+        case .pull: .pullingIssues
+        }
+    }
+
+    var pushesAfterPull: Bool {
+        self == .synchronize
+    }
+
+    func snapshotRefreshFailure(_ message: String) -> ProjectHealthActionFailure {
+        switch self {
+        case .synchronize:
+            .syncCompletedButSnapshotRefreshFailed(message)
+        case .pull:
+            .pullCompletedButSnapshotRefreshFailed(message)
+        }
+    }
 }
 
 private enum ProjectIssueSnapshotRefreshResult: Sendable {

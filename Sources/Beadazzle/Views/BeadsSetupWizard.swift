@@ -95,7 +95,13 @@ final class BeadsSetupWizardModel {
     var isApplying = false
     var failure: BeadsSetupFailurePresentation?
     var report: BeadsSetupApplyReport?
+    var applyProgress = BeadsSetupApplyProgress()
     private(set) var plan: BeadsSetupPlan?
+    private(set) var applicationPlan: BeadsSetupPlan?
+
+    var reviewPlan: BeadsSetupPlan? {
+        applicationPlan ?? plan
+    }
 
     init(projectURL: URL, initialIntent: BeadsSetupIntent?) {
         self.projectURL = projectURL
@@ -118,7 +124,7 @@ final class BeadsSetupWizardModel {
         case .configure:
             plan?.blockingFindings.isEmpty == true
         case .review:
-            plan?.canApply == true && !isApplying
+            plan?.canApply == true && !isApplying && failure == nil
         case .results:
             true
         }
@@ -185,6 +191,8 @@ final class BeadsSetupWizardModel {
         guard let previous = Step(rawValue: step.rawValue - 1), step != .results else { return }
         step = previous
         failure = nil
+        applicationPlan = nil
+        applyProgress = BeadsSetupApplyProgress()
     }
 
     func continueForward() {
@@ -198,6 +206,7 @@ final class BeadsSetupWizardModel {
         isInspecting = true
         defer { isInspecting = false }
         failure = nil
+        applicationPlan = nil
         do {
             let refreshedAssessment = try await inspectCurrentDraft(using: store)
             guard !Task.isCancelled else { return }
@@ -212,16 +221,25 @@ final class BeadsSetupWizardModel {
     }
 
     func apply(using store: BeadStore) async {
-        guard let assessment, plan?.canApply == true, !isApplying else { return }
+        guard let assessment, let plan, plan.canApply, !isApplying else { return }
         isApplying = true
         defer { isApplying = false }
         failure = nil
+        applicationPlan = plan
+        applyProgress = BeadsSetupApplyProgress()
         do {
-            report = try await store.applyBeadsSetup(draft: draft, assessment: assessment)
+            report = try await store.applyBeadsSetup(
+                draft: draft,
+                assessment: assessment
+            ) { event in
+                await self.recordApplyProgress(event)
+            }
             step = .results
         } catch is CancellationError {
+            applyProgress = BeadsSetupApplyProgress()
             return
         } catch {
+            applyProgress.recordFailure()
             if let failure = error as? BeadsSetupApplyFailure {
                 report = failure.report
             }
@@ -231,6 +249,42 @@ final class BeadsSetupWizardModel {
                 self.assessment = refreshedAssessment
             }
         }
+    }
+
+    func reviewUpdatedSetup(using store: BeadStore) async {
+        guard step == .review, failure != nil, !isApplying, !isInspecting else { return }
+        isInspecting = true
+        defer { isInspecting = false }
+        failure = nil
+        applyProgress = BeadsSetupApplyProgress()
+        applyProgress.record(.validating)
+        do {
+            let refreshedAssessment = try await inspectCurrentDraft(using: store)
+            guard !Task.isCancelled else { return }
+            assessment = refreshedAssessment
+            guard let refreshedPlan = plan else {
+                step = .configure
+                applyProgress = BeadsSetupApplyProgress()
+                return
+            }
+            if refreshedPlan.canApply {
+                applicationPlan = refreshedPlan
+                applyProgress = BeadsSetupApplyProgress()
+            } else {
+                applicationPlan = nil
+                applyProgress = BeadsSetupApplyProgress()
+                step = .configure
+            }
+        } catch is CancellationError {
+            applyProgress = BeadsSetupApplyProgress()
+        } catch {
+            applyProgress.recordFailure()
+            failure = .inspection(error)
+        }
+    }
+
+    private func recordApplyProgress(_ event: BeadsSetupApplyEvent) {
+        applyProgress.record(event)
     }
 
     private func inspectCurrentDraft(using store: BeadStore) async throws -> BeadsSetupAssessment {
@@ -397,29 +451,57 @@ private struct BeadsSetupReviewStep: View {
     var body: some View {
         BeadsSetupStepContainer(
             title: "Review changes",
-            subtitle: "Commands run in order. Setup stops at the first failure and then refreshes any readable data."
+            subtitle: "Commands run in order. Setup stops at the first failure and then refreshes any readable data.",
+            scrollTarget: model.applyProgress.scrollTargetID
         ) {
             VStack(alignment: .leading, spacing: 12) {
-                if let plan = model.plan {
+                if let plan = model.reviewPlan {
+                    if let phaseMessage = model.applyProgress.phaseMessage {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(phaseMessage)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .id("setup-progress-phase")
+                        .accessibilityElement(children: .combine)
+                    }
+
                     if plan.steps.isEmpty {
                         Label("No bd commands are needed", systemImage: "checkmark.circle")
                             .font(.headline)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(plan.steps) { step in
-                            BeadsSetupReviewRow(step: step)
+                            BeadsSetupReviewRow(
+                                step: step,
+                                status: model.applyProgress.status(forStepID: step.id)
+                            )
+                            .id(step.id)
+                            if model.applyProgress.failedStepID == step.id,
+                               let failure = model.failure {
+                                BeadsSetupFailureView(failure: failure)
+                                    .padding(.leading, 28)
+                            }
                         }
                     }
 
-                    BeadsSetupLocalIntentReviewRow(profile: plan.profile)
+                    BeadsSetupLocalIntentReviewRow(
+                        profile: plan.profile,
+                        status: model.applyProgress.localIntentStatus
+                    )
+                    .id("setup-local-intent")
 
                     ForEach(plan.findings) { finding in
                         BeadsSetupFindingRow(finding: finding)
                     }
                 }
 
-                if let failure = model.failure {
+                if model.applyProgress.failedStepID == nil,
+                   let failure = model.failure {
                     BeadsSetupFailureView(failure: failure)
+                        .id("setup-failure")
                 }
             }
         }
@@ -428,12 +510,11 @@ private struct BeadsSetupReviewStep: View {
 
 private struct BeadsSetupLocalIntentReviewRow: View {
     let profile: BeadsSetupProfile
+    let status: BeadsSetupReviewItemStatus
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "macbook")
-                .foregroundStyle(Color.accentColor)
-                .accessibilityHidden(true)
+            BeadsSetupReviewStatusIndicator(status: status, pendingSystemImage: "macbook")
             VStack(alignment: .leading, spacing: 3) {
                 Text("Remember \(profile.title)").font(.headline)
                 Text("Save the intended use locally so future setup checks can report meaningful differences.")
@@ -524,20 +605,36 @@ private struct BeadsSetupWizardButtons: View {
                 .disabled(!model.canContinue || model.isInspecting)
             case .review:
                 Button {
-                    Task { await model.apply(using: store) }
+                    Task {
+                        if model.failure == nil {
+                            await model.apply(using: store)
+                        } else {
+                            await model.reviewUpdatedSetup(using: store)
+                        }
+                    }
                 } label: {
                     if model.isApplying {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
                             Text("Applying")
                         }
+                    } else if model.isInspecting {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Checking")
+                        }
+                    } else if model.failure != nil {
+                        Text("Review Updated Setup")
                     } else {
                         Text("Apply Setup")
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!model.canContinue)
+                .disabled(
+                    model.isInspecting
+                        || (model.failure == nil ? !model.canContinue : model.isApplying)
+                )
             case .results:
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
@@ -552,24 +649,33 @@ struct BeadsSetupStepContainer<Content: View>: View {
     let title: String
     let subtitle: String
     let scrolls: Bool
+    let scrollTarget: String?
     let content: Content
 
     init(
         title: String,
         subtitle: String,
         scrolls: Bool = true,
+        scrollTarget: String? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.subtitle = subtitle
         self.scrolls = scrolls
+        self.scrollTarget = scrollTarget
         self.content = content()
     }
 
     @ViewBuilder
     var body: some View {
         if scrolls {
-            ScrollView { layout }
+            ScrollViewReader { proxy in
+                ScrollView { layout }
+                    .onChange(of: scrollTarget) { _, target in
+                        guard let target else { return }
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+            }
         } else {
             layout
         }
@@ -593,12 +699,14 @@ struct BeadsSetupStepContainer<Content: View>: View {
 
 private struct BeadsSetupReviewRow: View {
     let step: BeadsSetupStep
+    let status: BeadsSetupReviewItemStatus
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "chevron.forward.circle")
-                .foregroundStyle(Color.accentColor)
-                .accessibilityHidden(true)
+            BeadsSetupReviewStatusIndicator(
+                status: status,
+                pendingSystemImage: "chevron.forward.circle"
+            )
             VStack(alignment: .leading, spacing: 5) {
                 Text(step.title).font(.headline)
                 Text(step.detail).font(.caption).foregroundStyle(.secondary)
@@ -613,6 +721,41 @@ private struct BeadsSetupReviewRow: View {
         }
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct BeadsSetupReviewStatusIndicator: View {
+    let status: BeadsSetupReviewItemStatus
+    let pendingSystemImage: String
+
+    var body: some View {
+        Group {
+            switch status {
+            case .pending:
+                Image(systemName: pendingSystemImage)
+                    .foregroundStyle(Color.accentColor)
+            case .inProgress:
+                ProgressView()
+                    .controlSize(.small)
+            case .completed:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.accentColor)
+            case .failed:
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+        }
+        .frame(width: 18, height: 18)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        switch status {
+        case .pending: "Pending"
+        case .inProgress: "In progress"
+        case .completed: "Completed"
+        case .failed: "Failed"
+        }
     }
 }
 

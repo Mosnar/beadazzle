@@ -107,6 +107,7 @@ struct ProjectHealthStatusSummary: View {
     let action: ProjectHealthAction?
     let isLoading: Bool
     let loadedAt: Date?
+    var syncPhase: ProjectDoltSyncPhase? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -123,8 +124,15 @@ struct ProjectHealthStatusSummary: View {
             HStack(spacing: 6) {
                 ProgressView()
                     .controlSize(.small)
-                Text(action.title)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(syncPhase?.title ?? action.title)
+                    if let command = syncPhase?.command {
+                        Text(command)
+                            .font(.caption.monospaced())
+                    }
+                }
             }
+            .help(syncPhase?.detail ?? action.title)
         } else if isLoading {
             HStack(spacing: 6) {
                 ProgressView()
@@ -222,19 +230,43 @@ struct ProjectHealthMessageRow: View {
     let title: String
     let message: String
     let systemImage: String
+    var command: String? = nil
+    var output: String? = nil
+
+    @State private var isShowingCommandOutput = false
+
+    private var details: BeadCommandFailureDetails {
+        BeadCommandFailureDetails(command: command, output: output)
+    }
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(message)
-                    .font(.callout)
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } icon: {
+                Image(systemName: systemImage)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
             }
-        } icon: {
-            Image(systemName: systemImage)
-                .foregroundStyle(.secondary)
+
+            if !details.isEmpty {
+                Button("Show Command Output…", systemImage: "doc.text.magnifyingglass") {
+                    isShowingCommandOutput = true
+                }
+                .buttonStyle(.link)
+            }
+        }
+        .sheet(isPresented: $isShowingCommandOutput) {
+            BeadCommandFailureDetailsSheet(
+                title: title,
+                message: message,
+                details: details
+            )
         }
     }
 }

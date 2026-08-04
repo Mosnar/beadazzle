@@ -3,6 +3,28 @@ import XCTest
 @testable import Beadazzle
 
 final class ProjectDoltRemoteFreshnessCheckPolicyTests: XCTestCase {
+    func testCheckpointRequiredIdentifiesTheConfiguredRemoteAndRequiredAction() {
+        let result = ProjectDoltRemoteFreshnessResult.checkpointRequired(
+            remoteName: "origin"
+        )
+
+        XCTAssertEqual(result.summary, "origin configured")
+        XCTAssertTrue(result.requiresSyncCheckpoint)
+        XCTAssertFalse(result.canCheckAgain)
+        XCTAssertTrue(result.detail.contains("Sync once"))
+    }
+
+    func testFreshnessResultsExplainCleanChecksAndRemoteChanges() {
+        let checkedAt = Date(timeIntervalSince1970: 1_754_000_000)
+        let unchanged = ProjectDoltRemoteFreshnessResult.unchangedSinceSync(checkedAt: checkedAt)
+        let changed = ProjectDoltRemoteFreshnessResult.remoteChanged(checkedAt: checkedAt)
+
+        XCTAssertEqual(unchanged.summary, "No remote changes found")
+        XCTAssertTrue(unchanged.detail.contains("No remote changes found"))
+        XCTAssertEqual(changed.summary, "Remote changes found")
+        XCTAssertTrue(changed.detail.contains("Remote changes found"))
+    }
+
     func testAutomaticCheckWithoutCheckpointShowsCacheWithoutProbing() {
         XCTAssertEqual(
             decision(record: record()),

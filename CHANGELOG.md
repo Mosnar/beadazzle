@@ -14,7 +14,20 @@ for users, not for the commit log.
 ## [Unreleased]
 
 - Added a guided Beads setup and repair flow for local, solo, team, and contributor projects.
+- The Beads setup review now shows each command starting and completing, plus the validation and project-reload phases, so long remote operations no longer look stalled.
+- Beadazzle now gives Git and Dolt from the same installation as the configured or discovered `bd` priority over the inherited `PATH`, matching Homebrew and other custom toolchains used in Terminal.
 - Beadazzle can now periodically check Git-backed Dolt remotes for changes without pulling, show changes since its last Sync checkpoint, and let you check again from the Sync menu or Project Settings. Automatic checks can be turned off in application Settings.
+- Remote-change status now clearly distinguishes a configured Dolt remote that needs its first Sync checkpoint from a missing remote.
+- Sync now keeps a visible progress indicator until its remote-change checkpoint is ready, then reliably re-enables Sync and Check for Remote Changes.
+- Long-running Sync, Pull, and Push actions now identify the exact pull, push, export, reload, or remote-checkpoint step in the project sidebar with step and total elapsed time, then report their outcome in a dismissible status card and the Sync button's hover help.
+- Failed Sync, Pull, and Push cards now stay visible until dismissed and open the complete selectable, copyable `bd` command output; successful status cards still clear automatically.
+- Long Dolt transfers now have a generous safety ceiling and retain a bounded diagnostic tail, avoiding premature termination and unbounded memory growth during verbose remote operations.
+- Active Sync, Pull, and Push status can now be cancelled safely; Beadazzle lets the current database operation finish, skips later remote steps, and preserves any changes that already completed.
+- SSH Dolt remotes now use the agent selected by OpenSSH for the remote's exact host, user, and port, including 1Password and other `IdentityAgent` socket paths and environment-variable forms that are available in Terminal but not inherited by apps launched from the Dock or Finder.
+- Sync, Pull, and Push now verify remote access before starting an expensive Dolt operation, so locked or unavailable SSH credentials fail quickly with copyable diagnostics.
+- A failed setup application can now re-inspect the project and return directly to an updated review instead of leaving Apply disabled.
+- Beads commands no longer inherit Xcode's debugger instrumentation, preventing severe Pull and Push slowdowns while testing Beadazzle from Xcode.
+- Remote-change checks now show an explicit clean result when no changes are found, with a visible loading state while the check is running and detailed hover help for the last result.
 - New beads created in Beadazzle now use the project's native Beads ID format instead of longer app-generated IDs.
 - Bead creation now stays safe across project switches and ambiguous command failures, preserving drafts without offering retries that could create duplicates.
 - Sync Beads with one toolbar action that pulls before pushing; separate Pull and Push commands and shortcuts remain available.

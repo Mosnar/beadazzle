@@ -1,6 +1,24 @@
 import Foundation
 
 enum BeadsCLI {
+    /// Variables injected into Beadazzle itself by Xcode's debugger belong to the host
+    /// process, not command-line helpers. Forwarding them loads Xcode instrumentation
+    /// into `bd`, `dolt`, `git`, and `ssh`, which can make otherwise fast commands take
+    /// dramatically longer and can change their dynamic-library resolution.
+    private static let hostOnlyEnvironmentPrefixes = [
+        "DYLD_",
+        "__XCODE_",
+        "__XPC_",
+    ]
+
+    private static let hostOnlyEnvironmentKeys: Set<String> = [
+        "IDE_DISABLED_OS_ACTIVITY_DT_MODE",
+        "OS_ACTIVITY_DT_MODE",
+        "OS_ACTIVITY_TOOLS_OVERSIZE",
+        "OS_ACTIVITY_TOOLS_PRIVACY",
+        "SQLITE_ENABLE_THREAD_ASSERTIONS",
+    ]
+
     static func executable() -> (url: URL, prefix: [String]) {
         executable(
             configuredPath: UserDefaults.standard.string(forKey: BeadazzlePreferenceKeys.bdCLIPath),
@@ -39,8 +57,10 @@ enum BeadsCLI {
     /// Environment for `bd` subprocesses. When the app is launched via LaunchServices
     /// (Finder/Dock) the inherited PATH is the minimal system one, so helpers `bd` itself
     /// shells out to (git, dolt, version-manager shims) would not resolve even though we
-    /// found `bd`. Augment PATH with the same fallback directories used to locate `bd`,
-    /// plus the resolved executable's own directory.
+    /// found `bd`. Augment PATH with the same fallback directories used to locate `bd`
+    /// and prefer the resolved executable's own directory so its companion tools use
+    /// the same installation. `/usr/bin/env` is only a wrapper and does not establish
+    /// a toolchain directory.
     static func subprocessEnvironment(executableURL: URL) -> [String: String] {
         subprocessEnvironment(
             base: ProcessInfo.processInfo.environment,
@@ -56,12 +76,22 @@ enum BeadsCLI {
     ) -> [String: String] {
         var directories = pathDirectories(environment: base, homeDirectory: homeDirectory)
         let executableDirectory = executableURL.deletingLastPathComponent()
-        if executableDirectory.path != "/" && !directories.contains(executableDirectory) {
-            directories.append(executableDirectory)
+        let isEnvWrapper = executableURL.standardizedFileURL.path == "/usr/bin/env"
+        if !isEnvWrapper && executableDirectory.path != "/" {
+            directories.removeAll { $0 == executableDirectory }
+            directories.insert(executableDirectory, at: 0)
         }
         var environment = base
+        for key in environment.keys where isHostOnlyEnvironmentKey(key) {
+            environment.removeValue(forKey: key)
+        }
         environment["PATH"] = directories.map(\.path).joined(separator: ":")
         return environment
+    }
+
+    private static func isHostOnlyEnvironmentKey(_ key: String) -> Bool {
+        hostOnlyEnvironmentKeys.contains(key)
+            || hostOnlyEnvironmentPrefixes.contains(where: key.hasPrefix)
     }
 
     private static func pathDirectories(environment: [String: String], homeDirectory: URL) -> [URL] {

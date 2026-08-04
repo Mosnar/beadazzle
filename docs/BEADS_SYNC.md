@@ -182,7 +182,29 @@ commands for recovery and advanced workflows:
 
 Sync deliberately has no default keyboard shortcut. Beadazzle serializes its
 remote writes with other `bd` writes so a synchronization command cannot reorder
-an in-progress edit.
+an in-progress edit. While remote work is running, the workspace status identifies
+the current command and its elapsed time. Its close button requests a safe stop:
+Beadazzle lets an active `bd dolt pull` or `bd dolt push` finish, skips later remote
+steps, and reconciles any local changes that already completed. It does not terminate
+a database write midway. Remote commands have a generous 30-minute last-resort safety
+ceiling so an abandoned process cannot hold the serialized write queue forever.
+
+For SSH remotes, Beadazzle asks OpenSSH to resolve the remote's effective host,
+user, port, and `IdentityAgent`, then passes that socket to `bd`. This keeps host
+aliases, included SSH configuration, `SSH_AUTH_SOCK` and `$VARIABLE` agent forms,
+1Password, and other external agents working when macOS launches the app without
+the terminal's `SSH_AUTH_SOCK` environment. The resolved OpenSSH agent setting is
+cached in memory by host, user, and port for later remote checks.
+
+Before a standalone Pull or Push, or before a combined Sync begins, Beadazzle runs
+a read-only `git ls-remote` access check with that same environment. A successful
+Pull is also proof that the same combined Sync can proceed to Push, so Beadazzle does
+not repeat the preflight between those two steps. Authentication
+and reachability failures therefore stop before Dolt begins an expensive fetch or
+chunk conjoin, and the workspace shows the copyable Git diagnostic. A successful
+empty response is valid for a new remote, and remote kinds Git cannot probe are
+left to `bd` rather than blocked. This preflight cannot predict a conflicting
+external command that starts later; Beadazzle serializes only the writes it owns.
 
 ### Reconciliation and partial failures
 
@@ -200,6 +222,8 @@ JSONL export and reloads that authoritative result into its in-memory index.
   the remote write.
 - In-progress edits are allowed to settle before the final snapshot reload; if
   they changed the database after the first export, Beadazzle exports again.
+- Failed remote-action cards remain visible until dismissed. Selecting one opens
+  the captured command and output in a selectable view with a Copy action.
 
 If Dolt reports a real merge conflict, use Beads diagnostics such as
 `bd doctor --fix`. Do not edit Dolt internals or run raw `dolt` commands against
@@ -228,7 +252,9 @@ The checkpoint is machine-local Beadazzle state. It is keyed by the effective
 tracker identity and remote URL, so it is not committed or shared. Changing the
 selected remote invalidates the old comparison. Projects with no remote show
 Not Configured; unsupported remote types and server/shared-server projects are
-skipped gracefully. Turning automatic checks off does not disable Check Now.
+skipped gracefully. A configured remote without a local checkpoint is shown as
+configured and prompts for one Sync before change checks become available. Once
+a checkpoint exists, turning automatic checks off does not disable Check Now.
 
 ## Contributor Mode
 

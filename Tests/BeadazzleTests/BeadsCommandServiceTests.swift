@@ -1,6 +1,14 @@
 import XCTest
 @testable import Beadazzle
 
+private actor BeadsSetupCommandEventRecorder {
+    private(set) var events: [BeadsSetupApplyEvent] = []
+
+    func record(_ event: BeadsSetupApplyEvent) {
+        events.append(event)
+    }
+}
+
 final class BeadsCommandServiceTests: XCTestCase {
     func testContextMissingDirectoryDetectionUsesCurrentCLIError() {
         XCTAssertTrue(BeadsCommandService.contextReportsMissingBeadsDirectory("""
@@ -465,8 +473,8 @@ final class BeadsCommandServiceTests: XCTestCase {
         """)
         let service = BeadsCommandService(executable: { (stubURL, []) })
 
-        try await service.pullDoltRemote(projectURL: projectURL)
-        try await service.pushDoltRemote(projectURL: projectURL)
+        try await service.pullDoltRemote(projectURL: projectURL, remote: nil)
+        try await service.pushDoltRemote(projectURL: projectURL, remote: nil)
 
         let commands = try String(contentsOf: logURL, encoding: .utf8)
             .split(whereSeparator: \.isNewline)
@@ -487,10 +495,32 @@ final class BeadsCommandServiceTests: XCTestCase {
         )
 
         do {
-            try await service.pushDoltRemote(projectURL: projectURL)
+            try await service.pushDoltRemote(projectURL: projectURL, remote: nil)
             XCTFail("Expected Dolt push to use the remote-sync timeout.")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Timed out waiting for `bd` to finish."))
+        }
+    }
+
+    func testDoltSyncBoundsRetainedVerboseOutput() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        /usr/bin/yes verbose-remote-output | /usr/bin/head -c 700000 >&2
+        exit 1
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        do {
+            try await service.pushDoltRemote(projectURL: projectURL, remote: nil)
+            XCTFail("Expected the verbose remote command to fail.")
+        } catch let BeadError.commandFailed(command, output) {
+            XCTAssertEqual(command, "bd dolt push")
+            XCTAssertTrue(output.hasPrefix("[Earlier command output omitted]"))
+            XCTAssertLessThan(output.utf8.count, 513 * 1_024)
+            XCTAssertTrue(output.contains("verbose-remote-output"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
         }
     }
 
@@ -699,6 +729,65 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertFalse(assessment.isInitialized)
     }
 
+    func testSetupInspectionGitProbesUseResolvedBDToolchainDirectory() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let originPathLogURL = projectURL.appendingPathComponent("git-origin-path.log")
+        let upstreamPathLogURL = projectURL.appendingPathComponent("git-upstream-path.log")
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly bootstrap --dry-run --json")
+            printf '%s\\n' '{"action":"none","has_existing":false}'
+            exit 1
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let gitURL = projectURL.appendingPathComponent("git")
+        try """
+        #!/bin/sh
+        case "$*" in
+          "remote get-url origin")
+            printf '%s\\n' "$PATH" > "\(originPathLogURL.path)"
+            ;;
+          "remote get-url upstream")
+            printf '%s\\n' "$PATH" > "\(upstreamPathLogURL.path)"
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        printf '%s\\n' 'dolthub://example/project'
+        """.write(to: gitURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: gitURL.path
+        )
+
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+        _ = try await service.inspectSetup(
+            projectURL: projectURL,
+            scope: .wizard,
+            candidateRemote: nil,
+            preloadedEnvironment: nil
+        )
+
+        let paths = try [originPathLogURL, upstreamPathLogURL].map {
+            try String(contentsOf: $0, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let expectedToolchainDirectory = stubURL.deletingLastPathComponent().path
+        XCTAssertEqual(paths.count, 2)
+        XCTAssertTrue(
+            paths.allSatisfy {
+                $0.split(separator: ":").first == Substring(expectedToolchainDirectory)
+            },
+            "Expected the resolved bd directory first in every Git PATH: \(paths)"
+        )
+    }
+
     func testSetupInspectionPrefersReadableLocalDatabaseOverBootstrapAdvice() async throws {
         let projectURL = try makeProjectWithBeadsDirectory()
         let stubURL = try makeExecutableScript(in: projectURL, contents: """
@@ -789,6 +878,7 @@ final class BeadsCommandServiceTests: XCTestCase {
         fi
         """)
         let service = BeadsCommandService(executable: { (stubURL, []) })
+        let events = BeadsSetupCommandEventRecorder()
         let steps = [
             BeadsSetupStep(
                 id: "config",
@@ -811,12 +901,21 @@ final class BeadsCommandServiceTests: XCTestCase {
                 projectURL: projectURL,
                 plan: BeadsSetupPlan(profile: .team, findings: [], steps: steps),
                 cancellationToken: BeadsSetupCancellationToken()
-            )
+            ) { event in
+                await events.record(event)
+            }
             XCTFail("Expected the second setup step to fail")
         } catch let failure as BeadsSetupApplyFailure {
             XCTAssertEqual(failure.report.completedStepIDs, ["config"])
             XCTAssertTrue(failure.localizedDescription.contains("1 setup change completed"))
         }
+        let recordedEvents = await events.events
+        XCTAssertEqual(recordedEvents, [
+            .stepStarted("config"),
+            .stepCompleted("config"),
+            .stepStarted("hooks"),
+            .stepFailed("hooks")
+        ])
     }
 
     private func makeExecutableScript(in projectURL: URL, contents: String) throws -> URL {

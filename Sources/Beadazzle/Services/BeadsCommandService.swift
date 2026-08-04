@@ -37,21 +37,22 @@ private struct BeadsCommandOutput: Sendable {
 private enum ConcurrentProcessOutputReader {
     static func read(
         standardOutput: Pipe,
-        standardError: Pipe
+        standardError: Pipe,
+        outputLimitPerStream: Int? = nil
     ) -> () -> BeadsCommandOutput {
-        let outputData = LockedProcessData()
-        let errorData = LockedProcessData()
+        let outputData = LockedProcessData(limit: outputLimitPerStream)
+        let errorData = LockedProcessData(limit: outputLimitPerStream)
         let group = DispatchGroup()
         let queue = DispatchQueue.global(qos: .userInitiated)
 
         group.enter()
         queue.async {
-            outputData.set(standardOutput.fileHandleForReading.readDataToEndOfFile())
+            outputData.readToEnd(from: standardOutput.fileHandleForReading)
             group.leave()
         }
         group.enter()
         queue.async {
-            errorData.set(standardError.fileHandleForReading.readDataToEndOfFile())
+            errorData.readToEnd(from: standardError.fileHandleForReading)
             group.leave()
         }
 
@@ -66,19 +67,48 @@ private enum ConcurrentProcessOutputReader {
 }
 
 private final class LockedProcessData: @unchecked Sendable {
+    private static let chunkSize = 16 * 1_024
+    private static let truncatedPrefix = "[Earlier command output omitted]\n"
+
     private let lock = NSLock()
+    private let limit: Int?
     private var data = Data()
+    private var wasTruncated = false
+
+    init(limit: Int?) {
+        self.limit = limit
+    }
 
     var text: String {
         lock.withLock {
-            String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let retainedData = limit.map { Data(data.suffix($0)) } ?? data
+            let decoded = String(decoding: retainedData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard wasTruncated, !decoded.isEmpty else { return decoded }
+            return Self.truncatedPrefix + decoded
         }
     }
 
-    func set(_ value: Data) {
+    func readToEnd(from handle: FileHandle) {
+        while true {
+            do {
+                guard let chunk = try handle.read(upToCount: Self.chunkSize), !chunk.isEmpty else {
+                    return
+                }
+                append(chunk)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func append(_ value: Data) {
         lock.withLock {
-            data = value
+            data.append(value)
+            guard let limit, data.count > limit else { return }
+            wasTruncated = true
+            guard data.count > limit * 2 else { return }
+            data.removeFirst(data.count - limit)
         }
     }
 }
@@ -142,11 +172,12 @@ protocol BeadsCommanding: BeadsSetupServicing, Sendable {
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig
     func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes
     func loadDoltRemoteGeneration(projectURL: URL, remote: BeadsDoltRemote) async throws -> String
+    func verifyDoltRemoteAccess(projectURL: URL, remote: BeadsDoltRemote) async throws
     func loadHooksStatus(projectURL: URL) async throws -> BeadsHooksStatus
     func loadBackupStatus(projectURL: URL) async throws -> BeadsBackupStatus
     func installHooks(projectURL: URL) async throws
-    func pullDoltRemote(projectURL: URL) async throws
-    func pushDoltRemote(projectURL: URL) async throws
+    func pullDoltRemote(projectURL: URL, remote: BeadsDoltRemote?) async throws
+    func pushDoltRemote(projectURL: URL, remote: BeadsDoltRemote?) async throws
     func syncBackup(projectURL: URL) async throws
     func loadDoltMaintenancePreview(projectURL: URL) async -> BeadsDoltMaintenancePreview
     func compactDoltDatabase(projectURL: URL, retainingDays: Int) async throws
@@ -160,6 +191,27 @@ protocol BeadsCommanding: BeadsSetupServicing, Sendable {
 }
 
 extension BeadsCommanding {
+    func verifyDoltRemoteAccess(projectURL _: URL, remote _: BeadsDoltRemote) async throws {
+        throw BeadError.commandFailed(
+            command: "git ls-remote",
+            output: "Dolt remote access verification is not supported by this command service."
+        )
+    }
+
+    func pullDoltRemote(projectURL _: URL, remote _: BeadsDoltRemote?) async throws {
+        throw BeadError.commandFailed(
+            command: "bd dolt pull",
+            output: "Dolt pull is not supported by this command service."
+        )
+    }
+
+    func pushDoltRemote(projectURL _: URL, remote _: BeadsDoltRemote?) async throws {
+        throw BeadError.commandFailed(
+            command: "bd dolt push",
+            output: "Dolt push is not supported by this command service."
+        )
+    }
+
     func inspect(
         projectURL _: URL,
         scope _: BeadsSetupInspectionScope,
@@ -175,7 +227,8 @@ extension BeadsCommanding {
     func apply(
         projectURL _: URL,
         plan _: BeadsSetupPlan,
-        cancellationToken _: BeadsSetupCancellationToken
+        cancellationToken _: BeadsSetupCancellationToken,
+        progress _: @escaping BeadsSetupApplyProgressHandler
     ) async throws -> BeadsSetupApplyReport {
         throw BeadError.commandFailed(
             command: "bd setup",
@@ -253,14 +306,6 @@ extension BeadsCommanding {
 
     func installHooks(projectURL _: URL) async throws {
         throw BeadError.commandFailed(command: "bd hooks install", output: "Hook installation is not supported by this command service.")
-    }
-
-    func pullDoltRemote(projectURL _: URL) async throws {
-        throw BeadError.commandFailed(command: "bd dolt pull", output: "Dolt pull is not supported by this command service.")
-    }
-
-    func pushDoltRemote(projectURL _: URL) async throws {
-        throw BeadError.commandFailed(command: "bd dolt push", output: "Dolt push is not supported by this command service.")
     }
 
     func syncBackup(projectURL _: URL) async throws {
@@ -376,7 +421,7 @@ struct BeadsCommandService {
         readOnlyCommandTimeout: Duration = .seconds(10),
         snapshotExportTimeout: Duration = .seconds(60),
         writeCommandTimeout: Duration = .seconds(120),
-        remoteSyncCommandTimeout: Duration = .seconds(300),
+        remoteSyncCommandTimeout: Duration = .seconds(1_800),
         executable: @escaping @Sendable () -> CommandExecutable = { BeadsCLI.executable() }
     ) {
         self.readOnlyCommandTimeout = readOnlyCommandTimeout
@@ -552,7 +597,8 @@ struct BeadsCommandService {
     func applySetup(
         projectURL: URL,
         plan: BeadsSetupPlan,
-        cancellationToken: BeadsSetupCancellationToken
+        cancellationToken: BeadsSetupCancellationToken,
+        progress: @escaping BeadsSetupApplyProgressHandler = { _ in }
     ) async throws -> BeadsSetupApplyReport {
         guard plan.canApply else {
             throw BeadError.commandFailed(
@@ -564,6 +610,7 @@ struct BeadsCommandService {
         for step in plan.steps {
             try Task.checkCancellation()
             try cancellationToken.checkCancellation()
+            await progress(.stepStarted(step.id))
             do {
                 try await run(
                     projectURL: projectURL,
@@ -573,6 +620,7 @@ struct BeadsCommandService {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                await progress(.stepFailed(step.id))
                 throw BeadsSetupApplyFailure(
                     report: BeadsSetupApplyReport(completedStepIDs: completed),
                     failedStepTitle: step.title,
@@ -580,6 +628,7 @@ struct BeadsCommandService {
                 )
             }
             completed.append(step.id)
+            await progress(.stepCompleted(step.id))
         }
         try cancellationToken.checkCancellation()
         return BeadsSetupApplyReport(completedStepIDs: completed)
@@ -678,11 +727,16 @@ struct BeadsCommandService {
     private func gitRemoteURL(named name: String, projectURL: URL) async -> String? {
         do {
             let executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            // Git is launched through `/usr/bin/env`, but its PATH should still
+            // prefer the directory of the resolved `bd` executable. This keeps
+            // setup inspection consistent with regular `bd` subprocesses without
+            // relying on a login shell to reconstruct the user's environment.
+            let bdExecutableURL = executable().url
             let result = try await CancellableProcessRunner.run(
                 executableURL: executableURL,
                 arguments: ["git", "remote", "get-url", name],
                 currentDirectoryURL: projectURL,
-                environment: BeadsCLI.subprocessEnvironment(executableURL: executableURL),
+                environment: BeadsCLI.subprocessEnvironment(executableURL: bdExecutableURL),
                 outputLimit: 16 * 1_024,
                 timeout: .seconds(10)
             )
@@ -707,7 +761,8 @@ struct BeadsCommandService {
                     sqlURL: nil,
                     status: nil
                 ),
-                projectURL: projectURL
+                projectURL: projectURL,
+                toolchainExecutableURL: executable().url
             )
             return true
         } catch DoltRemoteGenerationProbeError.missingDoltReference {
@@ -1111,7 +1166,19 @@ struct BeadsCommandService {
     ) async throws -> String {
         try await GitDoltRemoteGenerationProbe.generation(
             remote: remote,
-            projectURL: projectURL
+            projectURL: projectURL,
+            toolchainExecutableURL: executable().url
+        )
+    }
+
+    func verifyDoltRemoteAccess(
+        projectURL: URL,
+        remote: BeadsDoltRemote
+    ) async throws {
+        try await GitDoltRemoteGenerationProbe.verifyAccess(
+            remote: remote,
+            projectURL: projectURL,
+            toolchainExecutableURL: executable().url
         )
     }
 
@@ -1139,20 +1206,49 @@ struct BeadsCommandService {
         try await run(projectURL: projectURL, arguments: ["hooks", "install"])
     }
 
-    func pullDoltRemote(projectURL: URL) async throws {
-        try await run(
+    func pullDoltRemote(projectURL: URL, remote: BeadsDoltRemote?) async throws {
+        try await runDoltRemoteCommand(
             projectURL: projectURL,
             arguments: ["dolt", "pull"],
+            remote: remote,
             timeout: remoteSyncCommandTimeout
         )
     }
 
-    func pushDoltRemote(projectURL: URL) async throws {
-        try await run(
+    func pushDoltRemote(projectURL: URL, remote: BeadsDoltRemote?) async throws {
+        try await runDoltRemoteCommand(
             projectURL: projectURL,
             arguments: ["dolt", "push"],
+            remote: remote,
             timeout: remoteSyncCommandTimeout
         )
+    }
+
+    private func runDoltRemoteCommand(
+        projectURL: URL,
+        arguments: [String],
+        remote: BeadsDoltRemote?,
+        timeout: Duration
+    ) async throws {
+        let executable = executable()
+        var environment = BeadsCLI.subprocessEnvironment(executableURL: executable.url)
+        if let remote {
+            environment = await SSHAgentSocketResolver.environment(
+                base: environment,
+                remoteURL: remote.url,
+                projectURL: projectURL
+            )
+        }
+        _ = try await Task.detached(priority: .userInitiated) {
+            try Self.runOutputSynchronously(
+                projectURL: projectURL,
+                arguments: arguments,
+                executable: executable,
+                timeout: timeout,
+                environment: environment,
+                outputLimitPerStream: 512 * 1_024
+            )
+        }.value
     }
 
     func syncBackup(projectURL: URL) async throws {
@@ -1304,14 +1400,18 @@ struct BeadsCommandService {
         arguments: [String],
         standardInput: String? = nil,
         executable: CommandExecutable,
-        timeout: Duration? = nil
+        timeout: Duration? = nil,
+        environment: [String: String]? = nil,
+        outputLimitPerStream: Int? = nil
     ) throws -> String {
         try runCommandOutputSynchronously(
             projectURL: projectURL,
             arguments: arguments,
             standardInput: standardInput,
             executable: executable,
-            timeout: timeout
+            timeout: timeout,
+            environment: environment,
+            outputLimitPerStream: outputLimitPerStream
         ).combined
     }
 
@@ -1320,13 +1420,16 @@ struct BeadsCommandService {
         arguments: [String],
         standardInput: String? = nil,
         executable: CommandExecutable,
-        timeout: Duration? = nil
+        timeout: Duration? = nil,
+        environment: [String: String]? = nil,
+        outputLimitPerStream: Int? = nil
     ) throws -> BeadsCommandOutput {
         let process = Process()
         process.executableURL = executable.url
         process.arguments = executable.prefix + arguments
         process.currentDirectoryURL = projectURL
-        process.environment = BeadsCLI.subprocessEnvironment(executableURL: executable.url)
+        process.environment = environment
+            ?? BeadsCLI.subprocessEnvironment(executableURL: executable.url)
 
         let standardOutput = Pipe()
         let standardError = Pipe()
@@ -1358,7 +1461,8 @@ struct BeadsCommandService {
 
         let output = ConcurrentProcessOutputReader.read(
             standardOutput: standardOutput,
-            standardError: standardError
+            standardError: standardError,
+            outputLimitPerStream: outputLimitPerStream
         )
         var standardInputDelivered = true
         if let standardInput, let input {
@@ -1766,12 +1870,14 @@ extension BeadsCommandService: BeadsCommanding {
     func apply(
         projectURL: URL,
         plan: BeadsSetupPlan,
-        cancellationToken: BeadsSetupCancellationToken
+        cancellationToken: BeadsSetupCancellationToken,
+        progress: @escaping BeadsSetupApplyProgressHandler
     ) async throws -> BeadsSetupApplyReport {
         try await applySetup(
             projectURL: projectURL,
             plan: plan,
-            cancellationToken: cancellationToken
+            cancellationToken: cancellationToken,
+            progress: progress
         )
     }
 }

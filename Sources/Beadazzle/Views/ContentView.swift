@@ -25,6 +25,7 @@ struct ContentView: View {
         workspaceView(searchText: $store.searchText)
         .overlay(alignment: .bottom) {
             FolderAutomationStatusOverlay()
+            .padding(.bottom, 12)
         }
         .toolbar {
             if store.showsBackNavigationButton || store.showsForwardNavigationButton {
@@ -642,7 +643,6 @@ private struct FolderAutomationStatusOverlay: View {
             .padding(.vertical, 9)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
             .shadow(radius: 4, y: 2)
-            .padding(.bottom, 12)
             .accessibilityElement(children: .contain)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if let summary = store.folderAutomationSummary {
@@ -652,7 +652,6 @@ private struct FolderAutomationStatusOverlay: View {
                 .padding(.vertical, 8)
                 .background(.regularMaterial, in: Capsule())
                 .shadow(radius: 4, y: 2)
-                .padding(.bottom, 12)
                 .allowsHitTesting(false)
                 .accessibilityElement(children: .combine)
                 .transition(.move(edge: .bottom).combined(with: .opacity))

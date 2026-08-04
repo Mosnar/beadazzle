@@ -26,6 +26,7 @@ struct BeadCommandFailureDetails: Equatable {
 
 struct BeadCommandFailureDetailsView: View {
     let details: BeadCommandFailureDetails
+    var maximumOutputHeight: CGFloat = 150
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -44,7 +45,7 @@ struct BeadCommandFailureDetailsView: View {
                     ScrollView {
                         outputText(output).padding(10)
                     }
-                    .frame(height: 150)
+                    .frame(maxHeight: maximumOutputHeight)
                 } else {
                     outputText(output).padding(10)
                 }
@@ -68,5 +69,52 @@ struct BeadCommandFailureDetailsView: View {
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("Output: \(output)")
+    }
+}
+
+struct BeadCommandFailureDetailsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let title: String
+    let message: String
+    let details: BeadCommandFailureDetails
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(title, systemImage: "exclamationmark.triangle.fill")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.red)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            Text(message)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if details.isEmpty {
+                Text("No command output was captured for this failure.")
+                    .foregroundStyle(.secondary)
+            } else {
+                BeadCommandFailureDetailsView(
+                    details: details,
+                    maximumOutputHeight: .infinity
+                )
+                .frame(maxHeight: .infinity)
+
+                HStack {
+                    Spacer()
+                    Button("Copy Command and Output", systemImage: "doc.on.doc") {
+                        details.copyToPasteboard()
+                    }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .help("Copy the complete captured command and output")
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 620, idealWidth: 720, minHeight: 360, idealHeight: 480)
     }
 }

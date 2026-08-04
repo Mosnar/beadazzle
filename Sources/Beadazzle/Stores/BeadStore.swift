@@ -51,7 +51,13 @@ final class BeadProjectStore {
     fileprivate(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     fileprivate(set) var isLoadingProjectHealth = false
     fileprivate(set) var projectHealthAction: ProjectHealthAction?
+    var projectHealthActionStartedAt: Date?
+    var projectDoltSyncPhase: ProjectDoltSyncPhase?
+    var projectDoltSyncPhaseStartedAt: Date?
+    var isProjectDoltSyncCancellationRequested = false
     fileprivate(set) var projectHealthActionError: ProjectHealthActionFailure?
+    var projectDoltSyncOutcome: ProjectDoltSyncOutcome?
+    @ObservationIgnored var projectDoltSyncOutcomeDismissalTask: Task<Void, Never>?
     fileprivate(set) var projectDoltRemotes: ProjectHealthValue<BeadsDoltRemotes>?
     fileprivate(set) var isLoadingProjectDoltRemotes = false
     fileprivate(set) var doltRemoteFreshness = ProjectDoltRemoteFreshnessState.unknown
@@ -206,6 +212,7 @@ final class BeadProjectStore {
     func finishRefresh(generation: Int) {
         guard refreshGeneration == generation else { return }
         refreshTask = nil
+        isLoading = false
     }
 
     func finishSetupApplication(generation: Int) {
@@ -238,6 +245,7 @@ final class BeadProjectStore {
     func finishProjectHealthLoad(generation: Int) {
         guard projectHealthGeneration == generation else { return }
         projectHealthTask = nil
+        isLoadingProjectHealth = false
     }
 
     func beginProjectDoltRemotesLoad() -> Int {
@@ -767,27 +775,30 @@ struct BeadMetadataMutationState {
     }
 }
 
+/// Mutation activity is UI-facing because it gates commands. The high-churn mutation
+/// internals stay outside Observation so metadata edits do not invalidate unrelated views.
+@Observable
 @MainActor
 final class BeadMutationStore {
     static let maximumPossiblyPersistedLabelsPerIssue = 256
 
     fileprivate(set) var activeMutationCount = 0
-    private var mutationIdleWaiters: [CheckedContinuation<Void, Never>] = []
-    var optimisticMutationRevision = 0
+    @ObservationIgnored private var mutationIdleWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored var optimisticMutationRevision = 0
     let writeQueue = BeadMutationWriteQueue()
-    private var optimisticMutationQueues: [Int: BeadOptimisticMutationQueue] = [:]
-    var metadataMutationGeneration = 0
-    var metadataMutations: [String: BeadMetadataMutationState] = [:]
-    private var possiblyPersistedLabelsByIssue: [String: [String]] = [:]
-    private var labelUncertaintyOverflowIssueIDs: Set<String> = []
+    @ObservationIgnored private var optimisticMutationQueues: [Int: BeadOptimisticMutationQueue] = [:]
+    @ObservationIgnored var metadataMutationGeneration = 0
+    @ObservationIgnored var metadataMutations: [String: BeadMetadataMutationState] = [:]
+    @ObservationIgnored private var possiblyPersistedLabelsByIssue: [String: [String]] = [:]
+    @ObservationIgnored private var labelUncertaintyOverflowIssueIDs: Set<String> = []
     // Write versions identify the latest optimistic owner of each metadata field.
-    private var metadataFieldWriteVersionsByIssue: [String: BeadMetadataFieldVersions] = [:]
+    @ObservationIgnored private var metadataFieldWriteVersionsByIssue: [String: BeadMetadataFieldVersions] = [:]
     // Settlements retain both callback order and source ownership so equal-value
     // rollbacks cannot revive a result from an older writer.
-    private var metadataSettlementsByIssue: [String: BeadMetadataSettlementState] = [:]
-    var projection = BeadMutationProjection()
-    var folderAutomationTail: Task<Void, Never>?
-    var cancelledFolderAutomationIDs: Set<UUID> = []
+    @ObservationIgnored private var metadataSettlementsByIssue: [String: BeadMetadataSettlementState] = [:]
+    @ObservationIgnored var projection = BeadMutationProjection()
+    @ObservationIgnored var folderAutomationTail: Task<Void, Never>?
+    @ObservationIgnored var cancelledFolderAutomationIDs: Set<UUID> = []
 
     func possiblyPersistedLabels(for issueID: String) -> [String] {
         possiblyPersistedLabelsByIssue[issueID, default: []]

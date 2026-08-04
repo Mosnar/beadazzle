@@ -30,6 +30,15 @@ enum ProjectHealthAction: Equatable, Sendable {
             "Flattening database"
         }
     }
+
+    var isDoltSync: Bool {
+        switch self {
+        case .synchronizingIssues, .pullingIssues, .pushingIssues:
+            true
+        default:
+            false
+        }
+    }
 }
 
 enum ProjectHealthCompletionRefresh: Equatable, Sendable {
@@ -97,9 +106,19 @@ struct BeadsDoltMaintenancePreview: Equatable, Sendable {
 struct ProjectHealthActionFailure: Equatable, Sendable {
     var title: String
     var message: String
+    var command: String? = nil
+    var output: String? = nil
 
     static func failed(_ error: Error) -> ProjectHealthActionFailure {
-        ProjectHealthActionFailure(
+        if case let BeadError.commandFailed(command, output) = error {
+            return ProjectHealthActionFailure(
+                title: "Last action failed",
+                message: error.localizedDescription,
+                command: command,
+                output: output
+            )
+        }
+        return ProjectHealthActionFailure(
             title: "Last action failed",
             message: error.localizedDescription
         )

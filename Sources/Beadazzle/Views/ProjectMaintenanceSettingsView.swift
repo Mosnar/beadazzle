@@ -17,7 +17,9 @@ struct ProjectMaintenanceSettingsPane: View {
                     ProjectHealthMessageRow(
                         title: actionError.title,
                         message: actionError.message,
-                        systemImage: "exclamationmark.triangle"
+                        systemImage: "exclamationmark.triangle",
+                        command: actionError.command,
+                        output: actionError.output
                     )
                 }
             }

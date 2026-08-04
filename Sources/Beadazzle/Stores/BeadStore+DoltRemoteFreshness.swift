@@ -210,6 +210,11 @@ extension BeadStore {
         }
     }
 
+    func establishProjectDoltRemoteFreshnessCheckpoint() async {
+        checkProjectDoltRemoteFreshness(.establishSyncCheckpoint)
+        await waitForPendingDoltRemoteFreshnessCheck()
+    }
+
     func automaticDoltRemoteFreshnessPreferenceDidChange() {
         if automaticallyChecksDoltRemotes {
             restartDoltRemoteFreshnessMonitoring()
@@ -267,7 +272,7 @@ extension BeadStore {
         guard let syncCheckpointGeneration = record.syncCheckpointGeneration,
               let observedGeneration = record.observedGeneration,
               let lastCheckedAt = record.lastCheckedAt else {
-            return .unknown
+            return .checkpointRequired(remoteName: record.remoteName)
         }
         return syncCheckpointGeneration == observedGeneration
             ? .unchangedSinceSync(checkedAt: lastCheckedAt)

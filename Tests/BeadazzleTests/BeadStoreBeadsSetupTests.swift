@@ -168,6 +168,37 @@ final class BeadStoreBeadsSetupTests: XCTestCase {
         XCTAssertEqual(store.blankDraft().assignee, "after-setup@example.com")
     }
 
+    func testSuccessfulSetupReportsValidationCommandsAndReloadProgress() async throws {
+        let projectURL = try makeProject(named: "progress")
+        let service = BeadsSetupServiceStub(
+            assessment: assessment(projectURL: projectURL, autoPush: true)
+        )
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: CurrentDoltTestCommands(),
+            beadsSetupService: service
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading }
+        var draft = BeadsSetupDraft(profile: .team)
+        draft.remoteURL = "https://example.com/team/beads.git"
+        draft.installsHooks = false
+        let events = BeadsSetupApplyEventRecorder()
+
+        _ = try await store.applyBeadsSetup(
+            draft: draft,
+            assessment: assessment(projectURL: projectURL, autoPush: true)
+        ) { event in
+            await events.record(event)
+        }
+
+        let recordedEvents = await events.events
+        XCTAssertEqual(recordedEvents.first, .validating)
+        XCTAssertTrue(recordedEvents.contains(.stepStarted("config-dolt.auto-push")))
+        XCTAssertTrue(recordedEvents.contains(.stepCompleted("config-dolt.auto-push")))
+        XCTAssertEqual(Array(recordedEvents.suffix(3)), [.reloadingProject, .savingIntent, .finished])
+    }
+
     private func assessment(
         projectURL: URL,
         autoPush: Bool?,
@@ -284,7 +315,8 @@ private actor BeadsSetupServiceStub: BeadsSetupServicing {
     func apply(
         projectURL: URL,
         plan: BeadsSetupPlan,
-        cancellationToken: BeadsSetupCancellationToken
+        cancellationToken: BeadsSetupCancellationToken,
+        progress: @escaping BeadsSetupApplyProgressHandler
     ) async throws -> BeadsSetupApplyReport {
         applyCallCount += 1
         do {
@@ -292,11 +324,23 @@ private actor BeadsSetupServiceStub: BeadsSetupServicing {
                 try await Task.sleep(for: applyDelay)
             }
             try cancellationToken.checkCancellation()
+            for step in plan.steps {
+                await progress(.stepStarted(step.id))
+                await progress(.stepCompleted(step.id))
+            }
         } catch is CancellationError {
             applyWasCancelled = true
             throw CancellationError()
         }
         return BeadsSetupApplyReport(completedStepIDs: plan.steps.map(\.id))
+    }
+}
+
+private actor BeadsSetupApplyEventRecorder {
+    private(set) var events: [BeadsSetupApplyEvent] = []
+
+    func record(_ event: BeadsSetupApplyEvent) {
+        events.append(event)
     }
 }
 

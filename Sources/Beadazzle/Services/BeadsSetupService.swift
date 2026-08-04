@@ -30,6 +30,7 @@ protocol BeadsSetupServicing: Sendable {
     func apply(
         projectURL: URL,
         plan: BeadsSetupPlan,
-        cancellationToken: BeadsSetupCancellationToken
+        cancellationToken: BeadsSetupCancellationToken,
+        progress: @escaping BeadsSetupApplyProgressHandler
     ) async throws -> BeadsSetupApplyReport
 }

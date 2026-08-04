@@ -24,14 +24,17 @@ private struct ProjectSyncStatusSection: View {
             ProjectHealthStatusSummary(
                 action: project.projectHealthAction,
                 isLoading: project.isLoadingProjectHealth,
-                loadedAt: project.projectHealthSnapshot?.loadedAt
+                loadedAt: project.projectHealthSnapshot?.loadedAt,
+                syncPhase: project.projectDoltSyncPhase
             )
 
             if let actionError = project.projectHealthActionError {
                 ProjectHealthMessageRow(
                     title: actionError.title,
                     message: actionError.message,
-                    systemImage: "exclamationmark.triangle"
+                    systemImage: "exclamationmark.triangle",
+                    command: actionError.command,
+                    output: actionError.output
                 )
             }
         }
@@ -148,14 +151,20 @@ private struct ProjectDoltSyncSection: View {
                         ProgressView()
                             .controlSize(.small)
                             .accessibilityHidden(true)
-                    }
-                    ProjectHealthValueText(project.doltRemoteFreshness.result.summary)
-                    if project.doltRemoteFreshness.result.hasRemoteChanges {
-                        ProjectHealthBadge(title: "Available", style: .warning)
-                    }
-                    if let checkedAt = project.doltRemoteFreshness.result.checkedAt {
-                        Text(checkedAt, style: .relative)
+                        Text("Checking for remote changes…")
                             .foregroundStyle(.secondary)
+                    } else {
+                        ProjectHealthValueText(project.doltRemoteFreshness.result.summary)
+                        if project.doltRemoteFreshness.result.requiresSyncCheckpoint {
+                            ProjectHealthBadge(title: "Sync required", style: .info)
+                        }
+                        if project.doltRemoteFreshness.result.hasRemoteChanges {
+                            ProjectHealthBadge(title: "Available", style: .warning)
+                        }
+                        if let checkedAt = project.doltRemoteFreshness.result.checkedAt {
+                            Text(checkedAt, style: .relative)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Button("Check Now", systemImage: "arrow.clockwise") {
                         store.checkProjectDoltRemoteFreshness(.manual)
@@ -167,7 +176,7 @@ private struct ProjectDoltSyncSection: View {
                     )
                     .help(remoteCheckHelp)
                 }
-                .help(project.doltRemoteFreshness.result.detail)
+                .help(remoteCheckHelp)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Remote changes")
                 .accessibilityValue(remoteChangesAccessibilityValue)
@@ -196,13 +205,16 @@ private struct ProjectDoltSyncSection: View {
 
     private var remoteChangesAccessibilityValue: String {
         if project.doltRemoteFreshness.isChecking {
-            return "Checking remote"
+            return "Checking for remote changes"
         }
         return project.doltRemoteFreshness.result.summary
     }
 
     private var remoteCheckHelp: String {
-        project.doltRemoteFreshness.result.canCheckAgain
+        if project.doltRemoteFreshness.isChecking {
+            return "Checking for remote changes…"
+        }
+        return project.doltRemoteFreshness.result.canCheckAgain
             ? "Check for remote changes now"
             : project.doltRemoteFreshness.result.detail
     }

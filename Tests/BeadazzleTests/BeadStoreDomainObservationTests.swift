@@ -130,6 +130,32 @@ final class BeadStoreDomainObservationTests: XCTestCase {
         XCTAssertFalse(store.reconcileState.isInFlight)
     }
 
+    func testOnlyCurrentRefreshCompletionClearsLoadingState() {
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        let staleGeneration = store.project.beginRefresh()
+        store._isLoading = true
+        let currentGeneration = store.project.beginRefresh()
+
+        store.project.finishRefresh(generation: staleGeneration)
+        XCTAssertTrue(store.isLoading)
+
+        store.project.finishRefresh(generation: currentGeneration)
+        XCTAssertFalse(store.isLoading)
+    }
+
+    func testOnlyCurrentHealthCompletionClearsLoadingState() {
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        let staleGeneration = store.project.beginProjectHealthLoad()
+        store._isLoadingProjectHealth = true
+        let currentGeneration = store.project.beginProjectHealthLoad()
+
+        store.project.finishProjectHealthLoad(generation: staleGeneration)
+        XCTAssertTrue(store.isLoadingProjectHealth)
+
+        store.project.finishProjectHealthLoad(generation: currentGeneration)
+        XCTAssertFalse(store.isLoadingProjectHealth)
+    }
+
     func testCoordinatedIndexReplacementUpdatesDomainsExactlyOnce() async {
         let store = BeadStore(userDefaults: makeUserDefaults())
         store.applyOptimisticState(issues: [makeIssue(id: "bd-old")], dependencies: [])

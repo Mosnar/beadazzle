@@ -109,7 +109,8 @@ extension BeadStore {
     @discardableResult
     func applyBeadsSetup(
         draft: BeadsSetupDraft,
-        assessment: BeadsSetupAssessment
+        assessment: BeadsSetupAssessment,
+        progress: @escaping BeadsSetupApplyProgressHandler = { _ in }
     ) async throws -> BeadsSetupApplyReport {
         let projectURL = assessment.projectURL.standardizedFileURL
         guard self.projectURL?.standardizedFileURL == projectURL else {
@@ -146,6 +147,7 @@ extension BeadStore {
             )
         }
         do {
+            await progress(.validating)
             let setupTask = Task {
                 try await enqueueMutationWrite {
                     let candidateRemote = draft.remoteURL.nilIfBlank.map {
@@ -175,10 +177,12 @@ extension BeadStore {
                     let report = try await setupService.apply(
                         projectURL: projectURL,
                         plan: plan,
-                        cancellationToken: cancellationToken
+                        cancellationToken: cancellationToken,
+                        progress: progress
                     )
                     try Task.checkCancellation()
                     try cancellationToken.checkCancellation()
+                    await progress(.reloadingProject)
                     let context = try await commands.loadProjectContext(projectURL: projectURL)
                     let environment = try BeadsProjectEnvironment(
                         context: context,
@@ -217,6 +221,7 @@ extension BeadStore {
             guard project.ownsSetupApplication(projectURL: projectURL, generation: generation) else {
                 throw CancellationError()
             }
+            await progress(.savingIntent)
             let intent = draft.intent
             beadsSetupPreferenceRepository.saveIntent(intent, projectURL: projectURL)
             _beadsSetupIntent = intent
@@ -228,10 +233,14 @@ extension BeadStore {
             )
             refreshBeadsSetupAudit()
             refreshOwnerIdentityAfterSetup(projectURL: projectURL)
+            await progress(.finished)
             return preparedSetup.report
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             // A failed later step may follow durable successful setup changes. Reconcile
             // anything exportable so the workspace reflects the actual on-disk state.
+            await progress(.recoveringProject)
             if let loadedProject = try? await loadProjectAfterBeadsSetup(projectURL: projectURL),
                project.ownsSetupApplication(projectURL: projectURL, generation: generation) {
                 applyLoadedProject(

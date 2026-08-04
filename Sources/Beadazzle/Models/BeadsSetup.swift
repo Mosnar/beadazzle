@@ -401,6 +401,132 @@ struct BeadsSetupApplyReport: Equatable, Sendable {
     var completedStepIDs: [String]
 }
 
+enum BeadsSetupApplyEvent: Equatable, Sendable {
+    case validating
+    case stepStarted(String)
+    case stepCompleted(String)
+    case stepFailed(String)
+    case reloadingProject
+    case recoveringProject
+    case savingIntent
+    case finished
+}
+
+typealias BeadsSetupApplyProgressHandler = @Sendable (BeadsSetupApplyEvent) async -> Void
+
+enum BeadsSetupReviewItemStatus: Equatable, Sendable {
+    case pending
+    case inProgress
+    case completed
+    case failed
+}
+
+struct BeadsSetupApplyProgress: Equatable, Sendable {
+    enum Phase: Equatable, Sendable {
+        case idle
+        case validating
+        case applying
+        case reloadingProject
+        case recoveringProject
+        case savingIntent
+        case finished
+        case failed
+    }
+
+    private(set) var phase = Phase.idle
+    private(set) var activeStepID: String?
+    private(set) var completedStepIDs: Set<String> = []
+    private(set) var failedStepID: String?
+
+    mutating func record(_ event: BeadsSetupApplyEvent) {
+        switch event {
+        case .validating:
+            phase = .validating
+            activeStepID = nil
+            completedStepIDs = []
+            failedStepID = nil
+        case .stepStarted(let stepID):
+            phase = .applying
+            activeStepID = stepID
+        case .stepCompleted(let stepID):
+            completedStepIDs.insert(stepID)
+            if activeStepID == stepID {
+                activeStepID = nil
+            }
+        case .stepFailed(let stepID):
+            phase = .failed
+            failedStepID = stepID
+            activeStepID = nil
+        case .reloadingProject:
+            phase = .reloadingProject
+            activeStepID = nil
+        case .recoveringProject:
+            phase = .recoveringProject
+            activeStepID = nil
+        case .savingIntent:
+            phase = .savingIntent
+            activeStepID = nil
+        case .finished:
+            phase = .finished
+            activeStepID = nil
+        }
+    }
+
+    mutating func recordFailure() {
+        if failedStepID == nil {
+            failedStepID = activeStepID
+        }
+        activeStepID = nil
+        phase = .failed
+    }
+
+    func status(forStepID stepID: String) -> BeadsSetupReviewItemStatus {
+        if failedStepID == stepID { return .failed }
+        if completedStepIDs.contains(stepID) { return .completed }
+        if activeStepID == stepID { return .inProgress }
+        return .pending
+    }
+
+    var localIntentStatus: BeadsSetupReviewItemStatus {
+        switch phase {
+        case .savingIntent:
+            return .inProgress
+        case .finished:
+            return .completed
+        default:
+            return .pending
+        }
+    }
+
+    var phaseMessage: String? {
+        switch phase {
+        case .validating:
+            return "Checking that the reviewed setup is still current…"
+        case .reloadingProject:
+            return "Commands finished. Exporting and reloading the project…"
+        case .recoveringProject:
+            return "Setup stopped. Reloading any readable project data…"
+        default:
+            return nil
+        }
+    }
+
+    var scrollTargetID: String? {
+        if let activeStepID { return activeStepID }
+        if let failedStepID { return failedStepID }
+        switch phase {
+        case .validating, .reloadingProject, .recoveringProject:
+            return "setup-progress-phase"
+        case .savingIntent:
+            return "setup-local-intent"
+        case .failed:
+            return "setup-failure"
+        default:
+            return nil
+        }
+    }
+}
+
 struct BeadsSetupApplyFailure: LocalizedError {
     var report: BeadsSetupApplyReport
     var failedStepTitle: String
