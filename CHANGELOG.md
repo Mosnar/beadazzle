@@ -13,21 +13,32 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
-- Added a guided Beads setup and repair flow for local, solo, team, and contributor projects, with inspected recommendations, command review, and live apply progress.
+## [1.5.0] - 2026-08-04
+
+### Added
+
+- A guided Beads setup and repair flow for local, solo, team, and contributor projects, with inspected recommendations, command review, and live apply progress.
 - Sync Beads with one toolbar action that pulls before pushing, or use separate Pull and Push commands. Long operations show their current step and elapsed time in the sidebar, can be stopped safely, and finish with a clear outcome and copyable command output.
 - Check Git-backed Dolt remotes for upstream changes without pulling. Beadazzle can check periodically, shows whether a first Sync checkpoint is needed, and provides manual checks from the Sync menu and Project Settings.
-- Remote operations now match the Git, Dolt, and SSH setup used in Terminal, including Homebrew toolchains and host-specific agents such as 1Password, and verify access before starting an expensive transfer.
-- New beads now use the project's native Beads ID format, while ambiguous creation failures preserve the draft without risking duplicate retries.
 - Bead editors can show suggested sections by type, add or hide empty sections, and use a customizable section order with app defaults and per-project overrides.
 - Project Content settings can now manage Beads' shared description requirement and creation-validation behavior, with successful validation warnings shown without losing the new bead.
-- Added display settings for navigation controls, bead-list behavior, bead IDs, detail breadcrumbs, and sidebar sections.
+- Display settings for navigation controls, bead-list behavior, bead IDs, detail breadcrumbs, and sidebar sections.
 - About Beadazzle now includes project and problem-reporting links, author contact details, acknowledgments, and license information.
 - Search the text of the open bead with ⌘F pressed twice, or Edit ▸ Find, with match counts and next/previous controls.
 - New beads can now inherit a default assignee from app or project settings, with the Git-derived owner visible in Project Settings.
-- Large projects now open and switch faster, use less peak memory while reading snapshots, and keep scrolling smoother.
-- Bulk actions stay disabled until beads are selected.
 - Search any view, then expand it to all beads.
-- Added per-project bookmark folders for collecting and arranging beads from any list, with temporary filtering and sorting, copyable IDs, and optional background automations for labels, statuses, and other properties.
+- Per-project bookmark folders for collecting and arranging beads from any list, with temporary filtering and sorting, copyable IDs, and optional background automations for labels, statuses, and other properties.
+
+### Changed
+
+- Remote operations now match the Git, Dolt, and SSH setup used in Terminal, including Homebrew toolchains and host-specific agents such as 1Password, and verify access before starting an expensive transfer.
+- New beads now use the project's native Beads ID format.
+- Large projects now open and switch faster, use less peak memory while reading snapshots, and keep scrolling smoother.
+
+### Fixed
+
+- Ambiguous bead-creation failures now preserve the draft without offering a retry that could create a duplicate.
+- Bulk actions stay disabled until beads are selected.
 - Deferred beads scheduled for the future now leave Stale immediately, return when their deferral expires, and no longer wait for a full project refresh.
 
 ## [1.4.0] - 2026-07-21
@@ -276,7 +287,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/Mosnar/beadazzle/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.2.0
