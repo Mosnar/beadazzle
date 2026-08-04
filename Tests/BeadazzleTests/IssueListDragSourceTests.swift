@@ -163,7 +163,11 @@ final class IssueListDragSourceTests: XCTestCase {
         )
         XCTAssertTrue(coordinator.isLiveScrolling)
 
-        try? await Task.sleep(for: .milliseconds(100))
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while coordinator.isLiveScrolling, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertFalse(coordinator.isLiveScrolling)
     }
 
