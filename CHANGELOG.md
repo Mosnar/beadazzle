@@ -13,39 +13,21 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
-- Added a guided Beads setup and repair flow for local, solo, team, and contributor projects.
-- The Beads setup review now shows each command starting and completing, plus the validation and project-reload phases, so long remote operations no longer look stalled.
-- Beadazzle now gives Git and Dolt from the same installation as the configured or discovered `bd` priority over the inherited `PATH`, matching Homebrew and other custom toolchains used in Terminal.
-- Beadazzle can now periodically check Git-backed Dolt remotes for changes without pulling, show changes since its last Sync checkpoint, and let you check again from the Sync menu or Project Settings. Automatic checks can be turned off in application Settings.
-- Remote-change status now clearly distinguishes a configured Dolt remote that needs its first Sync checkpoint from a missing remote.
-- Sync now keeps a visible progress indicator until its remote-change checkpoint is ready, then reliably re-enables Sync and Check for Remote Changes.
-- Long-running Sync, Pull, and Push actions now identify the exact pull, push, export, reload, or remote-checkpoint step in the project sidebar with step and total elapsed time, then report their outcome in a dismissible status card and the Sync button's hover help.
-- Failed Sync, Pull, and Push cards now stay visible until dismissed and open the complete selectable, copyable `bd` command output; successful status cards still clear automatically.
-- Long Dolt transfers now have a generous safety ceiling and retain a bounded diagnostic tail, avoiding premature termination and unbounded memory growth during verbose remote operations.
-- Active Sync, Pull, and Push status can now be cancelled safely; Beadazzle lets the current database operation finish, skips later remote steps, and preserves any changes that already completed.
-- SSH Dolt remotes now use the agent selected by OpenSSH for the remote's exact host, user, and port, including 1Password and other `IdentityAgent` socket paths and environment-variable forms that are available in Terminal but not inherited by apps launched from the Dock or Finder.
-- Sync, Pull, and Push now verify remote access before starting an expensive Dolt operation, so locked or unavailable SSH credentials fail quickly with copyable diagnostics.
-- A failed setup application can now re-inspect the project and return directly to an updated review instead of leaving Apply disabled.
-- Beads commands no longer inherit Xcode's debugger instrumentation, preventing severe Pull and Push slowdowns while testing Beadazzle from Xcode.
-- Remote-change checks now show an explicit clean result when no changes are found, with a visible loading state while the check is running and detailed hover help for the last result.
-- New beads created in Beadazzle now use the project's native Beads ID format instead of longer app-generated IDs.
-- Bead creation now stays safe across project switches and ambiguous command failures, preserving drafts without offering retries that could create duplicates.
-- Sync Beads with one toolbar action that pulls before pushing; separate Pull and Push commands and shortcuts remain available.
-- Sync now preserves in-progress edits and pulled changes, keeps its progress icon visible, refreshes large trackers with less redundant work, and distinguishes remote failures from local snapshot failures.
-- Bead editors can now show suggested sections by type, add or hide empty sections, and use a customizable section order with app defaults and per-project overrides.
-- New, untouched bead drafts now refresh their suggested sections immediately when the bead type changes.
+- Added a guided Beads setup and repair flow for local, solo, team, and contributor projects, with inspected recommendations, command review, and live apply progress.
+- Sync Beads with one toolbar action that pulls before pushing, or use separate Pull and Push commands. Long operations show their current step and elapsed time in the sidebar, can be stopped safely, and finish with a clear outcome and copyable command output.
+- Check Git-backed Dolt remotes for upstream changes without pulling. Beadazzle can check periodically, shows whether a first Sync checkpoint is needed, and provides manual checks from the Sync menu and Project Settings.
+- Remote operations now match the Git, Dolt, and SSH setup used in Terminal, including Homebrew toolchains and host-specific agents such as 1Password, and verify access before starting an expensive transfer.
+- New beads now use the project's native Beads ID format, while ambiguous creation failures preserve the draft without risking duplicate retries.
+- Bead editors can show suggested sections by type, add or hide empty sections, and use a customizable section order with app defaults and per-project overrides.
 - Project Content settings can now manage Beads' shared description requirement and creation-validation behavior, with successful validation warnings shown without losing the new bead.
 - Added display settings for navigation controls, bead-list behavior, bead IDs, detail breadcrumbs, and sidebar sections.
-- Copyable bead IDs now stay aligned when confirming a copy.
 - About Beadazzle now includes project and problem-reporting links, author contact details, acknowledgments, and license information.
-- Search the text of the open bead with ⌘F pressed twice, or Edit ▸ Find, with match counts and next/previous.
-- Search commands now live in the Edit ▸ Find menu instead of their own top-level menu.
+- Search the text of the open bead with ⌘F pressed twice, or Edit ▸ Find, with match counts and next/previous controls.
 - New beads can now inherit a default assignee from app or project settings, with the Git-derived owner visible in Project Settings.
 - Large projects now open and switch faster, use less peak memory while reading snapshots, and keep scrolling smoother.
 - Bulk actions stay disabled until beads are selected.
 - Search any view, then expand it to all beads.
-- Folder automations can now add or remove labels, update safe statuses, and set multiple properties in the background whenever beads are added, with Apply Now, progress, cancellation, and targeted retries for existing folder contents.
-- Added per-project bookmark folders for collecting beads from any list by drag and drop or bead menus, arranging them manually, filtering or sorting them temporarily, and copying their IDs for handoff without slowing normal list selection.
+- Added per-project bookmark folders for collecting and arranging beads from any list, with temporary filtering and sorting, copyable IDs, and optional background automations for labels, statuses, and other properties.
 - Deferred beads scheduled for the future now leave Stale immediately, return when their deferral expires, and no longer wait for a full project refresh.
 
 ## [1.4.0] - 2026-07-21
