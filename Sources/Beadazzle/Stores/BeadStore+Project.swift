@@ -6,9 +6,17 @@ private enum SemanticDefinitionsRefreshResult: Sendable {
 }
 
 extension BeadStore {
-    func openDefaultProjectIfAvailable() {
+    /// Opens the most recent project that still exists on disk. `excludedProjectPaths`
+    /// lets the caller skip projects another window already shows, so restoring several
+    /// windows doesn't land two of them on the same tracker.
+    func openDefaultProjectIfAvailable(excludingProjectPaths excludedProjectPaths: Set<String> = []) {
         guard projectURL == nil else { return }
-        guard let url = recentProjects.first(where: { projectDirectoryExists(at: $0.url) })?.url else { return }
+        guard let url = recentProjects.map(\.url).first(where: { url in
+            !excludedProjectPaths.contains(url.standardizedFileURL.path)
+                && projectDirectoryExists(at: url)
+        }) else {
+            return
+        }
         openProject(url)
     }
 
@@ -66,8 +74,17 @@ extension BeadStore {
         refresh(reason: .initial, showsLoadingIndicator: true)
     }
 
-    func openRecentProject(_ project: RecentProject) {
-        openProject(project.url)
+    /// Retires everything this store owns when its window goes away: pending workspace
+    /// state is persisted first, then the in-flight tasks, queued writes, and file-system
+    /// monitors are cancelled so a closed window stops touching the tracker directory.
+    func prepareForWindowClose() {
+        flushPendingWorkspaceState()
+        project.cancelLifecycleWork()
+        cancelSemanticDefinitionsRefresh()
+        mutations.writeQueue.invalidatePending()
+        workspace.cancelQueryWork()
+        detail.cancelSelectionWork()
+        stopDataSourceMonitor()
     }
 
     func removeRecentProject(_ project: RecentProject) {
@@ -91,6 +108,14 @@ extension BeadStore {
         } else {
             userDefaults.removeObject(forKey: Self.lastProjectPathKey)
         }
+
+        guard !isReloadingSharedAppState else { return }
+        appStateBroadcaster?.recentProjectsDidChange(from: self)
+    }
+
+    /// Re-reads the shared recents list after a sibling window opened or removed a project.
+    internal func reloadRecentProjects() {
+        _recentProjects = Self.loadRecentProjects(from: userDefaults)
     }
 
     internal static func loadRecentProjects(from userDefaults: UserDefaults) -> [RecentProject] {

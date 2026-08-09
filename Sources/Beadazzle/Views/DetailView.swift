@@ -22,8 +22,8 @@ struct DetailView: View {
     @State private var suppressedDeferredDateWrite: DeferredDateWriteSuppression?
     @State private var textSectionVisibilityOverrides = IssueTextSectionVisibilityOverrides()
     @State private var textSectionContextID: String?
-    /// In-bead find is per-window state, so it lives here rather than on the
-    /// app-wide `BeadStore` that every window shares.
+    /// In-bead find is per-window view state with no bearing on the project, so it lives
+    /// here rather than on the window's `BeadStore`.
     @State private var findSession = BeadFindSession.forWindow()
 
     var body: some View {

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    @Environment(BeadWorkspaceWindowRegistry.self) private var registry
     @Environment(\.scenePhase) private var scenePhase
     private var project: BeadProjectStore { store.project }
     private var workspace: BeadWorkspaceStore { store.workspace }
@@ -144,15 +145,15 @@ struct ContentView: View {
             BeadsSetupWizard(request: request)
         }
         .mutationErrorDialog(store: store)
-        .onAppear {
-            store.openDefaultProjectIfAvailable()
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             store.flushPendingWorkspaceState()
         }
+        .focusedSceneValue(\.beadNavigationCommands, BeadNavigationCommandContext(store: store))
         .focusedSceneValue(\.workspaceCommands, WorkspaceCommandActions(
             newBead: store.canCreateBead ? { store.beginCreatingBead() } : nil,
-            openProject: openProject,
+            openProject: { openProject(destination: .preferred) },
+            openProjectInNewWindow: { openProject(destination: .newWindow) },
+            projectSettingsURL: project.projectURL?.standardizedFileURL,
             refresh: canRefresh ? { store.refresh() } : nil,
             find: store.hasReadableProject ? { searchPresented = true } : nil,
             searchCoverageTitle: searchCoverageCommandTitle,
@@ -448,9 +449,16 @@ struct ContentView: View {
     }
 
     private func openProject() {
+        openProject(destination: .preferred)
+    }
+
+    private func openProject(destination: BeadProjectOpenDestination) {
         guard let url = PanelService.chooseProjectFolder() else { return }
-        hierarchySheetRequest = nil
-        store.openProject(url)
+        // Only tear down this window's transient sheets when the project lands here;
+        // routing it elsewhere leaves this window untouched.
+        if registry.openProject(url, from: store, destination: destination) {
+            hierarchySheetRequest = nil
+        }
     }
 
     private func presentBeadsSetup() {

@@ -132,6 +132,7 @@ private enum ProjectPickerFocus: Hashable {
 
 private struct ProjectPickerPopover: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    @Environment(BeadWorkspaceWindowRegistry.self) private var registry
     private var project: BeadProjectStore { store.project }
     @Environment(\.openWindow) private var openWindow
     @Binding var isPresented: Bool
@@ -230,12 +231,15 @@ private struct ProjectPickerPopover: View {
                             RecentProjectRow(
                                 project: project,
                                 isCurrent: project.id == currentProject?.id,
+                                isOpenInAnotherWindow: registry.isProjectOpenInAnotherWindow(
+                                    project.url,
+                                    from: store
+                                ),
                                 isFocused: selectedItem == focusID,
                                 focusedItem: $focusedRow,
                                 focusID: focusID
-                            ) {
-                                store.openRecentProject(project)
-                                isPresented = false
+                            ) { destination in
+                                openRecentProject(project, destination: destination)
                             } remove: {
                                 selectItem(focusAfterRemoving(project))
                                 store.removeRecentProject(project)
@@ -259,8 +263,8 @@ private struct ProjectPickerPopover: View {
                     isFocused: selectedItem == .addFolder,
                     focusedItem: $focusedRow,
                     focusID: .addFolder
-                ) {
-                    chooseProjectFolder()
+                ) { destination in
+                    chooseProjectFolder(destination: destination)
                 } moveUp: {
                     moveFocusUp()
                 } moveDown: {
@@ -291,10 +295,18 @@ private struct ProjectPickerPopover: View {
         }
     }
 
-    private func chooseProjectFolder() {
+    private func chooseProjectFolder(destination: BeadProjectOpenDestination) {
         guard let url = PanelService.chooseProjectFolder() else { return }
         isPresented = false
-        store.openProject(url)
+        registry.openProject(url, from: store, destination: destination)
+    }
+
+    private func openRecentProject(
+        _ project: RecentProject,
+        destination: BeadProjectOpenDestination
+    ) {
+        isPresented = false
+        registry.openProject(project.url, from: store, destination: destination)
     }
 
     private func openProjectSettings() {
@@ -622,13 +634,51 @@ private struct CurrentProjectRow: View {
     }
 }
 
+/// Holding ⌥ while activating an open action sends the project to a new window, matching
+/// the macOS convention of Option meaning "somewhere else". SwiftUI button actions carry
+/// no event, so the flags are read at activation time.
+private enum ProjectOpenModifier {
+    static var destination: BeadProjectOpenDestination {
+        NSEvent.modifierFlags.contains(.option) ? .newWindow : .preferred
+    }
+}
+
+/// A trailing icon action on a picker row. Revealed on hover or focus so the resting row
+/// stays quiet, but always present in the accessibility tree when it can act.
+private struct ProjectPickerRowButton: View {
+    let systemImage: String
+    let isVisible: Bool
+    let isActive: Bool
+    let help: String
+    let accessibilityLabel: String
+    var role: ButtonRole?
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11))
+                .foregroundStyle(isActive ? .white.opacity(0.78) : .secondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
+        .accessibilityHidden(!isVisible)
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 private struct RecentProjectRow: View {
     let project: RecentProject
     let isCurrent: Bool
+    let isOpenInAnotherWindow: Bool
     let isFocused: Bool
     let focusedItem: FocusState<ProjectPickerFocus?>.Binding
     let focusID: ProjectPickerFocus
-    let open: () -> Void
+    let open: (BeadProjectOpenDestination) -> Void
     let remove: () -> Void
     let moveUp: () -> Void
     let moveDown: () -> Void
@@ -637,13 +687,16 @@ private struct RecentProjectRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Button {
-                open()
+                open(ProjectOpenModifier.destination)
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark")
+                    // One fixed-width slot for both states: a project can be the current
+                    // window's or another window's, never both, and a stable column keeps
+                    // the names aligned down the list.
+                    Image(systemName: statusSymbol ?? "checkmark")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(rowForeground)
-                        .opacity(isCurrent ? 1 : 0)
+                        .opacity(statusSymbol == nil ? 0 : 1)
                         .frame(width: 12)
                         .accessibilityHidden(true)
 
@@ -668,37 +721,92 @@ private struct RecentProjectRow: View {
                 return .handled
             }
             .onKeyPress(.return) {
-                open()
+                open(ProjectOpenModifier.destination)
                 return .handled
             }
             .onDeleteCommand {
                 remove()
             }
-            .help(project.path)
-            .accessibilityLabel(project.name)
-            .accessibilityValue(isCurrent ? "Current Project" : "")
-            .accessibilityHint("Opens the project. Press Delete to remove it from Recents.")
-
-            Button(role: .destructive) {
-                remove()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(isActive ? .white.opacity(0.78) : .secondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
+            .contextMenu {
+                Button(primaryActionTitle) {
+                    open(.currentWindow)
+                }
+                .disabled(isCurrent)
+                Button("Open in New Window") {
+                    open(.newWindow)
+                }
+                .disabled(isCurrent || isOpenInAnotherWindow)
+                Divider()
+                Button("Remove from Recents", role: .destructive) {
+                    remove()
+                }
             }
-            .buttonStyle(.plain)
-            .opacity(isActive ? 1 : 0)
-            .allowsHitTesting(isActive)
-            .accessibilityHidden(!isActive)
-            .help("Remove from Recents")
-            .accessibilityLabel("Remove \(project.name) from Recents")
+            .help(helpText)
+            .accessibilityLabel(project.name)
+            .accessibilityValue(accessibilityStatus)
+            .accessibilityHint(accessibilityHint)
+
+            ProjectPickerRowButton(
+                systemImage: "macwindow.badge.plus",
+                isVisible: isActive && canOpenInNewWindow,
+                isActive: isActive,
+                help: "Open in New Window",
+                accessibilityLabel: "Open \(project.name) in New Window"
+            ) {
+                open(.newWindow)
+            }
+
+            ProjectPickerRowButton(
+                systemImage: "xmark.circle.fill",
+                isVisible: isActive,
+                isActive: isActive,
+                help: "Remove from Recents",
+                accessibilityLabel: "Remove \(project.name) from Recents",
+                role: .destructive
+            ) {
+                remove()
+            }
         }
         .padding(.horizontal, 7)
         .frame(height: 24)
         .background(rowBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .onHover { isHovered = $0 }
+    }
+
+    /// Neither the current window's project nor one already open elsewhere can go to a new
+    /// window — the first is already here, and the second would be a duplicate.
+    private var canOpenInNewWindow: Bool {
+        !isCurrent && !isOpenInAnotherWindow
+    }
+
+    private var statusSymbol: String? {
+        if isCurrent {
+            return "checkmark"
+        }
+        return isOpenInAnotherWindow ? "macwindow" : nil
+    }
+
+    private var primaryActionTitle: String {
+        isOpenInAnotherWindow ? "Bring Window Forward" : "Open"
+    }
+
+    private var helpText: String {
+        guard isOpenInAnotherWindow else { return project.path }
+        return "\(project.path)\nAlready open in another window"
+    }
+
+    private var accessibilityStatus: String {
+        if isCurrent {
+            return "Current Project"
+        }
+        return isOpenInAnotherWindow ? "Open in another window" : ""
+    }
+
+    private var accessibilityHint: String {
+        if isOpenInAnotherWindow {
+            return "Brings the window showing this project forward. Press Delete to remove it from Recents."
+        }
+        return "Opens the project. Hold Option to open it in a new window. Press Delete to remove it from Recents."
     }
 
     private var rowBackground: Color {
@@ -719,40 +827,62 @@ private struct ProjectActionRow: View {
     let isFocused: Bool
     let focusedItem: FocusState<ProjectPickerFocus?>.Binding
     let focusID: ProjectPickerFocus
-    let action: () -> Void
+    let action: (BeadProjectOpenDestination) -> Void
     let moveUp: () -> Void
     let moveDown: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        Button {
-            action()
-        } label: {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .foregroundStyle(rowForeground)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 7)
-                .frame(height: 25)
-                .background(rowBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .contentShape(Rectangle())
+        HStack(spacing: 8) {
+            Button {
+                action(ProjectOpenModifier.destination)
+            } label: {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(rowForeground)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .focusable()
+            .focused(focusedItem, equals: focusID)
+            .onKeyPress(.upArrow) {
+                moveUp()
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                moveDown()
+                return .handled
+            }
+            .onKeyPress(.return) {
+                action(ProjectOpenModifier.destination)
+                return .handled
+            }
+            .contextMenu {
+                Button("Add Folder to Current Window...") {
+                    action(.currentWindow)
+                }
+                Button("Add Folder in New Window...") {
+                    action(.newWindow)
+                }
+            }
+            .accessibilityHint("Hold Option to open the chosen folder in a new window.")
+
+            ProjectPickerRowButton(
+                systemImage: "macwindow.badge.plus",
+                isVisible: isActive,
+                isActive: isActive,
+                help: "Add Folder in New Window",
+                accessibilityLabel: "Add Folder in New Window"
+            ) {
+                action(.newWindow)
+            }
         }
-        .buttonStyle(.plain)
-        .focusable()
-        .focused(focusedItem, equals: focusID)
-        .onKeyPress(.upArrow) {
-            moveUp()
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            moveDown()
-            return .handled
-        }
-        .onKeyPress(.return) {
-            action()
-            return .handled
-        }
+        .padding(.horizontal, 7)
+        .frame(height: 25)
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .onHover { isHovered = $0 }
     }
 

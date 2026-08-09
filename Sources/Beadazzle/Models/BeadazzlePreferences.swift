@@ -3,6 +3,7 @@ import Foundation
 enum BeadazzlePreferenceKeys {
     static let bdCLIPath = "BDCLIPath"
     static let receivesBetaUpdates = "ReceivesBetaUpdates"
+    static let projectOpenDestination = "Projects.OpenDestination"
     static let defaultNewBeadAssigneeMode = "NewBeads.DefaultAssignee.Mode"
     static let defaultNewBeadAssigneeValue = "NewBeads.DefaultAssignee.Value"
     static let issueTextSectionVisibilityMode = "Editor.BeadContent.EmptySectionMode"
@@ -206,6 +207,27 @@ enum BeadazzleAppBoolPreferences {
     ]
 }
 
+/// Where a project opens when the user does not say otherwise. Explicit commands
+/// ("Open Beads Project in New Window…", ⌥-clicking a recent) always win over this;
+/// it only decides the plain path.
+enum BeadProjectOpenDestinationPreference: String, CaseIterable, Identifiable, Sendable {
+    case currentWindow
+    case newWindow
+
+    static let `default` = BeadProjectOpenDestinationPreference.currentWindow
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .currentWindow:
+            "Current Window"
+        case .newWindow:
+            "New Window"
+        }
+    }
+}
+
 struct BeadListDisplayOptions: Equatable, Sendable {
     var showsOwner = false
     var showsAssignee = false
@@ -250,6 +272,15 @@ enum BeadazzleOptionInventory {
             defaultValue: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes.defaultValueDescription,
             uiLocation: "Settings > General",
             behavior: "Periodically checks the lightweight Dolt data ref for Git-backed remotes while Beadazzle is active, without pulling."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "projectOpenDestination",
+            title: "Open projects in",
+            scope: .appPreference,
+            persistence: BeadazzlePreferenceKeys.projectOpenDestination,
+            defaultValue: BeadProjectOpenDestinationPreference.default.title,
+            uiLocation: "Settings > General",
+            behavior: "Chooses whether opening a project reuses the current window or opens a new one. Explicit new-window commands ignore this."
         ),
         BeadazzleOptionInventoryEntry(
             id: "automaticallyChecksForUpdates",

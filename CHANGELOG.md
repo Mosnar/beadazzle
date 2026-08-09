@@ -13,6 +13,17 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Added
+
+- Work on several projects at once, each in its own window. File ▸ Open Beads Project in New Window (⇧⌘O) opens a project alongside the one you already have, and holding Option while picking a project — or right-clicking it in the project picker — sends it to a new window too.
+- The project picker gained a new-window button on each recent project and on Add Folder, and marks the projects that are already open in another window so you can see where everything is before you switch.
+- A new Settings ▸ General option, "Open projects in", chooses whether a plain open reuses the current window or opens a new one.
+
+### Changed
+
+- Opening a project that is already open in another window now brings that window forward instead of opening it a second time.
+- Each window's title is the project it shows, so windows are easy to tell apart in the Window menu and Mission Control.
+
 ## [1.5.0] - 2026-08-04
 
 ### Added

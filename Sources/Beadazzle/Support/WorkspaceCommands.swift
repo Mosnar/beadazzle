@@ -7,6 +7,8 @@ import SwiftUI
 struct WorkspaceCommandActions {
     var newBead: (() -> Void)?
     var openProject: () -> Void
+    var openProjectInNewWindow: () -> Void
+    var projectSettingsURL: URL?
     var refresh: (() -> Void)?
     var find: (() -> Void)?
     var searchCoverageTitle: String?
@@ -86,6 +88,12 @@ struct WorkspaceCommands: Commands {
                 actions?.openProject()
             }
             .keyboardShortcut("o")
+            .disabled(actions == nil)
+
+            Button("Open Beads Project in New Window...") {
+                actions?.openProjectInNewWindow()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
             .disabled(actions == nil)
 
             Button("Refresh") {

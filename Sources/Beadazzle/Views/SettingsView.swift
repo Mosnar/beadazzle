@@ -161,6 +161,18 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
+                Picker("Open projects in", selection: $store.projectOpenDestination) {
+                    ForEach(BeadProjectOpenDestinationPreference.allCases) { destination in
+                        Text(destination.title).tag(destination)
+                    }
+                }
+            } header: {
+                Text("Projects")
+            } footer: {
+                Text("Applies when you open a project without saying where. Open Beads Project in New Window, and holding Option in the project picker, always open a new window. A project that is already open comes forward instead of opening twice.")
+            }
+
+            Section {
                 Toggle(
                     "Check Dolt remotes for changes automatically",
                     isOn: $store.automaticallyChecksDoltRemotes

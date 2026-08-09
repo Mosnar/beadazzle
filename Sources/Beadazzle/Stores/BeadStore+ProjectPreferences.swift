@@ -97,6 +97,14 @@ extension BeadStore {
         min(max(days, 1), 3_650)
     }
 
+    internal static func loadProjectOpenDestination(
+        from userDefaults: UserDefaults
+    ) -> BeadProjectOpenDestinationPreference {
+        userDefaults.string(forKey: BeadazzlePreferenceKeys.projectOpenDestination)
+            .flatMap(BeadProjectOpenDestinationPreference.init(rawValue:))
+            ?? .default
+    }
+
     internal func persistBDCLIPath() {
         let path = bdCLIPath.trimmingCharacters(in: .whitespacesAndNewlines)
         if path.isEmpty {
@@ -104,6 +112,94 @@ extension BeadStore {
         } else {
             userDefaults.set(path, forKey: BeadazzlePreferenceKeys.bdCLIPath)
         }
+        appPreferencesDidChange()
+    }
+
+    internal func persistProjectOpenDestination() {
+        userDefaults.set(
+            projectOpenDestination.rawValue,
+            forKey: BeadazzlePreferenceKeys.projectOpenDestination
+        )
+        appPreferencesDidChange()
+    }
+
+    /// Announces that this store just wrote an app-wide preference, so sibling workspace
+    /// windows re-read the shared values instead of drifting until relaunch.
+    internal func appPreferencesDidChange() {
+        guard !isReloadingSharedAppState else { return }
+        appStateBroadcaster?.appPreferencesDidChange(from: self)
+    }
+
+    /// Re-reads every app-scoped preference from `UserDefaults`. Each property's `didSet`
+    /// still runs its local side effects (row rebuilds, freshness monitoring), but the
+    /// reload guard keeps the resulting persist calls from echoing back to peers.
+    internal func reloadAppPreferences() {
+        let wasReloading = isReloadingSharedAppState
+        isReloadingSharedAppState = true
+        defer { isReloadingSharedAppState = wasReloading }
+
+        bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
+        projectOpenDestination = Self.loadProjectOpenDestination(from: userDefaults)
+        defaultNewBeadAssignee = Self.loadNewBeadAssigneePreference(
+            from: userDefaults,
+            modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
+            valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
+        ) ?? .unassigned
+        issueTextSectionVisibilityMode = userDefaults.string(
+            forKey: BeadazzlePreferenceKeys.issueTextSectionVisibilityMode
+        ).flatMap(IssueTextSectionVisibilityMode.init(rawValue:)) ?? .suggestedForType
+        issueTextSectionOrder = Self.loadIssueTextSectionOrder(
+            from: userDefaults,
+            key: BeadazzlePreferenceKeys.issueTextSectionOrder
+        ) ?? IssueTextSection.canonicalOrder
+        issueTextSectionSuggestions = Self.loadIssueTextSectionSuggestionMatrix(
+            from: userDefaults,
+            key: BeadazzlePreferenceKeys.issueTextSectionSuggestions
+        ) ?? .beadsDefault
+        automaticallyChecksDoltRemotes = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes
+        )
+        showsBackNavigationButton = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsBackNavigationButton
+        )
+        showsForwardNavigationButton = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsForwardNavigationButton
+        )
+        showsAllChildrenInOutline = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsAllChildrenInOutline
+        )
+        opensSplitViewOnSingleClick = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick
+        )
+        showsBeadIDUnderTitle = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle
+        )
+        showsCopyBeadIDButtonInBreadcrumbs = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs
+        )
+        showsProjectNameInBreadcrumbs = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs
+        )
+        showsClosedBeadsInSidebar = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar
+        )
+        showsGatesInSidebar = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsGatesInSidebar
+        )
+        showsZeroCountSidebarSections = Self.boolValue(
+            userDefaults,
+            preference: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections
+        )
     }
 
     internal func persistDefaultNewBeadAssignee() {
@@ -113,6 +209,7 @@ extension BeadStore {
             modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
             valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
         )
+        appPreferencesDidChange()
     }
 
     internal func persistAppBoolPreference(
@@ -120,6 +217,7 @@ extension BeadStore {
         preference: BeadazzleBoolPreferenceDescriptor
     ) {
         userDefaults.set(value, forKey: preference.key)
+        appPreferencesDidChange()
     }
 
     internal func persistIssueTextSectionVisibilityMode() {
@@ -127,6 +225,7 @@ extension BeadStore {
             issueTextSectionVisibilityMode.rawValue,
             forKey: BeadazzlePreferenceKeys.issueTextSectionVisibilityMode
         )
+        appPreferencesDidChange()
     }
 
     internal func persistIssueTextSectionOrder() {
@@ -134,11 +233,13 @@ extension BeadStore {
             issueTextSectionOrder.map(\.rawValue),
             forKey: BeadazzlePreferenceKeys.issueTextSectionOrder
         )
+        appPreferencesDidChange()
     }
 
     internal func persistIssueTextSectionSuggestions() {
         guard let data = try? JSONEncoder().encode(issueTextSectionSuggestions.normalized()) else { return }
         userDefaults.set(data, forKey: BeadazzlePreferenceKeys.issueTextSectionSuggestions)
+        appPreferencesDidChange()
     }
 
     internal func persistProjectIssueTextSectionVisibilityModeOverride() {

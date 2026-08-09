@@ -879,6 +879,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let entries = BeadazzleOptionInventory.entries
         let expectedIDs: Set<String> = [
             "bdCLIPath",
+            "projectOpenDestination",
             "automaticallyChecksDoltRemotes",
             "automaticallyChecksForUpdates",
             "receivesBetaUpdates",

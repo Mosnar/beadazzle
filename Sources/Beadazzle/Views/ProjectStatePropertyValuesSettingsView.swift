@@ -91,6 +91,7 @@ struct ProjectStatePropertyValuesPane: View {
 
 private struct ProjectStatePropertyValueRow: View {
     @Environment(BeadStore.self) private var store: BeadStore
+    @Environment(BeadWorkspaceWindowRegistry.self) private var registry
     @Environment(\.openWindow) private var openWindow
     let dimension: String
     let value: BeadStateValuePresentation
@@ -288,14 +289,12 @@ private struct ProjectStatePropertyValueRow: View {
     private func showBeads() {
         guard store.showBeads(withStateValue: value.value, in: dimension) else { return }
 
-        if let mainWindow = NSApp.windows.first(where: { $0.title == "Beadazzle" }) {
-            if mainWindow.isMiniaturized {
-                mainWindow.deminiaturize(nil)
-            }
-            mainWindow.makeKeyAndOrderFront(nil)
-        } else {
-            openWindow(id: "main")
+        // Bring forward the window whose store just took the filter, not whichever window
+        // happens to be titled "Beadazzle" — workspace windows are titled per project now.
+        if let projectURL = store.projectURL, registry.focusWindow(showing: projectURL) {
+            return
         }
+        openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
     }
 }

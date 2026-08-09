@@ -1039,8 +1039,9 @@ final class BeadStore {
             syncCurrentWorkspaceSnapshotIfNeeded()
         }
     }
-    /// Projects with an inline creation draft currently waiting on `bd`. Kept on the
-    /// shared store so every window observes the same single-flight state.
+    /// Projects with an inline creation draft currently waiting on `bd`. Keyed by project
+    /// rather than held as a flag because a store outlives the project it is showing; a
+    /// project can only be open in one window, so this is the whole single-flight state.
     var submittingCreationDraftProjectURLs: Set<URL> = []
 
     var isSubmittingCreationDraft: Bool {
@@ -1165,6 +1166,12 @@ final class BeadStore {
         didSet {
             guard oldValue != bdCLIPath else { return }
             persistBDCLIPath()
+        }
+    }
+    var projectOpenDestination = BeadProjectOpenDestinationPreference.default {
+        didSet {
+            guard oldValue != projectOpenDestination else { return }
+            persistProjectOpenDestination()
         }
     }
     var defaultNewBeadAssignee = NewBeadAssigneePreference.unassigned {
@@ -1627,6 +1634,13 @@ final class BeadStore {
     }
     @ObservationIgnored internal let userDefaults: UserDefaults
 
+    /// Set by `BeadWorkspaceWindowRegistry` when this store backs a workspace window.
+    /// App-wide state (preferences, recent projects) lives in `UserDefaults`, so a change
+    /// made in one window is re-read by its peers rather than pushed value by value.
+    @ObservationIgnored internal weak var appStateBroadcaster: (any BeadAppStateBroadcasting)?
+    /// Guards the reload path from persisting — and so re-broadcasting — what it just read.
+    @ObservationIgnored internal var isReloadingSharedAppState = false
+
     internal var index: BeadProjectIndex { get { project.index } set { project.index = newValue } }
     internal var authoritativeIndex: BeadProjectIndex {
         get { project.authoritativeIndex }
@@ -1661,6 +1675,7 @@ final class BeadStore {
         self.semanticDefinitionsRepository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
         self.beadsSetupPreferenceRepository = BeadsSetupPreferenceRepository(userDefaults: userDefaults)
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
+        projectOpenDestination = Self.loadProjectOpenDestination(from: userDefaults)
         defaultNewBeadAssignee = Self.loadNewBeadAssigneePreference(
             from: userDefaults,
             modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,

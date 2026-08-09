@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ProjectSettingsCommands: Commands {
     @Environment(\.openWindow) private var openWindow
-    let store: BeadStore
+    @FocusedValue(\.workspaceCommands) private var actions
 
     var body: some Commands {
         CommandGroup(after: .appSettings) {
@@ -13,8 +13,10 @@ struct ProjectSettingsCommands: Commands {
         }
     }
 
+    /// Resolved from the focused scene rather than a single app-wide store, so the command
+    /// targets whichever workspace window is key.
     private var projectSettingsURL: URL? {
-        store.projectURL?.standardizedFileURL
+        actions?.projectSettingsURL
     }
 
     private func openCurrentProjectSettings() {

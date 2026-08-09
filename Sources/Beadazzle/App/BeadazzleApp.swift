@@ -4,14 +4,17 @@ import SwiftUI
 @main
 struct BeadazzleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var store = BeadStore()
+    @State private var registry = BeadWorkspaceWindowRegistry()
     private let updaterController = UpdaterController()
 
     var body: some Scene {
-        WindowGroup("Beadazzle", id: "main") {
-            ContentView()
-                .beadStoreEnvironment(store)
-                .frame(minWidth: WindowLayout.minWidth, minHeight: WindowLayout.minHeight)
+        // Value-parameterized so `openWindow(value:)` can open a second workspace window
+        // on another project. Windows created without a value — at launch, or from the
+        // Window menu — get a fresh identity and no project from `defaultValue`.
+        WindowGroup("Beadazzle", id: "main", for: BeadWorkspaceWindowRequest.self) { $request in
+            WorkspaceWindowRoot(registry: registry, request: request)
+        } defaultValue: {
+            BeadWorkspaceWindowRequest()
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
@@ -26,32 +29,10 @@ struct BeadazzleApp: App {
             WorkspaceCommands()
             BeadSaveCommands()
             AppSettingsCommands()
-            ProjectSettingsCommands(store: store)
+            ProjectSettingsCommands()
 
             CommandMenu("Navigate") {
-                Button(BeadNavigationDirection.back.title) {
-                    handleBackNavigation()
-                }
-                .keyboardShortcut(BeadNavigationDirection.back.shortcut)
-                .disabled(!canNavigateBack)
-
-                Button(BeadNavigationDirection.forward.title) {
-                    store.goForward()
-                }
-                .keyboardShortcut(BeadNavigationDirection.forward.shortcut)
-                .disabled(!store.canGoForward)
-
-                Divider()
-
-                Button("Expand Children") {
-                    store.expandSelectedIssueChildren()
-                }
-                .disabled(!store.canExpandSelectedIssueChildren)
-
-                Button("Collapse Children") {
-                    store.collapseSelectedIssueChildren()
-                }
-                .disabled(!store.canCollapseSelectedIssueChildren)
+                BeadNavigationMenuItems()
             }
         }
 
@@ -84,8 +65,12 @@ struct BeadazzleApp: App {
         .windowResizability(.contentMinSize)
 
         Window("Settings", id: "settings") {
+            // App preferences are shared, so any live store can edit them; reading through
+            // the frontmost window's keeps project-derived fields (assignee suggestions)
+            // meaningful.
             SettingsView()
-                .beadStoreEnvironment(store)
+                .beadStoreEnvironment(registry.auxiliaryStore())
+                .environment(registry)
                 .environmentObject(updaterController)
         }
         .defaultSize(
@@ -96,7 +81,8 @@ struct BeadazzleApp: App {
 
         WindowGroup("Project Settings", for: URL.self) { projectURL in
             ProjectSettingsView(projectURL: projectURL.wrappedValue)
-                .beadStoreEnvironment(store)
+                .beadStoreEnvironment(registry.store(forProject: projectURL.wrappedValue))
+                .environment(registry)
         }
         .defaultSize(
             width: SettingsWindowLayout.projectDefaultWidth,
@@ -104,14 +90,6 @@ struct BeadazzleApp: App {
         )
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.contentMinSize)
-    }
-
-    private var canNavigateBack: Bool {
-        store.canGoBack
-    }
-
-    private func handleBackNavigation() {
-        store.goBack()
     }
 }
 
