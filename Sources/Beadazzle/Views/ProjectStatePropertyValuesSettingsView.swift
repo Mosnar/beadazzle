@@ -288,13 +288,23 @@ private struct ProjectStatePropertyValueRow: View {
 
     private func showBeads() {
         guard store.showBeads(withStateValue: value.value, in: dimension) else { return }
+        guard let projectURL = store.projectURL else { return }
 
         // Bring forward the window whose store just took the filter, not whichever window
         // happens to be titled "Beadazzle" — workspace windows are titled per project now.
-        if let projectURL = store.projectURL, registry.focusWindow(showing: projectURL) {
+        if registry.focusWindow(showing: projectURL) {
             return
         }
-        openWindow(id: "main")
+        // A window owns this store but hasn't reported its NSWindow yet; opening another
+        // window would land on a different project, so just activate the app.
+        if registry.windowID(showing: projectURL) != nil {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        // No workspace window shows the project (it closed since Project Settings opened).
+        // Ask for one on this project explicitly — a bare "main" window would mint a fresh
+        // request that restoration fills with whatever recent project is untaken.
+        openWindow(value: BeadWorkspaceWindowRequest(projectURL: projectURL, opensProjectExplicitly: true))
         NSApp.activate(ignoringOtherApps: true)
     }
 }

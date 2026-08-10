@@ -244,7 +244,10 @@ extension BeadStore {
     /// mutations immediately; external writes wait for active app mutations to settle so
     /// the shared export cannot replace newer in-memory state with a pre-mutation snapshot.
     internal func scheduleReconcileIfIdle() {
-        guard reconcileState.hasPendingRequest,
+        // A retired store's window is gone: writes settling after close must not spawn
+        // exports or reloads here. Retirement runs one final export once the queue drains.
+        guard !isRetiredAfterWindowClose,
+              reconcileState.hasPendingRequest,
               activeMutationCount == 0,
               !reconcileState.isInFlight else { return }
         reconcileDebounceTask?.cancel()

@@ -101,6 +101,12 @@ struct BeadProjectIndex: Sendable {
     /// Ordinary colon labels are intentionally absent.
     let stateDimensionNames: [String]
     let stateValuesByDimension: [String: [String]]
+    /// Colon-shaped namespaces observed anywhere in the project's labels. These
+    /// carry no `bd set-state` provenance; they exist so ordinary `area:ui`-style
+    /// taxonomies can be offered as pinnable state properties. Only namespaces
+    /// that are already valid dimension names are included, so pinning one
+    /// manages exactly the labels it was suggested from.
+    let labelStateDimensionNames: [String]
     let ownerNames: [String]
     let assigneeNames: [String]
     /// Per-issue searchable text, pre-folded once at build time (case-, diacritic-, and
@@ -230,21 +236,21 @@ struct BeadProjectIndex: Sendable {
         labelNames = issueIDsByLabel.keys.sorted { lhs, rhs in
             lhs.localizedStandardCompare(rhs) == .orderedAscending
         }
+        var labelDimensionNames: Set<String> = []
+        for label in labelNames {
+            guard let dimension = BeadStateLabel.dimension(of: label),
+                  BeadStateLabel.normalizedDimensionInput(dimension) == dimension else { continue }
+            labelDimensionNames.insert(dimension)
+        }
+        labelStateDimensionNames = labelDimensionNames.sorted(by: BeadStateLabel.isOrderedBefore)
         if !ambiguousStateEventIndices.isEmpty {
             let knownLabels = Set(labelNames)
-            var knownDimensions: Set<String> = []
-            knownDimensions.reserveCapacity(labelNames.count)
-            for label in labelNames {
-                if let dimension = BeadStateLabel.dimension(of: label) {
-                    knownDimensions.insert(dimension)
-                }
-            }
             for issueIndex in ambiguousStateEventIndices {
                 let issue = issues[issueIndex]
                 guard let stateChange = BeadStateLabel.recordedChange(
                     event: issue,
                     knownLabels: knownLabels,
-                    knownDimensions: knownDimensions
+                    knownDimensions: labelDimensionNames
                 ) else { continue }
                 recordedStateChangeByIssueID[issue.id] = stateChange
             }

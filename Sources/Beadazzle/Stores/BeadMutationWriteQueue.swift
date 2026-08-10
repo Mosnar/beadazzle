@@ -15,6 +15,24 @@ final class BeadMutationWriteQueue {
         lifecycleGeneration &+= 1
     }
 
+    var hasPendingOperations: Bool {
+        chain != nil
+    }
+
+    /// Waits until every enqueued operation has finished, including ones enqueued while
+    /// draining. Window retirement relies on the closed window no longer producing new
+    /// operations, so the loop terminates.
+    func drainPending() async {
+        while let pending = chain {
+            await pending.value
+            // The finished operation's own `enqueue` clears `chain` on a later turn;
+            // if it is still this task, nothing new was enqueued and the queue is dry.
+            if chain == pending {
+                return
+            }
+        }
+    }
+
     func enqueue<Value: Sendable>(
         _ operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {

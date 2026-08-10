@@ -1059,6 +1059,15 @@ final class BeadStore {
     var currentDataSource: BeadsDataSource? { project.currentDataSource }
     internal var _currentDataSource: BeadsDataSource? { get { project.currentDataSource } set { project.currentDataSource = newValue } }
     var projectEnvironment: BeadsProjectEnvironment? { project.projectEnvironment }
+
+    /// Canonical identity of the tracker this store is bound to, known once the
+    /// environment has resolved. Distinct project roots can route to one tracker
+    /// (worktree redirects, configured Beads directories), so window exclusivity must
+    /// compare this rather than the project path.
+    var resolvedTrackerIdentityPath: String? {
+        guard projectURL != nil else { return nil }
+        return projectEnvironment?.beadsDirectoryURL.standardizedFileURL.path
+    }
     internal var _projectEnvironment: BeadsProjectEnvironment? {
         get { project.projectEnvironment }
         set { project.projectEnvironment = newValue }
@@ -1640,6 +1649,13 @@ final class BeadStore {
     @ObservationIgnored internal weak var appStateBroadcaster: (any BeadAppStateBroadcasting)?
     /// Guards the reload path from persisting — and so re-broadcasting — what it just read.
     @ObservationIgnored internal var isReloadingSharedAppState = false
+    /// Coalesces peer broadcasts for text-field-driven preferences, which persist on every
+    /// keystroke but whose peers only need the value once typing pauses.
+    @ObservationIgnored internal var pendingAppPreferencesBroadcast: Task<Void, Never>?
+    /// Set when this store's window closes. Queued writes still drain, but the reconcile
+    /// pipeline stays quiet: there is no UI left to reconcile, and retirement runs its own
+    /// final snapshot export instead.
+    @ObservationIgnored internal var isRetiredAfterWindowClose = false
 
     internal var index: BeadProjectIndex { get { project.index } set { project.index = newValue } }
     internal var authoritativeIndex: BeadProjectIndex {
@@ -1674,68 +1690,12 @@ final class BeadStore {
         self.workspaceStateRepository = BeadWorkspaceStateRepository(userDefaults: userDefaults)
         self.semanticDefinitionsRepository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)
         self.beadsSetupPreferenceRepository = BeadsSetupPreferenceRepository(userDefaults: userDefaults)
-        bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
-        projectOpenDestination = Self.loadProjectOpenDestination(from: userDefaults)
-        defaultNewBeadAssignee = Self.loadNewBeadAssigneePreference(
-            from: userDefaults,
-            modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
-            valueKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue
-        ) ?? .unassigned
-        issueTextSectionVisibilityMode = userDefaults.string(
-            forKey: BeadazzlePreferenceKeys.issueTextSectionVisibilityMode
-        ).flatMap(IssueTextSectionVisibilityMode.init(rawValue:)) ?? .suggestedForType
-        issueTextSectionOrder = Self.loadIssueTextSectionOrder(
-            from: userDefaults,
-            key: BeadazzlePreferenceKeys.issueTextSectionOrder
-        ) ?? IssueTextSection.canonicalOrder
-        issueTextSectionSuggestions = Self.loadIssueTextSectionSuggestionMatrix(
-            from: userDefaults,
-            key: BeadazzlePreferenceKeys.issueTextSectionSuggestions
-        ) ?? .beadsDefault
-        automaticallyChecksDoltRemotes = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.automaticallyChecksDoltRemotes
-        )
-        showsBackNavigationButton = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsBackNavigationButton
-        )
-        showsForwardNavigationButton = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsForwardNavigationButton
-        )
-        showsAllChildrenInOutline = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsAllChildrenInOutline
-        )
-        opensSplitViewOnSingleClick = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.opensSplitViewOnSingleClick
-        )
-        showsBeadIDUnderTitle = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsBeadIDUnderTitle
-        )
-        showsCopyBeadIDButtonInBreadcrumbs = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsCopyBeadIDButtonInBreadcrumbs
-        )
-        showsProjectNameInBreadcrumbs = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsProjectNameInBreadcrumbs
-        )
-        showsClosedBeadsInSidebar = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsClosedBeadsInSidebar
-        )
-        showsGatesInSidebar = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsGatesInSidebar
-        )
-        showsZeroCountSidebarSections = Self.boolValue(
-            userDefaults,
-            preference: BeadazzleAppBoolPreferences.showsZeroCountSidebarSections
-        )
+        // The one list of app-scoped preference loads lives in `reloadAppPreferences()`;
+        // duplicating it here is how a new preference ends up loading in one place but
+        // not the other. Safe to call this late in init: every property already has its
+        // default, each `didSet` guards on `oldValue`, and the reload guard suppresses
+        // peer broadcasts.
+        reloadAppPreferences()
         _recentProjects = Self.loadRecentProjects(from: userDefaults)
 
         if recentProjects.isEmpty,

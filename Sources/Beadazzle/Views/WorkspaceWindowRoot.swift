@@ -6,7 +6,7 @@ import SwiftUI
 /// window already showing a project forward, and know which store auxiliary scenes read.
 struct WorkspaceWindowRoot: View {
     let registry: BeadWorkspaceWindowRegistry
-    let request: BeadWorkspaceWindowRequest
+    @Binding var request: BeadWorkspaceWindowRequest
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -26,6 +26,15 @@ struct WorkspaceWindowRoot: View {
             .onAppear {
                 registry.openNewWindow = { openWindow(value: $0) }
                 registry.prepareWindow(request)
+            }
+            .onChange(of: store.projectURL) { _, projectURL in
+                // Window restoration encodes the presented value, so it must record the
+                // project the window actually shows — a window that switched projects
+                // would otherwise restore the one it was first opened with. The id stays
+                // untouched: it keys this window's registry entry.
+                let path = projectURL?.standardizedFileURL.path
+                guard request.projectPath != path else { return }
+                request.projectPath = path
             }
             .onDisappear {
                 registry.releaseWindow(request.id)

@@ -112,7 +112,20 @@ extension BeadStore {
         } else {
             userDefaults.set(path, forKey: BeadazzlePreferenceKeys.bdCLIPath)
         }
-        appPreferencesDidChange()
+        // The Settings text field persists on every keystroke; peers re-read all app
+        // preferences on each broadcast, so coalesce until typing pauses.
+        scheduleAppPreferencesBroadcast()
+    }
+
+    private func scheduleAppPreferencesBroadcast() {
+        guard !isReloadingSharedAppState else { return }
+        pendingAppPreferencesBroadcast?.cancel()
+        pendingAppPreferencesBroadcast = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, let self else { return }
+            self.pendingAppPreferencesBroadcast = nil
+            self.appPreferencesDidChange()
+        }
     }
 
     internal func persistProjectOpenDestination() {

@@ -380,6 +380,35 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(otherStore.stateDimensionDisplayName(for: "phase"), "Phase")
     }
 
+    /// Colon-shaped label namespaces are offered for pinning in the Properties settings
+    /// pane, but stay out of the settable options (bulk edit, folder automation) until
+    /// pinned — otherwise `bd set-state` could rewrite labels the user never opted in
+    /// to managing.
+    func testPinnableStateDimensionOptionsSuggestColonLabelNamespacesWithoutMakingThemSettable() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"Example","status":"open","priority":1,"issue_type":"task","labels":["area:ui","phase:design","plain-label"]}
+            {"_type":"issue","id":"bd-2","title":"Example","status":"open","priority":1,"issue_type":"task","labels":["area:api"]}
+            {"_type":"issue","id":"bd-state-event","title":"State change: phase → design","status":"closed","priority":1,"issue_type":"event","parent_id":"bd-1"}
+            """
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+
+        XCTAssertEqual(store.discoveredStateDimensions, ["phase"])
+        XCTAssertEqual(store.pinnableStateDimensionOptions(), ["area", "phase"])
+        XCTAssertEqual(store.unpinnedStateDimensionOptions(), ["phase"])
+        XCTAssertEqual(store.stateValueOptions(for: "area"), ["api", "ui"])
+
+        XCTAssertTrue(store.pinStateDimension("area"))
+        XCTAssertEqual(store.pinnableStateDimensionOptions(), ["phase"])
+        XCTAssertEqual(store.unpinnedStateDimensionOptions(), ["phase"])
+        XCTAssertTrue(store.pinStateDimension("phase"))
+        XCTAssertEqual(store.pinnableStateDimensionOptions(), [])
+        XCTAssertEqual(store.unpinnedStateDimensionOptions(), [])
+    }
+
     func testStateDimensionDisplayNameNormalizationDropsInvalidAndDefaultOverrides() {
         XCTAssertEqual(
             BeadStore.normalizedStateDimensionDisplayNames([

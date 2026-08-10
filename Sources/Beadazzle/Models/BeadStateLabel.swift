@@ -160,8 +160,9 @@ enum BeadStateLabel {
 
     /// Extracts explicit state provenance from the event bead created by
     /// `bd set-state`. This is intentionally stricter than `parse(_:)`: an
-    /// arbitrary `area:ui` label is not offered as a state property merely
-    /// because it contains a colon.
+    /// arbitrary `area:ui` label never gains recorded-state provenance merely
+    /// because it contains a colon — it can only be suggested as an unmanaged
+    /// pinnable namespace.
     ///
     /// `bd` permits the arrow token in both state names and values, even though
     /// it also uses that token as the event-title separator. Known labels and

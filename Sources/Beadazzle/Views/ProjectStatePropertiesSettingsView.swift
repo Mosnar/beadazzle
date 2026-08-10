@@ -7,7 +7,7 @@ struct ProjectStatePropertiesSettingsPane: View {
 
     var body: some View {
         let pinnedDimensions = store.pinnedStateDimensions
-        let availableDimensions = store.unpinnedStateDimensionOptions()
+        let availableDimensions = store.pinnableStateDimensionOptions()
         let pinnedProperties = pinnedDimensions.enumerated().map { index, dimension in
             ProjectPinnedStateProperty(
                 dimension: dimension,
@@ -94,7 +94,7 @@ struct ProjectStatePropertiesSettingsPane: View {
     }
 
     private func pinDroppedStateProperties(_ dimensions: [String], before destination: String?) -> Bool {
-        let availableDimensions = Set(store.unpinnedStateDimensionOptions())
+        let availableDimensions = Set(store.pinnableStateDimensionOptions())
         var seenDimensions: Set<String> = []
         var insertionIndex = destination.flatMap {
             store.pinnedStateDimensions.firstIndex(of: $0)

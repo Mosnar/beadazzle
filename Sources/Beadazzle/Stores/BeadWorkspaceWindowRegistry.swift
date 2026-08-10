@@ -6,6 +6,8 @@ import SwiftUI
 protocol BeadAppStateBroadcasting: AnyObject {
     func appPreferencesDidChange(from store: BeadStore)
     func recentProjectsDidChange(from store: BeadStore)
+    /// The store's `bd context` resolved, so its canonical tracker identity is now known.
+    func projectTrackerDidResolve(from store: BeadStore)
 }
 
 /// Owns one `BeadStore` per workspace window and routes project opens between them.
@@ -28,6 +30,15 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
 
     @ObservationIgnored private var storesByWindowID: [UUID: BeadStore] = [:]
     @ObservationIgnored private var windowsByWindowID: [UUID: NSWindow] = [:]
+    /// Closed windows whose stores are still draining queued `bd` writes. They keep their
+    /// tracker reserved so a reopen cannot start a second write queue against it.
+    @ObservationIgnored private var drainingStoresByWindowID: [UUID: BeadStore] = [:]
+    @ObservationIgnored private var drainWaitersByWindowID: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    /// Stable creation order for deterministic duplicate-tracker repair. `windowOrder`
+    /// reshuffles with key-window changes, so it cannot arbitrate which of two
+    /// simultaneously resolving windows keeps a shared tracker.
+    @ObservationIgnored private var storeOrdinalByWindowID: [UUID: Int] = [:]
+    @ObservationIgnored private var nextStoreOrdinal = 0
     /// Most recently keyed window last. Lookups walk it in reverse so the newest match
     /// wins, without depending on `NSApp.keyWindow`, which points at an auxiliary window
     /// whenever Settings is frontmost.
@@ -94,11 +105,21 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         let store = makeStore()
         store.appStateBroadcaster = self
         storesByWindowID[request.id] = store
+        storeOrdinalByWindowID[request.id] = nextStoreOrdinal
+        nextStoreOrdinal += 1
         if !windowOrder.contains(request.id) {
             windowOrder.append(request.id)
         }
-        windowCompositionRevision &+= 1
+        // First resolution happens inside the window body's view update; mutating the
+        // observed revision there is undefined behavior, so the bump waits a turn.
+        scheduleWindowCompositionRevisionBump()
         return store
+    }
+
+    private func scheduleWindowCompositionRevisionBump() {
+        Task { @MainActor [weak self] in
+            self?.windowCompositionRevision &+= 1
+        }
     }
 
     /// Loads the window's project now that it exists: the one it was opened with, or the
@@ -106,19 +127,35 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     /// window has a project, so a repeated `onAppear` never reloads or resets it.
     func prepareWindow(_ request: BeadWorkspaceWindowRequest) {
         guard let store = storesByWindowID[request.id], store.projectURL == nil else { return }
-        let takenPaths = Set(
-            storesByWindowID
-                .filter { $0.key != request.id }
-                .compactMap { $0.value.projectURL?.standardizedFileURL.path }
-        )
-        // Restoration can hand two windows the same recorded project. Fall through to the
-        // recents rather than opening it twice.
+        let takenPaths = takenProjectPaths(excludingWindowID: request.id)
+        // Restoration can hand two windows the same recorded project, or a project whose
+        // folder was deleted while the app was closed. Fall through to the recents rather
+        // than opening it twice or landing the window on a missing directory. An explicit
+        // "open in new window" is different: the user picked that folder just now, so a
+        // missing directory must surface its failure state, not an unrelated project.
         if let projectURL = request.projectURL,
-           !takenPaths.contains(projectURL.standardizedFileURL.path) {
+           !takenPaths.contains(projectURL.standardizedFileURL.path),
+           request.opensProjectExplicitly || store.projectDirectoryExists(at: projectURL) {
             store.openProject(projectURL)
             return
         }
         store.openDefaultProjectIfAvailable(excludingProjectPaths: takenPaths)
+    }
+
+    /// Project paths other windows already show — including closed windows still draining
+    /// queued writes, whose trackers stay reserved until the drain finishes.
+    private func takenProjectPaths(excludingWindowID excludedID: UUID?) -> Set<String> {
+        var paths = Set(
+            storesByWindowID
+                .filter { $0.key != excludedID }
+                .compactMap { $0.value.projectURL?.standardizedFileURL.path }
+        )
+        for store in drainingStoresByWindowID.values {
+            if let path = store.projectURL?.standardizedFileURL.path {
+                paths.insert(path)
+            }
+        }
+        return paths
     }
 
     func registerWindow(_ window: NSWindow, for windowID: UUID) {
@@ -126,8 +163,15 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         if !windowOrder.contains(windowID) {
             windowOrder.append(windowID)
         }
-        if window.isKeyWindow {
-            windowDidBecomeKey(window)
+        guard window.isKeyWindow else { return }
+        // Windows report themselves from inside a SwiftUI update pass
+        // (`updateNSView`/`viewDidMoveToWindow`), so the observed frontmost change is
+        // deferred out of it. Later key changes arrive via the AppKit notification.
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.windowsByWindowID[windowID] === window,
+                  window.isKeyWindow else { return }
+            self.windowDidBecomeKey(window)
         }
     }
 
@@ -139,9 +183,23 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     func releaseWindow(_ windowID: UUID) {
         let hadWindow = storesByWindowID[windowID] != nil || windowsByWindowID[windowID] != nil
         if let store = storesByWindowID.removeValue(forKey: windowID) {
-            store.appStateBroadcaster = nil
+            // The broadcaster reference stays: Settings can remain bound to this store for
+            // a beat after the window closes, and an edit made in that gap must still
+            // reach the surviving windows. Removal from the maps above already stops
+            // broadcasts *to* this store, and the reference is weak.
             store.prepareForWindowClose()
+            if store.hasPendingMutationWrites {
+                // The tracker stays reserved while the closed window's queue drains, so a
+                // reopen cannot start a second write queue against it. `openProject` and
+                // `prepareWindow` honor the lease; reopen requests wait it out.
+                drainingStoresByWindowID[windowID] = store
+                Task { @MainActor [weak self] in
+                    await store.finishRetirementAfterWindowClose()
+                    self?.completeDrain(of: windowID)
+                }
+            }
         }
+        storeOrdinalByWindowID.removeValue(forKey: windowID)
         windowsByWindowID.removeValue(forKey: windowID)
         windowOrder.removeAll { $0 == windowID }
         if frontmostWindowID == windowID {
@@ -150,6 +208,29 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         if hadWindow {
             windowCompositionRevision &+= 1
         }
+    }
+
+    private func completeDrain(of windowID: UUID) {
+        drainingStoresByWindowID.removeValue(forKey: windowID)
+        if let waiters = drainWaitersByWindowID.removeValue(forKey: windowID) {
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    private func awaitDrainCompletion(of windowID: UUID) async {
+        guard drainingStoresByWindowID[windowID] != nil else { return }
+        await withCheckedContinuation { continuation in
+            drainWaitersByWindowID[windowID, default: []].append(continuation)
+        }
+    }
+
+    private func drainingWindowID(showing projectURL: URL) -> UUID? {
+        let path = projectURL.standardizedFileURL.path
+        return drainingStoresByWindowID.first {
+            $0.value.projectURL?.standardizedFileURL.path == path
+        }?.key
     }
 
     private func windowWillClose(_ window: NSWindow) {
@@ -181,6 +262,16 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             return store
         }
         return windowOrder.reversed().compactMap { storesByWindowID[$0] }.first
+    }
+
+    /// The frontmost workspace window's project. Menu commands fall back to this when a
+    /// non-workspace window (Settings, Project Settings) is key and no scene publishes
+    /// focused workspace values. Reads both observable inputs so menus revalidate as
+    /// windows come, go, and change key.
+    var frontmostProjectURL: URL? {
+        _ = windowCompositionRevision
+        _ = frontmostWindowID
+        return frontmostStore?.projectURL
     }
 
     /// Never nil, so Settings still works with no workspace window open. The detached
@@ -239,7 +330,11 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     ) -> Bool {
         let standardizedURL = url.standardizedFileURL
         if store.projectURL?.standardizedFileURL == standardizedURL {
+            // Reopening the window's own project runs the full reopen rather than treating
+            // the request as satisfied: picking the same folder again is the user's retry
+            // path when a load failed (missing snapshot, unavailable tracker).
             focusWindow(showing: standardizedURL)
+            store.openProject(standardizedURL)
             return true
         }
         // Deliberately keyed on store ownership rather than on being able to focus the
@@ -249,12 +344,23 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             focusWindow(existingWindowID)
             return false
         }
+        // A just-closed window is still draining queued writes to this tracker. Opening
+        // now would run a second write queue against it, so the open resumes — with the
+        // caller's destination — once the drain and its final snapshot export finish.
+        if let drainingWindowID = drainingWindowID(showing: standardizedURL) {
+            Task { @MainActor [weak self, weak store] in
+                await self?.awaitDrainCompletion(of: drainingWindowID)
+                guard let self, let store else { return }
+                self.openProject(standardizedURL, from: store, destination: destination)
+            }
+            return false
+        }
         guard resolvedDestination(destination, store: store) == .newWindow,
               let openNewWindow else {
             store.openProject(standardizedURL)
             return true
         }
-        openNewWindow(BeadWorkspaceWindowRequest(projectURL: standardizedURL))
+        openNewWindow(BeadWorkspaceWindowRequest(projectURL: standardizedURL, opensProjectExplicitly: true))
         return false
     }
 
@@ -310,6 +416,47 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     }
 
     // MARK: - BeadAppStateBroadcasting
+
+    /// Two project roots can resolve to one tracker (worktree redirects, configured
+    /// Beads directories), which path-based routing cannot see until `bd context`
+    /// answers. Once it does, exactly one window may keep the tracker: the one bound
+    /// longest ago wins deterministically — two simultaneously resolving windows must
+    /// not both resign — and the newer binding falls back like a duplicate restoration.
+    ///
+    /// Called from inside the store's load pipeline, so the repair — which reenters
+    /// store code — runs on a fresh turn and revalidates everything first.
+    func projectTrackerDidResolve(from store: BeadStore) {
+        Task { @MainActor [weak self, weak store] in
+            guard let self, let store else { return }
+            self.repairDuplicateTrackerBinding(of: store)
+        }
+    }
+
+    private func repairDuplicateTrackerBinding(of store: BeadStore) {
+        guard let identity = store.resolvedTrackerIdentityPath,
+              let windowID = windowID(for: store),
+              let ordinal = storeOrdinalByWindowID[windowID] else { return }
+        // Either side of the pair can resolve first, so the repair must be able to
+        // resign whichever binding is newer — not only the store that just resolved.
+        guard let conflicting = storesByWindowID.first(where: { entry in
+            entry.key != windowID && entry.value.resolvedTrackerIdentityPath == identity
+        }) else { return }
+        let conflictingOrdinal = storeOrdinalByWindowID[conflicting.key] ?? .max
+        let (loserID, loser, winnerID) = ordinal > conflictingOrdinal
+            ? (windowID, store, conflicting.key)
+            : (conflicting.key, conflicting.value, windowID)
+        var excludedPaths = takenProjectPaths(excludingWindowID: loserID)
+        if let duplicatePath = loser.projectURL?.standardizedFileURL.path {
+            excludedPaths.insert(duplicatePath)
+        }
+        loser.resignProjectWithDuplicateTracker(excludingProjectPaths: excludedPaths)
+        focusWindow(winnerID)
+        windowCompositionRevision &+= 1
+    }
+
+    private func windowID(for store: BeadStore) -> UUID? {
+        storesByWindowID.first { $0.value === store }?.key
+    }
 
     func appPreferencesDidChange(from store: BeadStore) {
         forEachStore(excluding: store) { $0.reloadAppPreferences() }

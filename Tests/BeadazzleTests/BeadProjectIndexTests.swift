@@ -118,6 +118,35 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertEqual(index.count(forLabel: "phase:design"), 0)
     }
 
+    func testLabelStateDimensionNamesSuggestColonNamespacesWithoutProvenance() {
+        let issues = [
+            issue(
+                "bd-1",
+                status: "open",
+                type: "task",
+                labels: ["area:ui", "plain-label", "source:user-report"]
+            ),
+            issue(
+                "bd-2",
+                status: "open",
+                type: "task",
+                labels: ["area:api", "odd=name:value", " padded:value", "blank-value:  "]
+            ),
+            issue(
+                "bd-state-event",
+                title: "State change: phase → design",
+                status: "closed",
+                type: "event",
+                parentID: "bd-1"
+            )
+        ]
+
+        let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics())
+
+        XCTAssertEqual(index.labelStateDimensionNames, ["area", "source"])
+        XCTAssertEqual(index.stateDimensionNames, ["phase"])
+    }
+
     func testStateClearEventPreservesDimensionWithoutAddingNoneValue() {
         let issues = [
             issue("bd-1", status: "open", type: "task"),

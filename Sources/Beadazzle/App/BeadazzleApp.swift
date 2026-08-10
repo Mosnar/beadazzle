@@ -12,7 +12,7 @@ struct BeadazzleApp: App {
         // on another project. Windows created without a value — at launch, or from the
         // Window menu — get a fresh identity and no project from `defaultValue`.
         WindowGroup("Beadazzle", id: "main", for: BeadWorkspaceWindowRequest.self) { $request in
-            WorkspaceWindowRoot(registry: registry, request: request)
+            WorkspaceWindowRoot(registry: registry, request: $request)
         } defaultValue: {
             BeadWorkspaceWindowRequest()
         }
@@ -29,7 +29,7 @@ struct BeadazzleApp: App {
             WorkspaceCommands()
             BeadSaveCommands()
             AppSettingsCommands()
-            ProjectSettingsCommands()
+            ProjectSettingsCommands(registry: registry)
 
             CommandMenu("Navigate") {
                 BeadNavigationMenuItems()

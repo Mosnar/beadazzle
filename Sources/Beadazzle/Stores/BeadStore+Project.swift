@@ -75,16 +75,94 @@ extension BeadStore {
     }
 
     /// Retires everything this store owns when its window goes away: pending workspace
-    /// state is persisted first, then the in-flight tasks, queued writes, and file-system
-    /// monitors are cancelled so a closed window stops touching the tracker directory.
+    /// state is persisted first, then the in-flight tasks and file-system monitors are
+    /// cancelled so a closed window stops watching the tracker directory.
+    ///
+    /// Queued `bd` writes are deliberately left to drain: each one is a user edit that the
+    /// optimistic UI already showed as applied, so unlike a project switch — where the
+    /// store is being rebound and stale writes are rejected — closing the window must not
+    /// silently drop them. The registry keeps the tracker reserved until
+    /// `finishRetirementAfterWindowClose()` completes.
     func prepareForWindowClose() {
+        isRetiredAfterWindowClose = true
         flushPendingWorkspaceState()
         project.cancelLifecycleWork()
         cancelSemanticDefinitionsRefresh()
-        mutations.writeQueue.invalidatePending()
         workspace.cancelQueryWork()
         detail.cancelSelectionWork()
         stopDataSourceMonitor()
+    }
+
+    var hasPendingMutationWrites: Bool {
+        mutations.writeQueue.hasPendingOperations
+    }
+
+    /// Completes a closed window's write handoff: waits for the serialized queue to
+    /// drain, then exports one final readable snapshot so the drained writes are visible
+    /// to the next window that opens this tracker. The reconcile pipeline is suppressed
+    /// once the window closes — there is no UI left to reconcile — so this is the export
+    /// half a reconcile would otherwise have run.
+    func finishRetirementAfterWindowClose() async {
+        await mutations.writeQueue.drainPending()
+        guard let projectURL else { return }
+        try? await commands.exportReadableSnapshot(projectURL: projectURL)
+    }
+
+    /// Releases a project whose tracker resolved to one another window already owns,
+    /// then falls back to the recents like a duplicate restoration — or to the empty
+    /// state when every remaining recent is taken or gone.
+    internal func resignProjectWithDuplicateTracker(excludingProjectPaths: Set<String>) {
+        guard let duplicateURL = projectURL else { return }
+        let duplicatePath = duplicateURL.standardizedFileURL.path
+        let fallbackURL = recentProjects.map(\.url).first { url in
+            let path = url.standardizedFileURL.path
+            return path != duplicatePath
+                && !excludingProjectPaths.contains(path)
+                && projectDirectoryExists(at: url)
+        }
+        if let fallbackURL {
+            openProject(fallbackURL)
+        } else {
+            closeProject()
+        }
+    }
+
+    /// Tears the current project down to the no-project state: the outgoing half of
+    /// `openProject` without an incoming project.
+    internal func closeProject() {
+        guard let outgoingProjectURL = projectURL else { return }
+        let outgoingBeadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
+        flushPendingWorkspaceState()
+        project.cancelLifecycleWork()
+        mutations.writeQueue.invalidatePending()
+        mutations.resetMetadataMutations()
+        folderAutomationSummary = nil
+        folderAutomationProgress = nil
+        workspace.cancelQueryWork()
+        detail.cancelSelectionWork()
+        let activityHistoryRepository = activityHistoryRepository
+        Task {
+            await activityHistoryRepository.discard(
+                projectURL: outgoingProjectURL,
+                beadsDirectoryURL: outgoingBeadsDirectoryURL
+            )
+        }
+        stopDataSourceMonitor()
+        _projectURL = nil
+        resetProjectHealthStatus()
+        _isApplyingBeadsSetup = false
+        _beadsSetupIntent = nil
+        beadsSetupDismissedFingerprint = nil
+        _beadsSetupAssessment = nil
+        _beadsSetupFindings = []
+        project.cacheProjectConfigurationInspection(nil)
+        clearLoadedProjectData()
+        resetWorkspaceQueryForProjectSwitch()
+        pendingRestoredWorkspaceSnapshot = nil
+        resetWorkspaceHistory()
+        _projectReadiness = .noProject
+        _isLoading = false
+        lastError = nil
     }
 
     func removeRecentProject(_ project: RecentProject) {
@@ -135,7 +213,7 @@ extension BeadStore {
         return projects
     }
 
-    private func projectDirectoryExists(at url: URL) -> Bool {
+    internal func projectDirectoryExists(at url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
@@ -586,6 +664,10 @@ extension BeadStore {
             cachedDefinitionsTrackerDirectoryURL = trackerDirectoryURL
         }
         _projectEnvironment = loadedProject.environment
+        // Exclusivity is by resolved tracker identity, not project path: two roots can
+        // route to one tracker. The registry defers its duplicate repair to a fresh turn,
+        // so this cannot reenter the store mid-apply.
+        appStateBroadcaster?.projectTrackerDidResolve(from: self)
         if isApplyingBeadsSetup {
             // Setup schedules one audit after the applied project is installed. Avoid
             // racing it with a duplicate remote inspection during this intermediate load.

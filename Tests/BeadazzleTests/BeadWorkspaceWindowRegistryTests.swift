@@ -97,10 +97,14 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertEqual(context.registry.windowID(showing: context.projectA), first.id)
     }
 
-    func testReopeningTheWindowsOwnProjectIsANoOp() throws {
+    /// Picking the current project again is the user's retry path after a failed load, so
+    /// it reruns the full reopen in place instead of opening another window — or worse,
+    /// being swallowed as already satisfied.
+    func testReopeningTheWindowsOwnProjectReloadsItInPlace() throws {
         let context = try makeContext()
         let window = context.makeWindow()
         window.store.openProject(context.projectA)
+        window.store.statusFilters = ["in_progress"]
 
         let openedHere = context.registry.openProject(
             context.projectA,
@@ -110,6 +114,16 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
 
         XCTAssertTrue(openedHere)
         XCTAssertTrue(context.openedRequests.isEmpty)
+        XCTAssertEqual(window.store.projectURL?.path, context.projectA.standardizedFileURL.path)
+        // The reopen persisted and re-restored workspace state, the observable side effect
+        // of a real reload rather than a swallowed request.
+        XCTAssertEqual(
+            BeadWorkspaceStateRepository(userDefaults: context.defaults)
+                .load(projectURL: context.projectA)?
+                .snapshot()
+                .statusFilters,
+            ["in_progress"]
+        )
     }
 
     // MARK: - Window preparation
@@ -197,6 +211,59 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertEqual(store.projectURL?.path, context.projectB.standardizedFileURL.path)
     }
 
+    /// An explicit "open in new window" of a folder that disappeared must surface that
+    /// project's failure state, not silently show an unrelated recent project. Only
+    /// restoration — which decodes the request without the explicit flag — falls back.
+    func testExplicitNewWindowRequestOpensAMissingFolderIntoItsFailureState() throws {
+        let context = try makeContext()
+        let seeded = context.makeWindow()
+        seeded.store.openProject(context.projectB)
+        context.registry.releaseWindow(seeded.id)
+        try FileManager.default.removeItem(at: context.projectA)
+
+        let request = BeadWorkspaceWindowRequest(
+            projectURL: context.projectA,
+            opensProjectExplicitly: true
+        )
+        let store = context.registry.store(for: request)
+        context.registry.prepareWindow(request)
+
+        XCTAssertEqual(store.projectURL?.path, context.projectA.standardizedFileURL.path)
+    }
+
+    func testExplicitFlagDoesNotSurviveEncoding() throws {
+        let request = BeadWorkspaceWindowRequest(
+            projectURL: URL(fileURLWithPath: "/tmp/example"),
+            opensProjectExplicitly: true
+        )
+
+        let decoded = try JSONDecoder().decode(
+            BeadWorkspaceWindowRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+
+        XCTAssertEqual(decoded.id, request.id)
+        XCTAssertEqual(decoded.projectPath, request.projectPath)
+        XCTAssertFalse(decoded.opensProjectExplicitly)
+    }
+
+    /// A project folder can vanish while the app is closed. Restoration must fall back to
+    /// the recents like the launch path always has, not open the missing directory into a
+    /// load-error window.
+    func testPreparingAWindowSkipsARestoredProjectWhoseFolderIsGone() throws {
+        let context = try makeContext()
+        let seeded = context.makeWindow()
+        seeded.store.openProject(context.projectB)
+        context.registry.releaseWindow(seeded.id)
+        try FileManager.default.removeItem(at: context.projectA)
+
+        let request = BeadWorkspaceWindowRequest(projectURL: context.projectA)
+        let store = context.registry.store(for: request)
+        context.registry.prepareWindow(request)
+
+        XCTAssertEqual(store.projectURL?.path, context.projectB.standardizedFileURL.path)
+    }
+
     func testReleasingAWindowFreesItsProjectForReuse() throws {
         let context = try makeContext()
         let window = context.makeWindow()
@@ -267,6 +334,42 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertFalse(open.store.showsClosedBeadsInSidebar)
     }
 
+    /// Settings can stay bound to a closing window's store for a beat after the window
+    /// goes away; a preference edited in that gap must still reach surviving windows.
+    func testReleasedStoreStillBroadcastsToSurvivingWindows() throws {
+        let context = try makeContext()
+        let closed = context.makeWindow()
+        let open = context.makeWindow()
+        context.registry.releaseWindow(closed.id)
+
+        closed.store.showsClosedBeadsInSidebar = false
+
+        XCTAssertFalse(open.store.showsClosedBeadsInSidebar)
+    }
+
+    // MARK: - Tracker identity
+
+    /// Two project roots can resolve to one effective tracker (worktree redirects, routed
+    /// `.beads` directories), which path-based routing cannot see until `bd context`
+    /// answers. The registry repairs it at resolve time: the older binding keeps the
+    /// tracker, and the newer one resigns like a duplicate restoration.
+    func testProjectRootsSharingOneTrackerCollapseToASingleBinding() async throws {
+        let trackerURL = try makeSharedTracker()
+        let context = try makeContext(
+            commands: SharedTrackerTestCommands(trackerDirectoryURL: trackerURL)
+        )
+        let first = context.makeWindow()
+        first.store.openProject(context.projectA)
+        try await waitUntil { first.store.resolvedTrackerIdentityPath != nil }
+
+        let second = context.makeWindow()
+        second.store.openProject(context.projectB)
+
+        try await waitUntil { second.store.projectURL == nil }
+        XCTAssertEqual(first.store.projectURL?.path, context.projectA.standardizedFileURL.path)
+        XCTAssertEqual(second.store.projectReadiness, .noProject)
+    }
+
     // MARK: - Project switcher state
 
     func testProjectOpenInAnotherWindowIsReportedToTheSwitcher() throws {
@@ -313,12 +416,15 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     }
 
     /// Views observe the composition revision to know when to re-ask which projects are
-    /// open elsewhere; if it doesn't move, the switcher shows stale markers.
-    func testWindowCompositionRevisionMovesWhenWindowsComeAndGo() throws {
+    /// open elsewhere; if it doesn't move, the switcher shows stale markers. Store
+    /// creation happens inside a window body's view update, so its bump lands a turn
+    /// later rather than mutating observed state mid-update.
+    func testWindowCompositionRevisionMovesWhenWindowsComeAndGo() async throws {
         let context = try makeContext()
         let start = context.registry.windowCompositionRevision
 
         let window = context.makeWindow()
+        try await waitUntilRevision(of: context.registry, exceeds: start)
         let afterOpen = context.registry.windowCompositionRevision
         context.registry.releaseWindow(window.id)
         let afterClose = context.registry.windowCompositionRevision
@@ -328,6 +434,21 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         // A repeat release changed nothing, so it must not look like a change either.
         context.registry.releaseWindow(window.id)
         XCTAssertEqual(context.registry.windowCompositionRevision, afterClose)
+    }
+
+    private func waitUntilRevision(
+        of registry: BeadWorkspaceWindowRegistry,
+        exceeds value: Int,
+        timeout: TimeInterval = 3.0
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while registry.windowCompositionRevision <= value {
+            if Date() > deadline {
+                XCTFail("Timed out waiting for the composition revision to advance")
+                return
+            }
+            await Task.yield()
+        }
     }
 
     // MARK: - Shared app state
@@ -427,10 +548,10 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         }
     }
 
-    private func makeContext() throws -> Context {
+    private func makeContext(commands: (any BeadsCommanding)? = nil) throws -> Context {
         let defaults = makeUserDefaults()
         let registry = BeadWorkspaceWindowRegistry {
-            BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
+            BeadStore(userDefaults: defaults, commands: commands ?? CurrentDoltTestCommands())
         }
         let context = Context(
             registry: registry,
@@ -478,5 +599,79 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
             try? FileManager.default.removeItem(at: projectURL.deletingLastPathComponent())
         }
         return projectURL
+    }
+
+    /// A tracker directory with a readable snapshot, standing in for the effective Beads
+    /// directory that several project roots can share through `bd context`.
+    private func makeSharedTracker() throws -> URL {
+        let trackerURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeadazzleWindowRegistryTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(".beads", isDirectory: true)
+        try FileManager.default.createDirectory(at: trackerURL, withIntermediateDirectories: true)
+        let snapshot = """
+        {"_type":"issue","id":"bd-1","title":"Example","status":"open","priority":1,"issue_type":"task"}
+        """
+        try snapshot.write(
+            to: trackerURL.appendingPathComponent("issues.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: trackerURL.deletingLastPathComponent())
+        }
+        return trackerURL
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 5.0,
+        _ condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                XCTFail("Timed out waiting for condition")
+                return
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+}
+
+/// Routes every project root to one shared tracker directory, the shape `bd context`
+/// reports for worktree redirects and explicitly configured Beads directories.
+private struct SharedTrackerTestCommands: BeadsCommanding {
+    let trackerDirectoryURL: URL
+
+    func exportReadableSnapshot(projectURL: URL) async throws {}
+    func create(projectURL: URL, draft: IssueDraft) async throws -> String { "bd-created" }
+    func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {}
+    func updateMetadata(
+        projectURL: URL,
+        issueID: String,
+        assignee: String?,
+        labels: [String]?,
+        originalLabels: [String]?,
+        dueAt: IssueMetadataDateUpdate,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {}
+    func close(projectURL: URL, ids: [String], reason: String?) async throws {}
+    func delete(projectURL: URL, ids: [String]) async throws {}
+    func bulkUpdate(
+        projectURL: URL,
+        ids: [String],
+        status: String?,
+        type: String?,
+        priority: Int?,
+        deferUntil: IssueMetadataDateUpdate
+    ) async throws {}
+    func addDependency(projectURL: URL, issueID: String, dependsOnID: String, type: String) async throws {}
+    func removeDependency(projectURL: URL, issueID: String, dependsOnID: String) async throws {}
+    func addComment(projectURL: URL, issueID: String, text: String) async throws {}
+    func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] { [] }
+    func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] { [] }
+    func saveCustomStatuses(projectURL: URL, statuses: [BeadStatusDefinition]) async throws {}
+    func saveCustomTypes(projectURL: URL, types: [BeadTypeDefinition]) async throws {}
+    func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
+        .testContext(projectURL: projectURL, beadsDirectoryURL: trackerDirectoryURL)
     }
 }

@@ -12,10 +12,22 @@ import Foundation
 struct BeadWorkspaceWindowRequest: Hashable, Codable, Identifiable {
     var id: UUID
     var projectPath: String?
+    /// True only for a request built in-process by an explicit "open in new window"
+    /// action. Deliberately excluded from `CodingKeys`: a restored window must not
+    /// inherit it, so restoration can fall back to the recents when the recorded folder
+    /// vanished, while an explicit open of a missing folder surfaces the failure instead
+    /// of silently showing an unrelated project.
+    var opensProjectExplicitly = false
 
-    init(id: UUID = UUID(), projectURL: URL? = nil) {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case projectPath
+    }
+
+    init(id: UUID = UUID(), projectURL: URL? = nil, opensProjectExplicitly: Bool = false) {
         self.id = id
         self.projectPath = projectURL?.standardizedFileURL.path
+        self.opensProjectExplicitly = opensProjectExplicitly
     }
 
     var projectURL: URL? {

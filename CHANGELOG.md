@@ -18,6 +18,7 @@ for users, not for the commit log.
 - Work on several projects at once, each in its own window. File ▸ Open Beads Project in New Window (⇧⌘O) opens a project alongside the one you already have, and holding Option while picking a project — or right-clicking it in the project picker — sends it to a new window too.
 - The project picker gained a new-window button on each recent project and on Add Folder, and marks the projects that are already open in another window so you can see where everything is before you switch.
 - A new Settings ▸ General option, "Open projects in", chooses whether a plain open reuses the current window or opens a new one.
+- Project Settings ▸ Properties now suggests properties found in your existing `name:value` labels (like `area:ui`), listing them as unpinned properties alongside the ones recorded by `bd set-state`. Pinning one promotes the whole namespace to a managed property; until then those labels stay ordinary labels.
 
 ### Changed
 

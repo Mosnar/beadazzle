@@ -4171,6 +4171,103 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.projectURL, secondProjectURL)
     }
 
+    /// A closed window's tracker stays reserved while its write queue drains: the blank
+    /// fallback skips it, an explicit reopen waits for the drain plus the retirement
+    /// export, and the retired store schedules no reconciles of its own.
+    func testReopeningAClosedProjectWaitsForItsQueuedWritesToDrain() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateDelays([.milliseconds(300)])
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let firstRequest = BeadWorkspaceWindowRequest()
+        let firstStore = registry.store(for: firstRequest)
+        firstStore.openProject(projectURL)
+        try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-2") != nil }
+
+        let firstWrite = Task { @MainActor in
+            await firstStore.setState(issueID: "bd-1", dimension: "phase", value: "implementation")
+        }
+        let secondWrite = Task { @MainActor in
+            await firstStore.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
+        }
+        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        registry.releaseWindow(firstRequest.id)
+
+        // The draining tracker is reserved: the blank-window fallback must not take it.
+        let blankRequest = BeadWorkspaceWindowRequest()
+        let blankStore = registry.store(for: blankRequest)
+        registry.prepareWindow(blankRequest)
+        XCTAssertNil(blankStore.projectURL)
+
+        // An explicit reopen defers until the queue drains instead of opening a second
+        // write queue against the tracker.
+        let reopenRequest = BeadWorkspaceWindowRequest()
+        let reopenStore = registry.store(for: reopenRequest)
+        let openedImmediately = registry.openProject(
+            projectURL,
+            from: reopenStore,
+            destination: .currentWindow
+        )
+        XCTAssertFalse(openedImmediately)
+        XCTAssertNil(reopenStore.projectURL)
+
+        let firstSucceeded = await firstWrite.value
+        let secondSucceeded = await secondWrite.value
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        try await waitUntil { reopenStore.projectURL != nil }
+        XCTAssertEqual(reopenStore.projectURL?.path, projectURL.standardizedFileURL.path)
+
+        // Exactly one export ran after the close: retirement's final snapshot. The
+        // settled writes must not have scheduled reconciles on the retired store.
+        try await waitUntilAsync { await commands.exportCallCount == 1 }
+        try? await Task.sleep(for: .milliseconds(800))
+        let exportCount = await commands.exportCallCount
+        XCTAssertEqual(exportCount, 1)
+    }
+
+    /// Closing a window is not a project switch: every queued write is a user edit the
+    /// optimistic UI already showed as applied, so teardown lets the queue drain rather
+    /// than dropping writes that haven't started yet.
+    func testWindowCloseDrainsQueuedWritesInsteadOfDroppingThem() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateDelays([.milliseconds(300)])
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let first = Task { @MainActor in
+            await store.setState(issueID: "bd-1", dimension: "phase", value: "implementation")
+        }
+        let second = Task { @MainActor in
+            await store.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
+        }
+        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        store.prepareForWindowClose()
+
+        let firstSucceeded = await first.value
+        let secondSucceeded = await second.value
+
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        let calls = await commands.setStateCalls
+        XCTAssertEqual(Set(calls.map(\.issueID)), ["bd-1", "bd-2"])
+    }
+
     func testBulkSetStateStopsBeforeNextBeadAndRestoresUnattemptedOverrides() async throws {
         let projectURL = try makeProject(
             """

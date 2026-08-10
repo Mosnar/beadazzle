@@ -10,9 +10,30 @@ extension BeadStore {
         index.stateDimensionNames
     }
 
+    /// Unpinned dimensions a user may set values on (bulk edit, folder automation).
+    /// Deliberately limited to recorded provenance: offering every colon-shaped label
+    /// namespace here would make `bd set-state` rewrite labels the user never opted in
+    /// to managing.
     func unpinnedStateDimensionOptions() -> [String] {
         let pinnedDimensions = Set(pinnedStateDimensions)
         return discoveredStateDimensions.filter { !pinnedDimensions.contains($0) }
+    }
+
+    /// What the Properties settings pane offers to pin: recorded dimensions plus
+    /// colon-shaped namespaces from ordinary labels, so an existing `area:ui`-style
+    /// taxonomy can be promoted by pinning it. A suggested namespace stays an ordinary
+    /// label — and stays out of `unpinnedStateDimensionOptions()` — until the user
+    /// opts in.
+    func pinnableStateDimensionOptions() -> [String] {
+        let pinnedDimensions = Set(pinnedStateDimensions)
+        var seenDimensions = Set(discoveredStateDimensions)
+        var options = discoveredStateDimensions
+        for dimension in index.labelStateDimensionNames
+        where seenDimensions.insert(dimension).inserted {
+            options.append(dimension)
+        }
+        options.sort(by: BeadStateLabel.isOrderedBefore)
+        return options.filter { !pinnedDimensions.contains($0) }
     }
 
     /// Values backed by recorded state events are indexed once during project
