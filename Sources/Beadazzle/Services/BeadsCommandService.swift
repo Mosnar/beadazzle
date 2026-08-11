@@ -408,8 +408,29 @@ private struct BeadsSetupBootstrapInspection: Sendable {
     var warning: String?
 }
 
+private enum BeadsCommandCancellationBehavior {
+    case keepRunning
+    case terminate
+    case terminateAndWait
+
+    var processCancellationMode: CancellableProcessRunner.CancellationMode? {
+        switch self {
+        case .keepRunning: nil
+        case .terminate: .returnImmediately
+        case .terminateAndWait: .waitForProcessExit
+        }
+    }
+}
+
 struct BeadsCommandService {
     typealias CommandExecutable = (url: URL, prefix: [String])
+
+    // Leave a wide margin beyond the normal export timeout so a second app
+    // process cannot prune another export that is still in flight.
+    private static let staleTemporaryExportArtifactAge: TimeInterval = 5 * 60
+    private static let temporaryExportFilenamePrefix = "issues.jsonl.tmp."
+    private static let atomicTemporaryExportFilenamePrefix = ".~issues.jsonl.tmp."
+    private static let atomicInstalledSnapshotFilenamePrefix = ".~issues.jsonl."
 
     private let readOnlyCommandTimeout: Duration
     private let snapshotExportTimeout: Duration
@@ -638,7 +659,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "config", "show", "--json"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return try JSONDecoder().decode([BeadsSetupConfigEntry].self, from: Data(text.utf8))
@@ -665,7 +686,7 @@ struct BeadsCommandService {
             let output = try await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "bootstrap", "--dry-run", "--json"],
-                terminatesOnCancel: true,
+                cancellationBehavior: .terminate,
                 timeout: readOnlyCommandTimeout
             )
             return BeadsSetupBootstrapInspection(
@@ -712,7 +733,7 @@ struct BeadsCommandService {
             _ = try await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "count", "--json"],
-                terminatesOnCancel: true,
+                cancellationBehavior: .terminate,
                 timeout: readOnlyCommandTimeout
             )
             return .available(true)
@@ -792,13 +813,14 @@ struct BeadsCommandService {
         projectURL: URL,
         beadsDirectoryURL: URL
     ) async throws -> ReadableSnapshotExportResult {
+        Self.removeStaleTemporaryExportArtifacts(in: beadsDirectoryURL)
         let tempURL = Self.temporaryExportedIssuesJSONLURL(beadsDirectoryURL: beadsDirectoryURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { Self.removeTemporaryExportArtifacts(for: tempURL) }
 
         _ = try await runOutput(
             projectURL: projectURL,
             arguments: BeadsCommandArguments.exportJSONL(outputPath: tempURL.path),
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminateAndWait,
             timeout: snapshotExportTimeout
         )
         let preparationTask = Task.detached(priority: .userInitiated) {
@@ -978,7 +1000,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "comments", issueID, "--json"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return try Self.decodeComments(from: Data(text.utf8), issueID: issueID)
@@ -1014,7 +1036,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "statuses", "--json"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return try BeadsMetadataService.decodeStatuses(from: Data(text.utf8))
@@ -1024,7 +1046,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "types", "--json"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return try BeadsMetadataService.decodeTypes(from: Data(text.utf8))
@@ -1093,13 +1115,13 @@ struct BeadsCommandService {
             async let locationText: String? = try? await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "where", "--json"],
-                terminatesOnCancel: true,
+                cancellationBehavior: .terminate,
                 timeout: readOnlyCommandTimeout
             )
             let text = try await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "context", "--json"],
-                terminatesOnCancel: true,
+                cancellationBehavior: .terminate,
                 timeout: readOnlyCommandTimeout
             )
             var context = try BeadsProjectContext.decode(from: text)
@@ -1154,7 +1176,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "dolt", "remote", "list", "--json"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return try BeadsDoltRemotes.decode(from: text)
@@ -1186,7 +1208,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "hooks", "list"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return BeadsHooksStatus.parse(from: text)
@@ -1196,7 +1218,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "backup", "status", "--json"],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return try BeadsBackupStatus.decode(from: text)
@@ -1260,7 +1282,7 @@ struct BeadsCommandService {
             let text = try await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "compact", "--dry-run", "--json"],
-                terminatesOnCancel: true,
+                cancellationBehavior: .terminate,
                 timeout: readOnlyCommandTimeout
             )
             return try BeadsDoltCompactPreview.decode(from: text)
@@ -1269,7 +1291,7 @@ struct BeadsCommandService {
             let text = try await runOutput(
                 projectURL: projectURL,
                 arguments: ["--readonly", "flatten", "--dry-run", "--json"],
-                terminatesOnCancel: true,
+                cancellationBehavior: .terminate,
                 timeout: readOnlyCommandTimeout
             )
             return try BeadsDoltFlattenPreview.decode(from: text)
@@ -1311,32 +1333,34 @@ struct BeadsCommandService {
         )
     }
 
-    /// - Parameter terminatesOnCancel: when `true`, cancelling the surrounding task kills
-    ///   the `bd` subprocess instead of letting `readDataToEndOfFile` block until it exits
-    ///   on its own. Only safe for read-only reads — never for writes, which must not be
-    ///   interrupted mid-flight. Commands with stdin retain the non-cancellable write
-    ///   path so broken-pipe errors can be reconciled with the child's exit status.
-    ///   Defaults to `false`.
+    /// - Parameter cancellationBehavior: controls whether cancellation leaves the
+    ///   subprocess running, terminates it and returns immediately, or waits for it
+    ///   to exit. Termination is only safe for read-only commands. Commands with stdin
+    ///   retain the non-cancellable write path so broken-pipe errors can be reconciled
+    ///   with the child's exit status.
     private func runOutput(
         projectURL: URL,
         arguments: [String],
         standardInput: String? = nil,
-        terminatesOnCancel: Bool = false,
+        cancellationBehavior: BeadsCommandCancellationBehavior = .keepRunning,
         timeout: Duration? = nil
     ) async throws -> String {
         let executable = executable()
-        if terminatesOnCancel, standardInput == nil {
+        if let cancellationMode = cancellationBehavior.processCancellationMode,
+           standardInput == nil {
             guard let timeout else {
                 return try await Self.runOutputTerminatingOnCancel(
                     projectURL: projectURL,
                     arguments: arguments,
-                    executable: executable
+                    executable: executable,
+                    cancellationMode: cancellationMode
                 )
             }
             return try await Self.runOutputTerminatingOnCancel(
                 projectURL: projectURL,
                 arguments: arguments,
                 executable: executable,
+                cancellationMode: cancellationMode,
                 timeout: timeout
             )
         }
@@ -1373,7 +1397,7 @@ struct BeadsCommandService {
         let text = try await runOutput(
             projectURL: projectURL,
             arguments: ["--readonly", "config", "get", key],
-            terminatesOnCancel: true,
+            cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
         )
         return ProjectStorageConfig.configValue(from: text, key: key)
@@ -1513,6 +1537,7 @@ struct BeadsCommandService {
         projectURL: URL,
         arguments: [String],
         executable: CommandExecutable,
+        cancellationMode: CancellableProcessRunner.CancellationMode,
         timeout: Duration
     ) async throws -> String {
         do {
@@ -1520,6 +1545,7 @@ struct BeadsCommandService {
                 projectURL: projectURL,
                 arguments: arguments,
                 executable: executable,
+                cancellationMode: cancellationMode,
                 runnerTimeout: timeout
             )
         } catch CancellableProcessRunnerError.timedOut {
@@ -1534,6 +1560,7 @@ struct BeadsCommandService {
         projectURL: URL,
         arguments: [String],
         executable: CommandExecutable,
+        cancellationMode: CancellableProcessRunner.CancellationMode = .returnImmediately,
         runnerTimeout: Duration? = nil
     ) async throws -> String {
         let result = try await CancellableProcessRunner.run(
@@ -1541,7 +1568,8 @@ struct BeadsCommandService {
             arguments: executable.prefix + arguments,
             currentDirectoryURL: projectURL,
             environment: BeadsCLI.subprocessEnvironment(executableURL: executable.url),
-            timeout: runnerTimeout
+            timeout: runnerTimeout,
+            cancellationMode: cancellationMode
         )
         guard result.terminationStatus == 0 else {
             throw BeadError.commandFailed(
@@ -1568,7 +1596,80 @@ struct BeadsCommandService {
     }
 
     private static func temporaryExportedIssuesJSONLURL(beadsDirectoryURL: URL) -> URL {
-        beadsDirectoryURL.appendingPathComponent("issues.jsonl.tmp.\(UUID().uuidString)")
+        beadsDirectoryURL.appendingPathComponent("\(temporaryExportFilenamePrefix)\(UUID().uuidString)")
+    }
+
+    private static func removeTemporaryExportArtifacts(
+        for tempURL: URL,
+        fileManager: FileManager = .default
+    ) {
+        removeRegularFileIfPresent(at: tempURL, fileManager: fileManager)
+
+        let nestedPrefix = ".~\(tempURL.lastPathComponent)."
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: tempURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        ) else { return }
+        for candidateURL in contents where candidateURL.lastPathComponent.hasPrefix(nestedPrefix) {
+            removeRegularFileIfPresent(at: candidateURL, fileManager: fileManager)
+        }
+    }
+
+    private static func removeStaleTemporaryExportArtifacts(
+        in beadsDirectoryURL: URL,
+        fileManager: FileManager = .default,
+        now: Date = Date()
+    ) {
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: beadsDirectoryURL,
+            includingPropertiesForKeys: [
+                .contentModificationDateKey,
+                .isRegularFileKey,
+                .isSymbolicLinkKey
+            ]
+        ) else { return }
+
+        for candidateURL in contents where isTemporarySnapshotArtifactName(candidateURL.lastPathComponent) {
+            guard
+                let values = try? candidateURL.resourceValues(forKeys: [
+                    .contentModificationDateKey,
+                    .isRegularFileKey,
+                    .isSymbolicLinkKey
+                ]),
+                values.isRegularFile == true,
+                values.isSymbolicLink != true,
+                let modificationDate = values.contentModificationDate,
+                now.timeIntervalSince(modificationDate) >= staleTemporaryExportArtifactAge
+            else { continue }
+            try? fileManager.removeItem(at: candidateURL)
+        }
+    }
+
+    private static func isTemporarySnapshotArtifactName(_ name: String) -> Bool {
+        if name.hasPrefix(temporaryExportFilenamePrefix) {
+            return UUID(uuidString: String(name.dropFirst(temporaryExportFilenamePrefix.count))) != nil
+        }
+
+        if name.hasPrefix(atomicTemporaryExportFilenamePrefix) {
+            let remainder = name.dropFirst(atomicTemporaryExportFilenamePrefix.count)
+            let components = remainder.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+            return components.count == 2
+                && UUID(uuidString: String(components[0])) != nil
+                && !components[1].isEmpty
+        }
+
+        guard name.hasPrefix(atomicInstalledSnapshotFilenamePrefix) else { return false }
+        let suffix = name.dropFirst(atomicInstalledSnapshotFilenamePrefix.count)
+        return !suffix.isEmpty && suffix.utf8.allSatisfy { byte in byte >= 48 && byte <= 57 }
+    }
+
+    private static func removeRegularFileIfPresent(at url: URL, fileManager: FileManager) {
+        guard
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+            values.isRegularFile == true,
+            values.isSymbolicLink != true
+        else { return }
+        try? fileManager.removeItem(at: url)
     }
 
     static func installExportedIssuesJSONL(tempURL: URL, projectURL: URL, fileManager: FileManager = .default) throws {

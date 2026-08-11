@@ -25,6 +25,10 @@ for users, not for the commit log.
 - Opening a project that is already open in another window now brings that window forward instead of opening it a second time.
 - Each window's title is the project it shows, so windows are easy to tell apart in the Window menu and Mission Control.
 
+### Fixed
+
+- Interrupted snapshot refreshes no longer leave temporary JSONL files in project worktrees.
+
 ## [1.5.0] - 2026-08-04
 
 ### Added

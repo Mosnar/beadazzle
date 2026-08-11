@@ -341,7 +341,7 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: redirectedSnapshotURL, encoding: .utf8).contains("bd-redirected"))
         XCTAssertFalse(
             try FileManager.default.contentsOfDirectory(atPath: trackerDirectory.path)
-                .contains { $0.hasPrefix("issues.jsonl.tmp.") }
+                .contains(where: isTemporarySnapshotArtifact)
         )
     }
 
@@ -369,6 +369,136 @@ final class BeadsCommandServiceTests: XCTestCase {
         }
         XCTAssertEqual(try String(contentsOf: snapshotURL, encoding: .utf8), existing)
         XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
+    func testCancelledExportCannotRecreateTemporaryFileAfterCleanup() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
+        let snapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+        let readyMarkerURL = beadsURL.appendingPathComponent("export-ready")
+        let terminationMarkerURL = beadsURL.appendingPathComponent("export-terminated")
+        let existing = """
+        {"_type":"issue","id":"bd-existing","title":"Existing","status":"open","priority":1,"issue_type":"task"}
+        """
+        try existing.write(to: snapshotURL, atomically: true, encoding: .utf8)
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        output_path=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            output_path="$1"
+            break
+          fi
+          shift
+        done
+        hidden_path="${output_path%/*}/.~${output_path##*/}.atomic"
+        ready_path="${output_path%/*}/export-ready"
+        marker_path="${output_path%/*}/export-terminated"
+        printf '%s\n' '{"_type":"issue","id":"bd-late","title":"Late","status":"open","priority":1,"issue_type":"task"}' > "$hidden_path"
+        trap 'mv "$hidden_path" "$output_path"; printf terminated > "$marker_path"; exit 143' TERM
+        printf ready > "$ready_path"
+        while :; do :; done
+        """)
+        let service = BeadsCommandService(
+            snapshotExportTimeout: .seconds(10),
+            executable: { (stubURL, []) }
+        )
+        let exportTask = Task {
+            try await service.exportReadableSnapshot(projectURL: projectURL)
+        }
+
+        let didStart = try await waitForFile(at: readyMarkerURL)
+        XCTAssertTrue(didStart)
+        exportTask.cancel()
+        do {
+            try await exportTask.value
+            XCTFail("Expected snapshot export to be cancelled.")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+        let didTerminate = try await waitForFile(at: terminationMarkerURL)
+        XCTAssertTrue(didTerminate)
+        XCTAssertEqual(try String(contentsOf: snapshotURL, encoding: .utf8), existing)
+        XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
+    func testExportReadableSnapshotPrunesOnlyStaleRegularArtifactsFromInterruptedRuns() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
+        let staleUUID = UUID().uuidString
+        let staleExplicitURL = beadsURL.appendingPathComponent("issues.jsonl.tmp.\(staleUUID)")
+        let staleNestedURL = beadsURL.appendingPathComponent(".~issues.jsonl.tmp.\(staleUUID).atomic")
+        let staleInstalledAtomicURL = beadsURL.appendingPathComponent(".~issues.jsonl.4211240985")
+        let recentURL = beadsURL.appendingPathComponent("issues.jsonl.tmp.\(UUID().uuidString)")
+        let recentInstalledAtomicURL = beadsURL.appendingPathComponent(".~issues.jsonl.1429845796")
+        let unrelatedURL = beadsURL.appendingPathComponent("issues.jsonl.tmp.not-a-uuid")
+        let unrelatedAtomicURL = beadsURL.appendingPathComponent(".~issues.jsonl.notes")
+        let directoryURL = beadsURL.appendingPathComponent("issues.jsonl.tmp.\(UUID().uuidString)")
+        let directoryContentsURL = directoryURL.appendingPathComponent("keep-me")
+        let symlinkTargetURL = beadsURL.appendingPathComponent("symlink-target")
+        let symlinkURL = beadsURL.appendingPathComponent("issues.jsonl.tmp.\(UUID().uuidString)")
+        for url in [
+            staleExplicitURL,
+            staleNestedURL,
+            staleInstalledAtomicURL,
+            recentURL,
+            recentInstalledAtomicURL,
+            unrelatedURL,
+            unrelatedAtomicURL
+        ] {
+            try "temporary".write(to: url, atomically: false, encoding: .utf8)
+        }
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: false)
+        try "keep me".write(to: directoryContentsURL, atomically: false, encoding: .utf8)
+        try "target".write(to: symlinkTargetURL, atomically: false, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: symlinkTargetURL)
+        let staleDate = Date(timeIntervalSinceNow: -3_600)
+        for url in [
+            staleExplicitURL,
+            staleNestedURL,
+            staleInstalledAtomicURL,
+            unrelatedURL,
+            unrelatedAtomicURL,
+            directoryURL
+        ] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: staleDate],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            printf '%s\n' '{"_type":"issue","id":"bd-exported","title":"Exported","status":"open","priority":1,"issue_type":"task"}' > "$1"
+            exit 0
+          fi
+          shift
+        done
+        exit 2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        try await service.exportReadableSnapshot(projectURL: projectURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleExplicitURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleNestedURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleInstalledAtomicURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recentURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recentInstalledAtomicURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedAtomicURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directoryContentsURL.path))
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: symlinkURL.path),
+            symlinkTargetURL.path
+        )
+        XCTAssertEqual(try String(contentsOf: symlinkTargetURL, encoding: .utf8), "target")
     }
 
     func testExportReadableSnapshotPreservesExistingSnapshotWhenExportIsInvalid() async throws {
@@ -928,7 +1058,20 @@ final class BeadsCommandServiceTests: XCTestCase {
     private func temporaryExportFiles(in projectURL: URL) -> [String] {
         let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
         return (try? FileManager.default.contentsOfDirectory(atPath: beadsURL.path))?
-            .filter { $0.hasPrefix("issues.jsonl.tmp.") } ?? []
+            .filter(isTemporarySnapshotArtifact) ?? []
+    }
+
+    private func isTemporarySnapshotArtifact(_ name: String) -> Bool {
+        name.hasPrefix("issues.jsonl.tmp.") || name.hasPrefix(".~issues.jsonl.")
+    }
+
+    private func waitForFile(at url: URL, timeout: Duration = .seconds(1)) async throws -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !FileManager.default.fileExists(atPath: url.path), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return FileManager.default.fileExists(atPath: url.path)
     }
 
     private func makeProjectWithBeadsDirectory() throws -> URL {

@@ -11,16 +11,22 @@ enum CancellableProcessRunnerError: Error, Equatable, Sendable {
 }
 
 /// Runs read-only subprocesses without occupying Swift's cooperative executor.
-/// Cancellation returns immediately, terminates the child when it has launched,
-/// and closes its pipes so descendants cannot keep the caller waiting.
+/// Cancellation normally returns immediately, terminates the child when it has
+/// launched, and closes its pipes so descendants cannot keep the caller waiting.
 enum CancellableProcessRunner {
+    enum CancellationMode: Sendable {
+        case returnImmediately
+        case waitForProcessExit
+    }
+
     static func run(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL,
         environment: [String: String],
         outputLimit: Int? = nil,
-        timeout: Duration? = nil
+        timeout: Duration? = nil,
+        cancellationMode: CancellationMode = .returnImmediately
     ) async throws -> CancellableProcessResult {
         guard let timeout else {
             return try await runWithoutTimeout(
@@ -28,7 +34,8 @@ enum CancellableProcessRunner {
                 arguments: arguments,
                 currentDirectoryURL: currentDirectoryURL,
                 environment: environment,
-                outputLimit: outputLimit
+                outputLimit: outputLimit,
+                cancellationMode: cancellationMode
             )
         }
         return try await withThrowingTaskGroup(of: CancellableProcessResult.self) { group in
@@ -38,7 +45,8 @@ enum CancellableProcessRunner {
                     arguments: arguments,
                     currentDirectoryURL: currentDirectoryURL,
                     environment: environment,
-                    outputLimit: outputLimit
+                    outputLimit: outputLimit,
+                    cancellationMode: cancellationMode
                 )
             }
             group.addTask {
@@ -56,7 +64,8 @@ enum CancellableProcessRunner {
         arguments: [String],
         currentDirectoryURL: URL,
         environment: [String: String],
-        outputLimit: Int?
+        outputLimit: Int?,
+        cancellationMode: CancellationMode
     ) async throws -> CancellableProcessResult {
         let process = Process()
         process.executableURL = executableURL
@@ -68,19 +77,20 @@ enum CancellableProcessRunner {
         process.standardOutput = output
         process.standardError = output
 
-        let state = CancellableProcessExecutionState()
+        let state = CancellableProcessExecutionState(cancellationMode: cancellationMode)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard state.install(continuation) else { return }
                 DispatchQueue.global(qos: .userInitiated).async {
+                    defer {
+                        if process.isRunning {
+                            process.waitUntilExit()
+                        }
+                        state.finishCancellationAfterProcessExit()
+                    }
                     do {
                         guard !state.isCancelled else { return }
                         try process.run()
-                        defer {
-                            if process.isRunning {
-                                process.waitUntilExit()
-                            }
-                        }
                         if state.markLaunchedAndShouldTerminate() {
                             if process.isRunning {
                                 process.terminate()
@@ -143,10 +153,15 @@ enum CancellableProcessRunner {
 
 private final class CancellableProcessExecutionState: @unchecked Sendable {
     private let lock = NSLock()
+    private let cancellationMode: CancellableProcessRunner.CancellationMode
     private var continuation: CheckedContinuation<CancellableProcessResult, Error>?
     private var launched = false
     private var cancelled = false
     private var finished = false
+
+    init(cancellationMode: CancellableProcessRunner.CancellationMode) {
+        self.cancellationMode = cancellationMode
+    }
 
     var isCancelled: Bool {
         lock.withLock { cancelled }
@@ -180,6 +195,9 @@ private final class CancellableProcessExecutionState: @unchecked Sendable {
         let outcome: (Bool, CheckedContinuation<CancellableProcessResult, Error>?) = lock.withLock {
             cancelled = true
             guard !finished else { return (launched, nil) }
+            if case .waitForProcessExit = cancellationMode, continuation != nil {
+                return (launched, nil)
+            }
             finished = true
             let continuation = continuation
             self.continuation = nil
@@ -189,9 +207,24 @@ private final class CancellableProcessExecutionState: @unchecked Sendable {
         return outcome.0
     }
 
+    func finishCancellationAfterProcessExit() {
+        let continuationToResume = lock.withLock {
+            guard cancelled, !finished else {
+                return nil as CheckedContinuation<CancellableProcessResult, Error>?
+            }
+            finished = true
+            let storedContinuation = continuation
+            continuation = nil
+            return storedContinuation
+        }
+        continuationToResume?.resume(throwing: CancellationError())
+    }
+
     func finish(_ result: Result<CancellableProcessResult, Error>) {
         let continuationToResume = lock.withLock {
-            guard !finished else { return nil as CheckedContinuation<CancellableProcessResult, Error>? }
+            guard !cancelled, !finished else {
+                return nil as CheckedContinuation<CancellableProcessResult, Error>?
+            }
             finished = true
             let storedContinuation = self.continuation
             self.continuation = nil
