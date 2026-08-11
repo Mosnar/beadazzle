@@ -1227,27 +1227,53 @@ struct BeadProjectIndex: Sendable {
         var depth: Int
     }
 
+    private enum ParentChainResolution: Equatable {
+        case visiting
+        case terminating
+        case cyclic
+    }
+
     private static func normalizedParentIDs(
         candidates: [String: String],
         issueByID: [String: BeadIssue]
     ) -> [String: String] {
-        candidates.reduce(into: [:]) { result, candidate in
-            let issueID = candidate.key
-            let parentID = candidate.value
-            guard issueByID[issueID] != nil, issueByID[parentID] != nil else { return }
+        // Parent relationships form a functional graph: every issue has at most one
+        // outgoing edge. Resolve each chain once so a deeply nested tracker remains O(n)
+        // instead of walking the same ancestors again for every descendant.
+        var resolutions: [String: ParentChainResolution] = [:]
+        resolutions.reserveCapacity(candidates.count)
 
-            var visited: Set<String> = [issueID]
-            var nextID: String? = parentID
+        for startID in candidates.keys where resolutions[startID] == nil {
+            var path: [String] = []
+            var nextID: String? = startID
+            var resolved: ParentChainResolution = .terminating
+
             while let currentID = nextID {
-                guard !visited.contains(currentID) else {
-                    return
+                if let existing = resolutions[currentID] {
+                    resolved = existing == .terminating ? .terminating : .cyclic
+                    break
                 }
-                visited.insert(currentID)
+                resolutions[currentID] = .visiting
+                path.append(currentID)
                 nextID = candidates[currentID]
             }
 
+            for issueID in path {
+                resolutions[issueID] = resolved
+            }
+        }
+
+        var result: [String: String] = [:]
+        result.reserveCapacity(candidates.count)
+        for (issueID, parentID) in candidates {
+            guard issueByID[issueID] != nil,
+                  issueByID[parentID] != nil,
+                  resolutions[issueID] != .cyclic else {
+                continue
+            }
             result[issueID] = parentID
         }
+        return result
     }
 
     private static func childProgressByParentID(

@@ -229,7 +229,8 @@ extension BeadStore {
             applyLoadedProject(
                 loadedProject,
                 projectURL: projectURL,
-                metadataBaseline: metadataBaseline
+                metadataBaseline: metadataBaseline,
+                confirmsReadableSnapshotExport: true
             )
             refreshBeadsSetupAudit()
             refreshOwnerIdentityAfterSetup(projectURL: projectURL)
@@ -246,7 +247,8 @@ extension BeadStore {
                 applyLoadedProject(
                     loadedProject,
                     projectURL: projectURL,
-                    metadataBaseline: metadataBaseline
+                    metadataBaseline: metadataBaseline,
+                    confirmsReadableSnapshotExport: true
                 )
             }
             throw error

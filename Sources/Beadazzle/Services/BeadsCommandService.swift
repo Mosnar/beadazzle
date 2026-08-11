@@ -1713,10 +1713,10 @@ struct BeadsCommandService {
         let snapshot: BeadsSnapshot
         do {
             snapshot = try BeadsJSONLSnapshotReader().loadSnapshot(from: temporarySource)
-        } catch BeadError.invalidSnapshot(_, let line, _) {
+        } catch BeadError.invalidSnapshot(_, let line, let message) {
             throw BeadError.commandFailed(
                 command: "bd export --output \(BeadsCommandArguments.exportedIssuesJSONLPath)",
-                output: "Export produced invalid JSONL at line \(line)."
+                output: "Export produced invalid JSONL at line \(line): \(message)"
             )
         }
         try Task.checkCancellation()

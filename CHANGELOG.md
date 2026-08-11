@@ -28,6 +28,9 @@ for users, not for the commit log.
 ### Fixed
 
 - Interrupted snapshot refreshes no longer leave temporary JSONL files in project worktrees.
+- Edits remain visible after closing and immediately reopening a project window, including worktree and redirected trackers; a failed final snapshot export is retried through the normal visible refresh path.
+- Projects with very deep parent/child hierarchies now build their issue index in linear time instead of slowing dramatically as nesting grows.
+- Invalid snapshots with missing, non-text, or duplicate bead IDs now show an actionable line-level error and cannot replace the last readable snapshot.
 
 ## [1.5.0] - 2026-08-04
 

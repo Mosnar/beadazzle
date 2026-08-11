@@ -9,18 +9,26 @@ extension BeadStore {
     /// Opens the most recent project that still exists on disk. `excludedProjectPaths`
     /// lets the caller skip projects another window already shows, so restoring several
     /// windows doesn't land two of them on the same tracker.
-    func openDefaultProjectIfAvailable(excludingProjectPaths excludedProjectPaths: Set<String> = []) {
-        guard projectURL == nil else { return }
+    @discardableResult
+    func openDefaultProjectIfAvailable(
+        excludingProjectPaths excludedProjectPaths: Set<String> = [],
+        forcingSnapshotExportForProjectPaths exportPaths: Set<String> = []
+    ) -> URL? {
+        guard projectURL == nil else { return nil }
         guard let url = recentProjects.map(\.url).first(where: { url in
             !excludedProjectPaths.contains(url.standardizedFileURL.path)
                 && projectDirectoryExists(at: url)
         }) else {
-            return
+            return nil
         }
-        openProject(url)
+        openProject(
+            url,
+            forcingSnapshotExport: exportPaths.contains(url.standardizedFileURL.path)
+        )
+        return url
     }
 
-    func openProject(_ url: URL) {
+    func openProject(_ url: URL, forcingSnapshotExport: Bool = false) {
         let url = url.standardizedFileURL
         let outgoingProjectURL = projectURL
         let outgoingBeadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
@@ -30,6 +38,9 @@ extension BeadStore {
         project.cancelLifecycleWork()
         mutations.writeQueue.invalidatePending()
         mutations.resetMetadataMutations()
+        if forcingSnapshotExport {
+            mutations.requireReadableSnapshotExport()
+        }
         folderAutomationSummary = nil
         folderAutomationProgress = nil
         workspace.cancelQueryWork()
@@ -93,8 +104,10 @@ extension BeadStore {
         stopDataSourceMonitor()
     }
 
-    var hasPendingMutationWrites: Bool {
-        mutations.writeQueue.hasPendingOperations
+    var requiresWindowCloseMutationFinalization: Bool {
+        activeMutationCount > 0
+            || mutations.writeQueue.hasPendingOperations
+            || mutations.requiresReadableSnapshotExport
     }
 
     /// Completes a closed window's write handoff: waits for the serialized queue to
@@ -102,10 +115,33 @@ extension BeadStore {
     /// to the next window that opens this tracker. The reconcile pipeline is suppressed
     /// once the window closes — there is no UI left to reconcile — so this is the export
     /// half a reconcile would otherwise have run.
-    func finishRetirementAfterWindowClose() async {
+    func finishRetirementAfterWindowClose() async -> String? {
+        await waitForActiveMutationsToFinish()
         await mutations.writeQueue.drainPending()
-        guard let projectURL else { return }
-        try? await commands.exportReadableSnapshot(projectURL: projectURL)
+        guard mutations.requiresReadableSnapshotExport else { return nil }
+        guard let projectURL else {
+            return "The project closed before Beadazzle could identify it for the final snapshot export."
+        }
+        do {
+            let beadsDirectoryURL: URL
+            if let resolvedDirectoryURL = projectEnvironment?.beadsDirectoryURL {
+                beadsDirectoryURL = resolvedDirectoryURL
+            } else {
+                let context = try await commands.loadProjectContext(projectURL: projectURL)
+                beadsDirectoryURL = try BeadsProjectEnvironment(
+                    context: context,
+                    projectURL: projectURL
+                ).beadsDirectoryURL
+            }
+            try await commands.exportReadableSnapshot(
+                projectURL: projectURL,
+                beadsDirectoryURL: beadsDirectoryURL
+            )
+            mutations.confirmReadableSnapshotExport()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     /// Releases a project whose tracker resolved to one another window already owns,
@@ -396,7 +432,9 @@ extension BeadStore {
         // Mutations and explicit user refreshes must re-export the readable JSONL
         // snapshot first: automatic export is optional and may be throttled, so
         // recent `bd` writes may not appear immediately.
-        let forcesSnapshotExport = reason == .reconcile || reason == .manual
+        let forcesSnapshotExport = reason == .reconcile
+            || reason == .manual
+            || (reason == .initial && mutations.requiresReadableSnapshotExport)
 
         // Status/type definitions rarely change, and reading them costs two `bd`
         // subprocesses. Reuse the cache except when the user explicitly refreshes, on the
@@ -495,7 +533,8 @@ extension BeadStore {
                     loadedProject,
                     projectURL: projectURL,
                     queuesInitialExternalRefresh: reason == .initial,
-                    metadataBaseline: metadataBaseline
+                    metadataBaseline: metadataBaseline,
+                    confirmsReadableSnapshotExport: forcesSnapshotExport
                 )
                 self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
                 return true
@@ -544,7 +583,8 @@ extension BeadStore {
                         recoveredProject,
                         projectURL: projectURL,
                         queuesInitialExternalRefresh: reason == .initial,
-                        metadataBaseline: metadataBaseline
+                        metadataBaseline: metadataBaseline,
+                        confirmsReadableSnapshotExport: true
                     )
                     self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
                     return true
@@ -613,7 +653,8 @@ extension BeadStore {
         _ loadedProject: LoadedProject,
         projectURL: URL,
         queuesInitialExternalRefresh: Bool = false,
-        metadataBaseline: BeadMetadataReloadBaseline? = nil
+        metadataBaseline: BeadMetadataReloadBaseline? = nil,
+        confirmsReadableSnapshotExport: Bool = false
     ) {
         let deferredMonitorRoles = reconcileState.complete(
             replaysDeferredEvents: loadedProject.snapshotRefreshWarning == nil
@@ -633,6 +674,9 @@ extension BeadStore {
         )
         if loadedProject.snapshotRefreshWarning == nil {
             mutations.confirmAuthoritativeMetadata()
+            if confirmsReadableSnapshotExport {
+                mutations.confirmReadableSnapshotExport()
+            }
         }
         _contentRevision &+= 1
         if loadedProject.snapshotRefreshWarning == nil {
@@ -752,6 +796,7 @@ extension BeadStore {
             return false
         }
         let deferredMonitorRoles = reconcileState.complete(replaysDeferredEvents: true)
+        mutations.confirmReadableSnapshotExport()
         markSnapshotFreshnessLoaded(
             projectURL: projectURL,
             beadsDirectoryURL: beadsDirectoryURL,

@@ -1216,7 +1216,8 @@ final class BeadProjectIndexTests: XCTestCase {
             issues: [
                 issue("bd-a", title: "A", status: "open", type: "task", parentID: "bd-b"),
                 issue("bd-b", title: "B", status: "open", type: "task", parentID: "bd-a"),
-                issue("bd-c", title: "C", status: "open", type: "task", parentID: "bd-missing")
+                issue("bd-c", title: "C", status: "open", type: "task", parentID: "bd-missing"),
+                issue("bd-d", title: "D", status: "open", type: "task", parentID: "bd-a")
             ],
             dependencies: [],
             semantics: semantics()
@@ -1224,13 +1225,13 @@ final class BeadProjectIndexTests: XCTestCase {
         let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
 
         let rows = index.issueListRows(
-            for: ["bd-a", "bd-b", "bd-c"],
+            for: ["bd-a", "bd-b", "bd-c", "bd-d"],
             mode: .outline,
             expandedIssueIDs: ["bd-a", "bd-b"],
             sortOrder: sortOrder
         )
 
-        XCTAssertEqual(rows.map(\.issueID), ["bd-a", "bd-b", "bd-c"])
+        XCTAssertEqual(rows.map(\.issueID), ["bd-a", "bd-b", "bd-c", "bd-d"])
         XCTAssertTrue(rows.allSatisfy { $0.depth == 0 })
     }
 

@@ -310,7 +310,10 @@ final class BeadQueryPipelineBenchmark: XCTestCase {
                     parentID: offset == 0 ? nil : "deep-\(offset - 1)"
                 )
             }
-            let index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics)
+            var index = BeadProjectIndex.empty
+            time("10k deep hierarchy index", iterations: 3) {
+                index = BeadProjectIndex(issues: issues, dependencies: [], semantics: semantics)
+            }
             let matchingIDs = ["deep-\(scale - 1)"]
             let rows = index.issueListRows(
                 for: matchingIDs,

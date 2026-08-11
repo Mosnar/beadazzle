@@ -191,7 +191,7 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         XCTAssertEqual(loaded.snapshot.issues.last?.id, "bd-1999")
     }
 
-    func testJSONLSnapshotSkipsIssueRecordsWithoutIDs() throws {
+    func testJSONLSnapshotRejectsIssueRecordsWithoutIDs() throws {
         let projectURL = try makeProject(jsonlFiles: [
             "issues.jsonl": """
             {"_type":"issue","title":"Missing ID","status":"open","priority":1,"issue_type":"task"}
@@ -199,9 +199,37 @@ final class BeadsSnapshotReaderTests: XCTestCase {
             """
         ])
 
-        let loaded = try BeadsSnapshotReader().loadProject(projectURL: projectURL)
+        XCTAssertThrowsError(try BeadsSnapshotReader().loadProject(projectURL: projectURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("line 1"))
+            XCTAssertTrue(error.localizedDescription.contains("non-empty string `id`"))
+        }
+    }
 
-        XCTAssertEqual(loaded.snapshot.issues.map(\.id), ["bd-good"])
+    func testJSONLSnapshotRejectsNonStringIssueIDs() throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl":
+                #"{"_type":"issue","id":42,"title":"Numeric ID","status":"open","priority":1,"issue_type":"task"}"#
+        ])
+
+        XCTAssertThrowsError(try BeadsSnapshotReader().loadProject(projectURL: projectURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("line 1"))
+            XCTAssertTrue(error.localizedDescription.contains("non-empty string `id`"))
+        }
+    }
+
+    func testJSONLSnapshotRejectsDuplicateIssueIDsWithBothLineNumbers() throws {
+        let projectURL = try makeProject(jsonlFiles: [
+            "issues.jsonl": [
+                issueLine(id: "bd-duplicate", title: "First"),
+                issueLine(id: "bd-duplicate", title: "Second")
+            ].joined(separator: "\n")
+        ])
+
+        XCTAssertThrowsError(try BeadsSnapshotReader().loadProject(projectURL: projectURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("line 2"))
+            XCTAssertTrue(error.localizedDescription.contains("Duplicate issue ID `bd-duplicate`"))
+            XCTAssertTrue(error.localizedDescription.contains("first seen at line 1"))
+        }
     }
 
     func testDataSourceMonitorDebouncesRapidFileEvents() async throws {

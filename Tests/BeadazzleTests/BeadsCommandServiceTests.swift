@@ -532,6 +532,74 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
     }
 
+    func testExportReadableSnapshotPreservesExistingSnapshotForDuplicateIssueIDs() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let snapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+        let existing = """
+        {"_type":"issue","id":"bd-existing","title":"Existing","status":"open","priority":1,"issue_type":"task"}
+        """
+        try existing.write(to: snapshotURL, atomically: true, encoding: .utf8)
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            cat > "$1" <<'JSONL'
+        {"_type":"issue","id":"bd-duplicate","title":"First","status":"open","priority":1,"issue_type":"task"}
+        {"_type":"issue","id":"bd-duplicate","title":"Second","status":"open","priority":1,"issue_type":"task"}
+        JSONL
+            exit 0
+          fi
+          shift
+        done
+        exit 2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        do {
+            try await service.exportReadableSnapshot(projectURL: projectURL)
+            XCTFail("Expected duplicate issue IDs to fail snapshot validation.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("line 2"))
+            XCTAssertTrue(error.localizedDescription.contains("Duplicate issue ID `bd-duplicate`"))
+            XCTAssertTrue(error.localizedDescription.contains("first seen at line 1"))
+        }
+        XCTAssertEqual(try String(contentsOf: snapshotURL, encoding: .utf8), existing)
+        XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
+    func testExportReadableSnapshotPreservesExistingSnapshotForMissingIssueID() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let snapshotURL = BeadsCommandService.exportedIssuesJSONLURL(projectURL: projectURL)
+        let existing = """
+        {"_type":"issue","id":"bd-existing","title":"Existing","status":"open","priority":1,"issue_type":"task"}
+        """
+        try existing.write(to: snapshotURL, atomically: true, encoding: .utf8)
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            printf '%s\n' '{"_type":"issue","title":"Missing ID","status":"open","priority":1,"issue_type":"task"}' > "$1"
+            exit 0
+          fi
+          shift
+        done
+        exit 2
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        do {
+            try await service.exportReadableSnapshot(projectURL: projectURL)
+            XCTFail("Expected a missing issue ID to fail snapshot validation.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("line 1"))
+            XCTAssertTrue(error.localizedDescription.contains("non-empty string `id`"))
+        }
+        XCTAssertEqual(try String(contentsOf: snapshotURL, encoding: .utf8), existing)
+        XCTAssertTrue(temporaryExportFiles(in: projectURL).isEmpty)
+    }
+
     func testReadOnlyMetadataCommandTimesOutInsteadOfHanging() async throws {
         let projectURL = try makeProjectWithBeadsDirectory()
         let stubURL = try makeExecutableScript(in: projectURL, contents: """

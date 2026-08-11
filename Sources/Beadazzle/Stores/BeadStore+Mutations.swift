@@ -156,7 +156,7 @@ extension BeadStore {
     @discardableResult
     internal func beginMutation() -> Int {
         let generation = mutations.metadataMutationGeneration
-        activeMutationCount += 1
+        mutations.beginActivity()
         mutations.optimisticMutationRevision &+= 1
         reconcileDebounceTask?.cancel()
         reconcileDebounceTask = nil
@@ -168,8 +168,7 @@ extension BeadStore {
 
     internal func endMutation(generation: Int) {
         guard mutations.metadataMutationGeneration == generation else { return }
-        activeMutationCount = max(0, activeMutationCount - 1)
-        mutations.resumeMutationIdleWaitersIfNeeded()
+        mutations.endActivity()
         scheduleReconcileIfIdle()
     }
 
@@ -182,7 +181,11 @@ extension BeadStore {
     internal func enqueueMutationWrite<Value: Sendable>(
         _ operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {
-        try await mutations.writeQueue.enqueue(operation)
+        // Mark this before enqueueing, not only after success. A command can durably write
+        // before reporting an error, and a window can close after the queue drains but
+        // before the coalesced reconcile starts.
+        mutations.requireReadableSnapshotExport()
+        return try await mutations.writeQueue.enqueue(operation)
     }
 
     internal func ownsMutation(projectURL: URL, generation: Int) -> Bool {

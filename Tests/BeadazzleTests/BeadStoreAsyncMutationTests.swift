@@ -4234,6 +4234,100 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(exportCount, 1)
     }
 
+    /// A completed command leaves the queue empty before the reconcile debounce fires.
+    /// Closing in that interval must still retain the store and export the readable snapshot.
+    func testWindowCloseFinalizesMutationAfterWriteQueueHasAlreadyDrained() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let request = BeadWorkspaceWindowRequest()
+        let store = registry.store(for: request)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+
+        let succeeded = await store.bulkSet(priority: 3)
+        XCTAssertTrue(succeeded)
+        XCTAssertFalse(store.mutations.writeQueue.hasPendingOperations)
+        let exportsBeforeClose = await commands.exportCallCount
+        XCTAssertEqual(exportsBeforeClose, 0)
+
+        registry.releaseWindow(request.id)
+
+        try await waitUntilAsync { await commands.exportCallCount == 1 }
+        try await Task.sleep(for: .milliseconds(800))
+        let exportCount = await commands.exportCallCount
+        XCTAssertEqual(exportCount, 1)
+    }
+
+    func testWindowCloseExportsToResolvedTrackerDirectory() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let routedTrackerURL = projectURL.appendingPathComponent("routed-beads", isDirectory: true)
+        try FileManager.default.createDirectory(at: routedTrackerURL, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: projectURL.appendingPathComponent(".beads/issues.jsonl"),
+            to: routedTrackerURL.appendingPathComponent("issues.jsonl")
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setProjectContextBeadsDirectoryURL(routedTrackerURL)
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let request = BeadWorkspaceWindowRequest()
+        let store = registry.store(for: request)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+
+        let succeeded = await store.bulkSet(priority: 3)
+        XCTAssertTrue(succeeded)
+        registry.releaseWindow(request.id)
+
+        try await waitUntilAsync { await commands.exportCallCount == 1 }
+        let exportDirectories = await commands.exportBeadsDirectoryURLs
+        XCTAssertEqual(
+            exportDirectories.map(\.standardizedFileURL.path),
+            [routedTrackerURL.standardizedFileURL.path]
+        )
+    }
+
+    func testFailedWindowCloseExportForcesVisibleRetryOnReopen() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let firstRequest = BeadWorkspaceWindowRequest()
+        let firstStore = registry.store(for: firstRequest)
+        firstStore.openProject(projectURL)
+        try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-1") != nil }
+        firstStore.select(["bd-1"])
+        let succeeded = await firstStore.bulkSet(priority: 3)
+        XCTAssertTrue(succeeded)
+        await commands.setExportError(StoreMutationTestError.commandFailed)
+
+        registry.releaseWindow(firstRequest.id)
+        let reopenRequest = BeadWorkspaceWindowRequest()
+        let reopenStore = registry.store(for: reopenRequest)
+        XCTAssertFalse(
+            registry.openProject(projectURL, from: reopenStore, destination: .currentWindow)
+        )
+
+        try await waitUntil { reopenStore.projectURL == projectURL && !reopenStore.isLoading }
+        let exportCount = await commands.exportCallCount
+        XCTAssertEqual(exportCount, 2)
+        XCTAssertEqual(reopenStore.snapshotFreshness.state, .possiblyStale)
+        XCTAssertEqual(
+            reopenStore.snapshotFreshness.detail,
+            "Could not export the latest Beads data. \(StoreMutationTestError.commandFailed.localizedDescription)"
+        )
+    }
+
     /// Closing a window is not a project switch: every queued write is a user edit the
     /// optimistic UI already showed as applied, so teardown lets the queue drain rather
     /// than dropping writes that haven't started yet.
@@ -5209,6 +5303,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var addGateWaiterCalls: [(projectURL: URL, id: String, waiter: String)] = []
     private(set) var loadCommentsCalls: [(projectURL: URL, issueID: String)] = []
     private(set) var exportCallCount = 0
+    private(set) var exportBeadsDirectoryURLs: [URL] = []
     private(set) var definitionLoadCallCount = 0
     private(set) var creationValidationLoadCount = 0
     private var createIssueID = "bd-created"
@@ -5240,6 +5335,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var addLabelsErrors: [Error?] = []
     private var exportError: Error?
     private var exportDelay: Duration?
+    private var projectContextBeadsDirectoryURL: URL?
     private var commentsByIssueID: [String: [BeadComment]] = [:]
     private var commentLoadError: Error?
     private var commentLoadDelay: Duration?
@@ -5386,6 +5482,10 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         exportDelay = delay
     }
 
+    func setProjectContextBeadsDirectoryURL(_ url: URL?) {
+        projectContextBeadsDirectoryURL = url
+    }
+
     func setComments(_ comments: [BeadComment], for issueID: String) {
         commentsByIssueID[issueID] = comments
     }
@@ -5407,7 +5507,18 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     }
 
     func exportReadableSnapshot(projectURL: URL) async throws {
+        try await recordExport(beadsDirectoryURL: nil)
+    }
+
+    func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws {
+        try await recordExport(beadsDirectoryURL: beadsDirectoryURL)
+    }
+
+    private func recordExport(beadsDirectoryURL: URL?) async throws {
         exportCallCount += 1
+        if let beadsDirectoryURL {
+            exportBeadsDirectoryURLs.append(beadsDirectoryURL)
+        }
         if let exportDelay {
             try await Task.sleep(for: exportDelay)
         }
@@ -5417,7 +5528,11 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     }
 
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
-        .testContext(projectURL: projectURL)
+        .testContext(
+            projectURL: projectURL,
+            beadsDirectoryURL: projectContextBeadsDirectoryURL
+                ?? projectURL.appendingPathComponent(".beads", isDirectory: true)
+        )
     }
 
     func create(projectURL: URL, draft: IssueDraft) async throws -> String {

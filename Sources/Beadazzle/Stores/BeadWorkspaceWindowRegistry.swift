@@ -34,6 +34,9 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     /// tracker reserved so a reopen cannot start a second write queue against it.
     @ObservationIgnored private var drainingStoresByWindowID: [UUID: BeadStore] = [:]
     @ObservationIgnored private var drainWaitersByWindowID: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    /// A failed final export is retried on the next in-process open. The retry goes through
+    /// the normal loader so another failure becomes visible snapshot-freshness state.
+    @ObservationIgnored private var projectsRequiringSnapshotExport: Set<String> = []
     /// Stable creation order for deterministic duplicate-tracker repair. `windowOrder`
     /// reshuffles with key-window changes, so it cannot arbitrate which of two
     /// simultaneously resolving windows keeps a shared tracker.
@@ -136,10 +139,17 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         if let projectURL = request.projectURL,
            !takenPaths.contains(projectURL.standardizedFileURL.path),
            request.opensProjectExplicitly || store.projectDirectoryExists(at: projectURL) {
-            store.openProject(projectURL)
+            let forcesSnapshotExport = request.forcesSnapshotExport
+                || consumeSnapshotExportRequirement(for: projectURL)
+            store.openProject(projectURL, forcingSnapshotExport: forcesSnapshotExport)
             return
         }
-        store.openDefaultProjectIfAvailable(excludingProjectPaths: takenPaths)
+        if let openedURL = store.openDefaultProjectIfAvailable(
+            excludingProjectPaths: takenPaths,
+            forcingSnapshotExportForProjectPaths: projectsRequiringSnapshotExport
+        ) {
+            _ = consumeSnapshotExportRequirement(for: openedURL)
+        }
     }
 
     /// Project paths other windows already show — including closed windows still draining
@@ -188,14 +198,18 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             // reach the surviving windows. Removal from the maps above already stops
             // broadcasts *to* this store, and the reference is weak.
             store.prepareForWindowClose()
-            if store.hasPendingMutationWrites {
+            if store.requiresWindowCloseMutationFinalization {
                 // The tracker stays reserved while the closed window's queue drains, so a
                 // reopen cannot start a second write queue against it. `openProject` and
                 // `prepareWindow` honor the lease; reopen requests wait it out.
                 drainingStoresByWindowID[windowID] = store
                 Task { @MainActor [weak self] in
-                    await store.finishRetirementAfterWindowClose()
-                    self?.completeDrain(of: windowID)
+                    let exportFailure = await store.finishRetirementAfterWindowClose()
+                    self?.completeDrain(
+                        of: windowID,
+                        projectURL: store.projectURL,
+                        exportFailure: exportFailure
+                    )
                 }
             }
         }
@@ -210,7 +224,14 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         }
     }
 
-    private func completeDrain(of windowID: UUID) {
+    private func completeDrain(
+        of windowID: UUID,
+        projectURL: URL?,
+        exportFailure: String?
+    ) {
+        if exportFailure != nil, let projectURL {
+            projectsRequiringSnapshotExport.insert(projectURL.standardizedFileURL.path)
+        }
         drainingStoresByWindowID.removeValue(forKey: windowID)
         if let waiters = drainWaitersByWindowID.removeValue(forKey: windowID) {
             for waiter in waiters {
@@ -231,6 +252,10 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         return drainingStoresByWindowID.first {
             $0.value.projectURL?.standardizedFileURL.path == path
         }?.key
+    }
+
+    private func consumeSnapshotExportRequirement(for projectURL: URL) -> Bool {
+        projectsRequiringSnapshotExport.remove(projectURL.standardizedFileURL.path) != nil
     }
 
     private func windowWillClose(_ window: NSWindow) {
@@ -326,15 +351,18 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     func openProject(
         _ url: URL,
         from store: BeadStore,
-        destination: BeadProjectOpenDestination
+        destination: BeadProjectOpenDestination,
+        forcingSnapshotExport: Bool = false
     ) -> Bool {
         let standardizedURL = url.standardizedFileURL
+        let forcesSnapshotExport = forcingSnapshotExport
+            || consumeSnapshotExportRequirement(for: standardizedURL)
         if store.projectURL?.standardizedFileURL == standardizedURL {
             // Reopening the window's own project runs the full reopen rather than treating
             // the request as satisfied: picking the same folder again is the user's retry
             // path when a load failed (missing snapshot, unavailable tracker).
             focusWindow(showing: standardizedURL)
-            store.openProject(standardizedURL)
+            store.openProject(standardizedURL, forcingSnapshotExport: forcesSnapshotExport)
             return true
         }
         // Deliberately keyed on store ownership rather than on being able to focus the
@@ -351,16 +379,27 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             Task { @MainActor [weak self, weak store] in
                 await self?.awaitDrainCompletion(of: drainingWindowID)
                 guard let self, let store else { return }
-                self.openProject(standardizedURL, from: store, destination: destination)
+                self.openProject(
+                    standardizedURL,
+                    from: store,
+                    destination: destination,
+                    forcingSnapshotExport: forcesSnapshotExport
+                )
             }
             return false
         }
         guard resolvedDestination(destination, store: store) == .newWindow,
               let openNewWindow else {
-            store.openProject(standardizedURL)
+            store.openProject(standardizedURL, forcingSnapshotExport: forcesSnapshotExport)
             return true
         }
-        openNewWindow(BeadWorkspaceWindowRequest(projectURL: standardizedURL, opensProjectExplicitly: true))
+        openNewWindow(
+            BeadWorkspaceWindowRequest(
+                projectURL: standardizedURL,
+                opensProjectExplicitly: true,
+                forcesSnapshotExport: forcesSnapshotExport
+            )
+        )
         return false
     }
 

@@ -18,16 +18,25 @@ struct BeadWorkspaceWindowRequest: Hashable, Codable, Identifiable {
     /// vanished, while an explicit open of a missing folder surfaces the failure instead
     /// of silently showing an unrelated project.
     var opensProjectExplicitly = false
+    /// Carries an in-process retry after a closed window's final snapshot export failed.
+    /// Like `opensProjectExplicitly`, this is deliberately not restored across launches.
+    var forcesSnapshotExport = false
 
     private enum CodingKeys: String, CodingKey {
         case id
         case projectPath
     }
 
-    init(id: UUID = UUID(), projectURL: URL? = nil, opensProjectExplicitly: Bool = false) {
+    init(
+        id: UUID = UUID(),
+        projectURL: URL? = nil,
+        opensProjectExplicitly: Bool = false,
+        forcesSnapshotExport: Bool = false
+    ) {
         self.id = id
         self.projectPath = projectURL?.standardizedFileURL.path
         self.opensProjectExplicitly = opensProjectExplicitly
+        self.forcesSnapshotExport = forcesSnapshotExport
     }
 
     var projectURL: URL? {

@@ -4,6 +4,7 @@ struct BeadsJSONLSnapshotReader {
     func loadSnapshot(from source: BeadsDataSource) throws -> BeadsSnapshot {
         var issues: [BeadIssue] = []
         var dependencies: [BeadDependency] = []
+        var firstLineByIssueID: [String: Int] = [:]
         _ = try JSONLLineReader.scan(url: source.url) { line in
             guard let record = try loadRecord(
                 from: line.data,
@@ -12,16 +13,22 @@ struct BeadsJSONLSnapshotReader {
             ) else {
                 return
             }
+            let issueID = try validatedIssueID(
+                in: record,
+                lineNumber: line.number,
+                path: source.url.path,
+                firstLineByIssueID: &firstLineByIssueID
+            )
             let dependencyRecords = record.array("dependencies")
-            if let issue = loadIssue(
+            let issue = loadIssue(
                 record: record,
+                id: issueID,
                 dependencyRecords: dependencyRecords
-            ) {
-                issues.append(issue)
-            }
+            )
+            issues.append(issue)
             appendDependencies(
                 records: dependencyRecords,
-                defaultSourceID: record.string("id"),
+                defaultSourceID: issueID,
                 into: &dependencies
             )
         }
@@ -38,8 +45,13 @@ struct BeadsJSONLSnapshotReader {
 
     private func loadIssues(records: [[String: Any]]) -> [BeadIssue] {
         records.compactMap { record in
-            loadIssue(
+            guard let id = record["id"] as? String,
+                  !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return loadIssue(
                 record: record,
+                id: id,
                 dependencyRecords: record.array("dependencies")
             )
         }
@@ -47,12 +59,10 @@ struct BeadsJSONLSnapshotReader {
 
     private func loadIssue(
         record: [String: Any],
+        id: String,
         dependencyRecords: [[String: Any]]
-    ) -> BeadIssue? {
-        let id = record.string("id")
-        guard !id.isEmpty else { return nil }
-
-        return BeadIssue(
+    ) -> BeadIssue {
+        BeadIssue(
             id: id,
             title: record.string("title"),
             description: record.string("description"),
@@ -87,6 +97,31 @@ struct BeadsJSONLSnapshotReader {
             ephemeral: record.bool("ephemeral"),
             isTemplate: record.bool("is_template")
         )
+    }
+
+    private func validatedIssueID(
+        in record: [String: Any],
+        lineNumber: Int,
+        path: String,
+        firstLineByIssueID: inout [String: Int]
+    ) throws -> String {
+        guard let id = record["id"] as? String,
+              !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BeadError.invalidSnapshot(
+                path: path,
+                line: lineNumber,
+                message: "Issue records require a non-empty string `id`."
+            )
+        }
+        if let firstLine = firstLineByIssueID[id] {
+            throw BeadError.invalidSnapshot(
+                path: path,
+                line: lineNumber,
+                message: "Duplicate issue ID `\(id)`; first seen at line \(firstLine)."
+            )
+        }
+        firstLineByIssueID[id] = lineNumber
+        return id
     }
 
     private func appendDependencies(

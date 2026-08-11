@@ -32,7 +32,8 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 
 - Native macOS SwiftUI app with a sidebar, issue list, and detail pane.
 - Opens current Dolt-backed Beads projects in embedded, server, and shared-server modes.
-- Reopens the last selected Beads project when available.
+- Restores the open project windows from the previous session when their folders remain available.
+- Works on several projects at once, with independent navigation and mutation state in each window.
 - Fast issue browsing with search, filters, outline mode, sort controls, and multi-selection.
 - Split list/detail navigation with a full-page detail mode, Back/Forward support, and native context menus.
 - Detail editing for title, description, design, acceptance criteria, notes, labels, status, priority, assignee, and dates.
@@ -61,7 +62,7 @@ The published DMG is intended to be `Developer ID` signed, notarized, and staple
 
 ## Supported Beads Modes
 
-Beadazzle is a desktop client for one current Dolt-backed Beads project at a time. Embedded, server, and shared-server storage modes are supported. Legacy backends, including SQLite-backed projects, are intentionally unsupported.
+Beadazzle is a desktop client for current Dolt-backed Beads projects. Each workspace window owns one project, and several projects can be open in separate windows at the same time. Embedded, server, and shared-server storage modes are supported. Legacy backends, including SQLite-backed projects, are intentionally unsupported.
 
 Beadazzle asks `bd context` for the effective tracker directory before it reads data. This keeps worktree redirects and explicitly routed projects on the same source of truth as the CLI. Supported readable snapshots are:
 
@@ -77,7 +78,7 @@ Project Settings show the resolved storage mode, tracker directory, configured D
 
 See [Beads Collaboration and Synchronization](docs/BEADS_SYNC.md) for the complete Git-versus-Dolt model, team setup, tracked and ignored files, Sync reconciliation, remote-change checks, hooks, and contributor behavior.
 
-Generally not implemented in v1:
+Current non-goals:
 
 - Full Beads administration for every `bd config`, storage, migration, import, export, federation, or recovery command.
 - Replacing or removing existing Dolt remotes, reconciling ambiguous local/remote histories, or migrating storage modes and contributor data.
@@ -121,7 +122,7 @@ Local release helpers live under `script/`:
 - `build_app_bundle.sh` assembles `dist/Beadazzle.app` with tag-derived bundle metadata.
 - `create_release_dmg.sh` builds `dist/Beadazzle-<version>.dmg` plus a `.sha256` checksum and verifies the mounted image contents.
 - `notarize_release.sh` submits the signed app bundle or DMG to Apple, staples the result, re-validates Gatekeeper checks, and refreshes the DMG checksum after stapling.
-- `.github/workflows/release.yml` runs the same scripts for tag pushes or manual release dispatches.
+- `.github/workflows/release.yml` repeats validation before publishing tag pushes or manual release dispatches.
 
 See [`docs/releasing.md`](docs/releasing.md) for the maintainer release checklist and required GitHub secrets.
 
@@ -150,18 +151,13 @@ Beadazzle is designed around local repository data.
 - [Security](SECURITY.md)
 - [Third-Party Notices](THIRD_PARTY_NOTICES.md)
 - [Beads Collaboration and Synchronization](docs/BEADS_SYNC.md)
+- [Manual QA](docs/QA.md)
 - [Maintainer Release Guide](docs/releasing.md)
 
 ## Manual QA
 
-Close reason dialog:
-
-- Launch with `./script/build_and_run.sh --verify`.
-- Open a Beads project, close one bead from the row context menu, and confirm the reason field is focused.
-- Cancel the dialog and confirm the bead remains open.
-- Close one bead with a blank reason and confirm the app refreshes without an error.
-- Close one bead with a typed reason and confirm the app refreshes without an error.
-- Select multiple beads, choose `Bulk Actions > Close Selected...`, enter a reason, and confirm all selected beads close.
+See [Manual QA](docs/QA.md) for workspace-window, snapshot, project-mode, sync,
+close-dialog, and release smoke checks.
 
 ## Architecture
 

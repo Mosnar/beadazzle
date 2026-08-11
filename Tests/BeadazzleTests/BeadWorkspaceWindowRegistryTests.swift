@@ -245,6 +245,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertEqual(decoded.id, request.id)
         XCTAssertEqual(decoded.projectPath, request.projectPath)
         XCTAssertFalse(decoded.opensProjectExplicitly)
+        XCTAssertFalse(decoded.forcesSnapshotExport)
     }
 
     /// A project folder can vanish while the app is closed. Restoration must fall back to
