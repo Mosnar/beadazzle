@@ -4234,6 +4234,106 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(exportCount, 1)
     }
 
+    /// A worktree or configured root can point at the same tracker as the closing window
+    /// without sharing its project path. The canonical tracker lease must hold that alias
+    /// until both queued writes and the final export finish.
+    func testRoutedAliasWaitsForClosedTrackersQueuedWritesToDrain() async throws {
+        let projectA = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let projectB = try makeProject(issueLine(id: "alias-placeholder", title: "Alias"))
+        let trackerURL = projectA.appendingPathComponent(".beads", isDirectory: true)
+        let commands = RecordingBeadsCommands()
+        await commands.setProjectContextBeadsDirectoryURL(trackerURL)
+        await commands.setSetStateDelays([.milliseconds(300)])
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let firstRequest = BeadWorkspaceWindowRequest()
+        let firstStore = registry.store(for: firstRequest)
+        firstStore.openProject(projectA)
+        try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-2") != nil }
+
+        let firstWrite = Task { @MainActor in
+            await firstStore.setState(issueID: "bd-1", dimension: "phase", value: "implementation")
+        }
+        let secondWrite = Task { @MainActor in
+            await firstStore.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
+        }
+        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        registry.releaseWindow(firstRequest.id)
+
+        let aliasRequest = BeadWorkspaceWindowRequest()
+        let aliasStore = registry.store(for: aliasRequest)
+        XCTAssertFalse(
+            registry.openProject(projectB, from: aliasStore, destination: .currentWindow)
+        )
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(aliasStore.projectURL)
+
+        let firstSucceeded = await firstWrite.value
+        let secondSucceeded = await secondWrite.value
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        try await waitUntil { aliasStore.projectURL == projectB && !aliasStore.isLoading }
+        let exportCount = await commands.exportCallCount
+        XCTAssertEqual(exportCount, 1)
+    }
+
+    /// Quit is an AppKit process-lifecycle boundary, not just another window close. The
+    /// delegate must hold termination until every optimistic edit and final export finish.
+    func testApplicationTerminationWaitsForEveryQueuedWriteAndFinalExport() async throws {
+        let projectURL = try makeProject(
+            """
+            {"_type":"issue","id":"bd-1","title":"One","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            {"_type":"issue","id":"bd-2","title":"Two","status":"open","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","labels":["phase:design"]}
+            """
+        )
+        let commands = RecordingBeadsCommands()
+        await commands.setSetStateDelays([.milliseconds(300)])
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let request = BeadWorkspaceWindowRequest()
+        let store = registry.store(for: request)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let firstWrite = Task { @MainActor in
+            await store.setState(issueID: "bd-1", dimension: "phase", value: "implementation")
+        }
+        let secondWrite = Task { @MainActor in
+            await store.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
+        }
+        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+
+        let delegate = AppDelegate()
+        delegate.registry = registry
+        var terminationReply: Bool?
+        XCTAssertTrue(delegate.deferApplicationTerminationIfNeeded { shouldTerminate in
+            terminationReply = shouldTerminate
+        })
+        XCTAssertNil(terminationReply)
+
+        try await waitUntil { terminationReply != nil }
+        XCTAssertEqual(terminationReply, true)
+        let firstSucceeded = await firstWrite.value
+        let secondSucceeded = await secondWrite.value
+        let exportCount = await commands.exportCallCount
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertTrue(secondSucceeded)
+        XCTAssertEqual(exportCount, 1)
+        XCTAssertFalse(registry.hasPendingWindowCloseFinalization)
+        XCTAssertFalse(delegate.deferApplicationTerminationIfNeeded { _ in
+            XCTFail("A completed drain should no longer defer termination")
+        })
+    }
+
     /// A completed command leaves the queue empty before the reconcile debounce fires.
     /// Closing in that interval must still retain the store and export the readable snapshot.
     func testWindowCloseFinalizesMutationAfterWriteQueueHasAlreadyDrained() async throws {
@@ -4326,6 +4426,43 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             reopenStore.snapshotFreshness.detail,
             "Could not export the latest Beads data. \(StoreMutationTestError.commandFailed.localizedDescription)"
         )
+    }
+
+    func testFailedWindowCloseExportIsRetriedWhenOpeningATrackerAlias() async throws {
+        let projectA = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let projectB = try makeProject(issueLine(id: "alias-placeholder", title: "Alias"))
+        let trackerURL = projectA.appendingPathComponent(".beads", isDirectory: true)
+        let commands = RecordingBeadsCommands()
+        await commands.setProjectContextBeadsDirectoryURL(trackerURL)
+        let defaults = makeUserDefaults()
+        let registry = BeadWorkspaceWindowRegistry {
+            BeadStore(userDefaults: defaults, commands: commands)
+        }
+        let firstRequest = BeadWorkspaceWindowRequest()
+        let firstStore = registry.store(for: firstRequest)
+        firstStore.openProject(projectA)
+        try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-1") != nil }
+        firstStore.select(["bd-1"])
+        let succeeded = await firstStore.bulkSet(priority: 3)
+        XCTAssertTrue(succeeded)
+        await commands.setExportError(StoreMutationTestError.commandFailed)
+
+        registry.releaseWindow(firstRequest.id)
+        try await waitUntil { !registry.hasPendingWindowCloseFinalization }
+        let failedExportCount = await commands.exportCallCount
+        XCTAssertEqual(failedExportCount, 1)
+        await commands.setExportError(nil)
+
+        let aliasRequest = BeadWorkspaceWindowRequest()
+        let aliasStore = registry.store(for: aliasRequest)
+        XCTAssertFalse(
+            registry.openProject(projectB, from: aliasStore, destination: .currentWindow)
+        )
+        try await waitUntil { aliasStore.projectURL == projectB && !aliasStore.isLoading }
+
+        let retriedExportCount = await commands.exportCallCount
+        XCTAssertEqual(retriedExportCount, 2)
+        XCTAssertEqual(aliasStore.snapshotFreshness.state, .current)
     }
 
     /// Closing a window is not a project switch: every queued write is a user edit the

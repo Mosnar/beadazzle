@@ -15,17 +15,23 @@ extension BeadStore {
         forcingSnapshotExportForProjectPaths exportPaths: Set<String> = []
     ) -> URL? {
         guard projectURL == nil else { return nil }
-        guard let url = recentProjects.map(\.url).first(where: { url in
-            !excludedProjectPaths.contains(url.standardizedFileURL.path)
-                && projectDirectoryExists(at: url)
-        }) else {
-            return nil
-        }
+        guard let url = defaultProjectURL(excludingProjectPaths: excludedProjectPaths) else { return nil }
         openProject(
             url,
             forcingSnapshotExport: exportPaths.contains(url.standardizedFileURL.path)
         )
         return url
+    }
+
+    /// Selects the launch/restoration fallback without opening it. The window registry
+    /// uses this seam to resolve a routed tracker's canonical identity before it decides
+    /// whether a closed window still owns that tracker.
+    internal func defaultProjectURL(excludingProjectPaths excludedProjectPaths: Set<String>) -> URL? {
+        guard projectURL == nil else { return nil }
+        return recentProjects.map(\.url).first { url in
+            !excludedProjectPaths.contains(url.standardizedFileURL.path)
+                && projectDirectoryExists(at: url)
+        }
     }
 
     func openProject(_ url: URL, forcingSnapshotExport: Bool = false) {
@@ -147,8 +153,9 @@ extension BeadStore {
     /// Releases a project whose tracker resolved to one another window already owns,
     /// then falls back to the recents like a duplicate restoration — or to the empty
     /// state when every remaining recent is taken or gone.
-    internal func resignProjectWithDuplicateTracker(excludingProjectPaths: Set<String>) {
-        guard let duplicateURL = projectURL else { return }
+    @discardableResult
+    internal func resignProjectWithDuplicateTracker(excludingProjectPaths: Set<String>) -> Bool {
+        guard let duplicateURL = projectURL else { return false }
         let duplicatePath = duplicateURL.standardizedFileURL.path
         let fallbackURL = recentProjects.map(\.url).first { url in
             let path = url.standardizedFileURL.path
@@ -158,8 +165,10 @@ extension BeadStore {
         }
         if let fallbackURL {
             openProject(fallbackURL)
+            return true
         } else {
             closeProject()
+            return false
         }
     }
 

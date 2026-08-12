@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct CancellableProcessResult: Sendable {
@@ -26,7 +27,8 @@ enum CancellableProcessRunner {
         environment: [String: String],
         outputLimit: Int? = nil,
         timeout: Duration? = nil,
-        cancellationMode: CancellationMode = .returnImmediately
+        cancellationMode: CancellationMode = .returnImmediately,
+        terminationGracePeriod: Duration = .seconds(1)
     ) async throws -> CancellableProcessResult {
         guard let timeout else {
             return try await runWithoutTimeout(
@@ -35,7 +37,8 @@ enum CancellableProcessRunner {
                 currentDirectoryURL: currentDirectoryURL,
                 environment: environment,
                 outputLimit: outputLimit,
-                cancellationMode: cancellationMode
+                cancellationMode: cancellationMode,
+                terminationGracePeriod: terminationGracePeriod
             )
         }
         return try await withThrowingTaskGroup(of: CancellableProcessResult.self) { group in
@@ -46,7 +49,8 @@ enum CancellableProcessRunner {
                     currentDirectoryURL: currentDirectoryURL,
                     environment: environment,
                     outputLimit: outputLimit,
-                    cancellationMode: cancellationMode
+                    cancellationMode: cancellationMode,
+                    terminationGracePeriod: terminationGracePeriod
                 )
             }
             group.addTask {
@@ -65,7 +69,8 @@ enum CancellableProcessRunner {
         currentDirectoryURL: URL,
         environment: [String: String],
         outputLimit: Int?,
-        cancellationMode: CancellationMode
+        cancellationMode: CancellationMode,
+        terminationGracePeriod: Duration
     ) async throws -> CancellableProcessResult {
         let process = Process()
         process.executableURL = executableURL
@@ -78,6 +83,10 @@ enum CancellableProcessRunner {
         process.standardError = output
 
         let state = CancellableProcessExecutionState(cancellationMode: cancellationMode)
+        let terminationController = CancellableProcessTerminationController(
+            process: process,
+            gracePeriod: terminationGracePeriod
+        )
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard state.install(continuation) else { return }
@@ -92,9 +101,7 @@ enum CancellableProcessRunner {
                         guard !state.isCancelled else { return }
                         try process.run()
                         if state.markLaunchedAndShouldTerminate() {
-                            if process.isRunning {
-                                process.terminate()
-                            }
+                            terminationController.requestTermination()
                             return
                         }
 
@@ -120,8 +127,8 @@ enum CancellableProcessRunner {
             }
         } onCancel: {
             let shouldTerminate = state.cancel()
-            if shouldTerminate, process.isRunning {
-                process.terminate()
+            if shouldTerminate {
+                terminationController.requestTermination()
             }
             try? output.fileHandleForReading.close()
             try? output.fileHandleForWriting.close()
@@ -148,6 +155,44 @@ enum CancellableProcessRunner {
             }
         }
         return (captured, wasTruncated)
+    }
+}
+
+/// Sends the cooperative TERM first, then guarantees a bounded wait by escalating to
+/// KILL if the direct child does not exit. `Process` has no built-in escalation API, so
+/// this narrow wrapper serializes the one-shot request and safely crosses task boundaries.
+private final class CancellableProcessTerminationController: @unchecked Sendable {
+    private let lock = NSLock()
+    private let process: Process
+    private let gracePeriod: Duration
+    private var didRequestTermination = false
+
+    init(process: Process, gracePeriod: Duration) {
+        self.process = process
+        self.gracePeriod = gracePeriod
+    }
+
+    func requestTermination() {
+        let shouldRequest = lock.withLock {
+            guard !didRequestTermination else { return false }
+            didRequestTermination = true
+            return true
+        }
+        guard shouldRequest else { return }
+        if process.isRunning {
+            process.terminate()
+        }
+        Task { [self] in
+            try? await Task.sleep(for: gracePeriod)
+            forceTerminationIfNeeded()
+        }
+    }
+
+    private func forceTerminationIfNeeded() {
+        guard process.isRunning else { return }
+        let processIdentifier = process.processIdentifier
+        guard processIdentifier > 0 else { return }
+        _ = Darwin.kill(processIdentifier, SIGKILL)
     }
 }
 

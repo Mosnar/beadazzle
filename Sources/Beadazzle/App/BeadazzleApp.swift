@@ -7,6 +7,10 @@ struct BeadazzleApp: App {
     @State private var registry = BeadWorkspaceWindowRegistry()
     private let updaterController = UpdaterController()
 
+    init() {
+        appDelegate.registry = registry
+    }
+
     var body: some Scene {
         // Value-parameterized so `openWindow(value:)` can open a second workspace window
         // on another project. Windows created without a value — at launch, or from the
@@ -98,10 +102,43 @@ enum WindowLayout {
     static let minHeight: CGFloat = 520
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var registry: BeadWorkspaceWindowRegistry?
+    private var terminationTask: Task<Void, Never>?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         ProcessInfo.processInfo.disableAutomaticTermination("Beadazzle keeps its workspace window open.")
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard deferApplicationTerminationIfNeeded(reply: { shouldTerminate in
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }) else {
+            return .terminateNow
+        }
+        return .terminateLater
+    }
+
+    /// Holds AppKit's termination reply while optimistic edits drain to `bd` and their
+    /// final readable snapshots are exported. Extracted from the delegate callback so the
+    /// asynchronous handoff can be covered without terminating the XCTest host process.
+    @discardableResult
+    func deferApplicationTerminationIfNeeded(
+        reply: @escaping @MainActor (Bool) -> Void
+    ) -> Bool {
+        guard terminationTask == nil,
+              let registry,
+              registry.requiresApplicationTerminationFinalization else {
+            return terminationTask != nil
+        }
+        terminationTask = Task { @MainActor [weak self, weak registry] in
+            await registry?.finishApplicationTermination()
+            self?.terminationTask = nil
+            reply(true)
+        }
+        return true
     }
 }

@@ -107,6 +107,43 @@ final class CancellableProcessRunnerTests: XCTestCase {
         XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1))
     }
 
+    func testWaitForExitTimeoutEscalatesWhenChildIgnoresTermination() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CancellableProcessRunnerTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+        let readyURL = directoryURL.appendingPathComponent("ready")
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        do {
+            _ = try await CancellableProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "trap '' TERM; printf ready > \"$1\"; while :; do :; done",
+                    "beadazzle-test",
+                    readyURL.path
+                ],
+                currentDirectoryURL: directoryURL,
+                environment: ProcessInfo.processInfo.environment,
+                timeout: .milliseconds(150),
+                cancellationMode: .waitForProcessExit,
+                terminationGracePeriod: .milliseconds(50)
+            )
+            XCTFail("A timed-out subprocess should throw")
+        } catch CancellableProcessRunnerError.timedOut {
+            // Expected.
+        } catch {
+            XCTFail("Expected timedOut, received \(error)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1))
+    }
+
     func testWaitsForProcessExitAfterOutputPipeCloses() async throws {
         let result = try await CancellableProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),

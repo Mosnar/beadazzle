@@ -28,7 +28,9 @@ for users, not for the commit log.
 ### Fixed
 
 - Interrupted snapshot refreshes no longer leave temporary JSONL files in project worktrees.
-- Edits remain visible after closing and immediately reopening a project window, including worktree and redirected trackers; a failed final snapshot export is retried through the normal visible refresh path.
+- Queued edits now finish safely when closing a project window or quitting Beadazzle. Worktree and redirected project aliases share the same handoff, and a failed final snapshot export is retried from whichever alias opens next.
+- Project windows no longer cycle between recent folders when several folders point to the same Beads tracker.
+- A stuck snapshot export can no longer hold refresh, window reopening, or app termination indefinitely after ignoring normal cancellation.
 - Projects with very deep parent/child hierarchies now build their issue index in linear time instead of slowing dramatically as nesting grows.
 - Invalid snapshots with missing, non-text, or duplicate bead IDs now show an actionable line-level error and cannot replace the last readable snapshot.
 

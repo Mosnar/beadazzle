@@ -371,6 +371,34 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertEqual(second.store.projectReadiness, .noProject)
     }
 
+    /// Automatic duplicate fallback must remember every rejected alias, not only the
+    /// immediately previous one. Otherwise B falls back to C, C falls back to B, and the
+    /// window continuously reloads two roots that both resolve to A's tracker.
+    func testDuplicateTrackerFallbackStopsAfterRejectingEveryAlias() async throws {
+        let trackerURL = try makeSharedTracker()
+        let context = try makeContext(
+            commands: SharedTrackerTestCommands(trackerDirectoryURL: trackerURL)
+        )
+        let projectC = try makeProject(named: "Gamma")
+        context.defaults.set(
+            [context.projectB.path, projectC.path],
+            forKey: BeadStore.recentProjectPathsKey
+        )
+
+        let first = context.makeWindow()
+        first.store.openProject(context.projectA)
+        try await waitUntil { first.store.resolvedTrackerIdentityPath != nil }
+
+        let second = context.makeWindow()
+        second.store.openProject(context.projectB)
+        XCTAssertEqual(second.store.projectURL?.path, context.projectB.standardizedFileURL.path)
+
+        try await waitUntil { second.store.projectURL == nil }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(second.store.projectURL)
+        XCTAssertEqual(first.store.projectURL?.path, context.projectA.standardizedFileURL.path)
+    }
+
     // MARK: - Project switcher state
 
     func testProjectOpenInAnotherWindowIsReportedToTheSwitcher() throws {
