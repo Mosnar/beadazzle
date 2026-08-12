@@ -37,6 +37,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(store.showsClosedBeadsInSidebar)
         XCTAssertTrue(store.showsGatesInSidebar)
         XCTAssertTrue(store.showsZeroCountSidebarSections)
+        XCTAssertEqual(store.beadListDensity, .comfortable)
     }
 
     func testAppPreferencesPersistThroughInjectedUserDefaults() {
@@ -59,6 +60,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         store.showsClosedBeadsInSidebar = false
         store.showsGatesInSidebar = false
         store.showsZeroCountSidebarSections = false
+        store.beadListDensity = .large
 
         let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
 
@@ -84,6 +86,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertFalse(reloadedStore.showsClosedBeadsInSidebar)
         XCTAssertFalse(reloadedStore.showsGatesInSidebar)
         XCTAssertFalse(reloadedStore.showsZeroCountSidebarSections)
+        XCTAssertEqual(reloadedStore.beadListDensity, .large)
         XCTAssertEqual(reloadedStore.staleCutoffDays, 14)
         XCTAssertEqual(reloadedStore.beadListDisplayOptions, .compact)
     }
@@ -909,6 +912,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let expectedIDs: Set<String> = [
             "bdCLIPath",
             "projectOpenDestination",
+            "beadListDensity",
             "automaticallyChecksDoltRemotes",
             "automaticallyChecksForUpdates",
             "receivesBetaUpdates",
@@ -964,14 +968,11 @@ final class BeadStorePreferencesTests: XCTestCase {
         let displayPreferences = BeadazzleAppBoolPreferences.all.filter {
             $0.key.hasPrefix("Display.")
         }
-        XCTAssertEqual(
-            Set(displayPreferences.map(\.id)),
-            Set(entries.filter { $0.persistence.hasPrefix("Display.") }.map(\.id))
-        )
-        XCTAssertEqual(
-            Set(displayPreferences.map(\.key)),
-            Set(entries.filter { $0.persistence.hasPrefix("Display.") }.map(\.persistence))
-        )
+        let booleanDisplayEntries = entries.filter {
+            displayPreferences.map(\.id).contains($0.id)
+        }
+        XCTAssertEqual(Set(displayPreferences.map(\.id)), Set(booleanDisplayEntries.map(\.id)))
+        XCTAssertEqual(Set(displayPreferences.map(\.key)), Set(booleanDisplayEntries.map(\.persistence)))
         XCTAssertEqual(
             Dictionary(
                 uniqueKeysWithValues: displayPreferences.map {
@@ -979,10 +980,12 @@ final class BeadStorePreferencesTests: XCTestCase {
                 }
             ),
             Dictionary(
-                uniqueKeysWithValues: entries
-                    .filter { $0.persistence.hasPrefix("Display.") }
-                    .map { ($0.id, $0.defaultValue) }
+                uniqueKeysWithValues: booleanDisplayEntries.map { ($0.id, $0.defaultValue) }
             )
+        )
+        XCTAssertEqual(
+            entries.first { $0.id == "beadListDensity" }?.defaultValue,
+            BeadListDensity.default.title
         )
         XCTAssertTrue(
             entries.first { $0.id == "defaultNewBeadAssignee" }?

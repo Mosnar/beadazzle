@@ -22,6 +22,7 @@ struct IssueSummaryRowContent: View {
     var showsComments = true
     var showsLabels = true
     var allowsHoverPresentation = true
+    var rowHeight = IssueListMetrics.rowHeight
 
     var body: some View {
         HStack(spacing: 0) {
@@ -136,7 +137,7 @@ struct IssueSummaryRowContent: View {
                 .font(.caption)
             }
         }
-        .frame(height: IssueListMetrics.rowHeight, alignment: .center)
+        .frame(height: rowHeight, alignment: .center)
         .contentShape(Rectangle())
     }
 

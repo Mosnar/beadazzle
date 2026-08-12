@@ -1,6 +1,7 @@
 import Foundation
 
-/// Per-project persistence for the last workspace state (view, filters, sort, selection, expansion).
+/// Per-project persistence for the last workspace state (view, filters, sort, selection,
+/// expansion, and recoverable bead or comment drafts).
 ///
 /// Modeled on `BeadSavedViewRepository`: the stored blob is a versioned JSON payload keyed by the
 /// normalized project path. Loading is intentionally lossy — a missing, corrupt, or version-mismatched
@@ -48,6 +49,34 @@ final class BeadWorkspaceStateRepository {
             return false
         }
         payload.creationDraft = nil
+        return save(payload, projectURL: projectURL)
+    }
+
+    /// Clears only the existing-bead draft that produced a confirmed update. A newer
+    /// edit for the same bead remains recoverable when an older write settles later.
+    @discardableResult
+    func clearIssueEditDraft(matching draft: IssueDraft, projectURL: URL) -> Bool {
+        guard let issueID = draft.id,
+              var payload = load(projectURL: projectURL)
+        else { return false }
+        var drafts = payload.issueEditDrafts ?? [:]
+        guard drafts[issueID]?.draft == draft else { return false }
+        drafts.removeValue(forKey: issueID)
+        payload.issueEditDrafts = drafts.isEmpty ? nil : drafts
+        return save(payload, projectURL: projectURL)
+    }
+
+    /// Clears only the comment text that produced a confirmed post. Whitespace is
+    /// normalized the same way as the command path so cosmetic padding cannot revive it.
+    @discardableResult
+    func clearCommentDraft(matching text: String, issueID: String, projectURL: URL) -> Bool {
+        guard var payload = load(projectURL: projectURL) else { return false }
+        var drafts = payload.commentDrafts ?? [:]
+        guard drafts[issueID]?.trimmingCharacters(in: .whitespacesAndNewlines) == text else {
+            return false
+        }
+        drafts.removeValue(forKey: issueID)
+        payload.commentDrafts = drafts.isEmpty ? nil : drafts
         return save(payload, projectURL: projectURL)
     }
 

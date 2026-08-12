@@ -31,11 +31,12 @@ struct ActivityView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    store.refreshActivityForSelection()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
+                Button(
+                    "Refresh Activity",
+                    systemImage: "arrow.clockwise",
+                    action: store.refreshActivityForSelection
+                )
+                .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .help("Refresh activity")
                 .disabled(isRefreshing)
@@ -69,8 +70,8 @@ struct ActivityView: View {
             Divider()
                 .padding(.top, 2)
 
-            // Own subview (with its own `@State` draft) so typing a comment only
-            // re-renders the composer, not the merged feed above it.
+            // Own subview that observes the store-backed draft directly, so typing a
+            // comment only re-renders the composer, not the merged feed above it.
             ActivityComposer(issueID: issue.id)
                 .id(issue.id)
         }
@@ -96,16 +97,16 @@ private struct ActivityComposer: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var detail: BeadDetailStore { store.detail }
     let issueID: String
-    @State private var draftText = ""
     @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextEditor(text: $draftText)
+            TextField("Add a comment…", text: draftBinding, axis: .vertical)
                 .focused($composerFocused)
                 .font(.body)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 64, maxHeight: 110)
+                .textFieldStyle(.plain)
+                .lineLimit(3...6)
+                .frame(minHeight: 64, maxHeight: 120, alignment: .topLeading)
                 .padding(6)
                 .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
                 .overlay {
@@ -115,10 +116,16 @@ private struct ActivityComposer: View {
 
             HStack {
                 Spacer()
-                Button {
-                    submitComment()
-                } label: {
-                    Label("Comment", systemImage: "paperplane")
+                Button(action: submitComment) {
+                    if detail.isAddingComment {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Posting…")
+                        }
+                    } else {
+                        Label("Comment", systemImage: "paperplane")
+                    }
                 }
                 .keyboardShortcut(.return, modifiers: [.command])
                 .disabled(normalizedDraft.isEmpty || detail.isAddingComment)
@@ -127,15 +134,27 @@ private struct ActivityComposer: View {
     }
 
     private var normalizedDraft: String {
-        draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.commentDraft(for: issueID).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var draftBinding: Binding<String> {
+        Binding(
+            get: { store.commentDraft(for: issueID) },
+            set: { store.updateCommentDraft($0, issueID: issueID) }
+        )
     }
 
     private func submitComment() {
         let text = normalizedDraft
         guard !text.isEmpty else { return }
-        store.addComment(issueID: issueID, text: text)
-        draftText = ""
-        composerFocused = false
+        Task { @MainActor in
+            let didAdd = await store.addComment(issueID: issueID, text: text)
+            guard didAdd else {
+                composerFocused = true
+                return
+            }
+            composerFocused = !store.commentDraft(for: issueID).isEmpty
+        }
     }
 }
 

@@ -16,7 +16,7 @@ struct ProjectActionRow: View {
                 action(ProjectOpenModifier.destination)
             } label: {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(rowForeground)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -39,27 +39,27 @@ struct ProjectActionRow: View {
                 return .handled
             }
             .contextMenu {
-                Button("Add Folder to Current Window...") {
+                Button("Open Project in Current Window…") {
                     action(.currentWindow)
                 }
-                Button("Add Folder in New Window...") {
+                Button("Open Project in New Window…") {
                     action(.newWindow)
                 }
             }
-            .accessibilityHint("Hold Option to open the chosen folder in a new window.")
+            .accessibilityHint("Hold Option to open the chosen project in a new window.")
 
             ProjectPickerRowButton(
                 systemImage: "macwindow.badge.plus",
                 isVisible: isActive,
                 isActive: isActive,
-                help: "Add Folder in New Window",
-                accessibilityLabel: "Add Folder in New Window"
+                help: "Open Project in New Window",
+                accessibilityLabel: "Open Project in New Window"
             ) {
                 action(.newWindow)
             }
         }
         .padding(.horizontal, 7)
-        .frame(height: 25)
+        .frame(minHeight: 28)
         .background(rowBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .onHover { isHovered = $0 }
     }

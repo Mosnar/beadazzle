@@ -124,6 +124,10 @@ extension BeadStore {
     func finishRetirementAfterWindowClose() async -> String? {
         await waitForActiveMutationsToFinish()
         await mutations.writeQueue.drainPending()
+        // A write that finished after `prepareForWindowClose()` may have cleared a
+        // recoverable draft. Persist that settled state before the retired store is
+        // released, or reopening the project could resurrect already-submitted text.
+        flushPendingWorkspaceState()
         guard mutations.requiresReadableSnapshotExport else { return nil }
         guard let projectURL else {
             return "The project closed before Beadazzle could identify it for the final snapshot export."
@@ -337,6 +341,8 @@ extension BeadStore {
         _selectedIDs.removeAll()
         _fullPageDetailIssueID = nil
         creationDraft = nil
+        _issueEditDrafts = [:]
+        _commentDrafts = [:]
         creationValidationSettings = .beadsDefault
         creationValidationLoadState = .idle
         isSavingCreationValidationSettings = false
@@ -766,6 +772,7 @@ extension BeadStore {
             pendingRestoredWorkspaceSnapshot = nil
             restoreWorkspace(restoredSnapshot)
         }
+        pruneWorkspaceDraftsToCurrentIssues()
         resetWorkspaceHistory()
         if !deferredMonitorRoles.isEmpty {
             handleDataSourceMonitorEvent(

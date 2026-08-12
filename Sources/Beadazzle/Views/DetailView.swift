@@ -11,10 +11,6 @@ struct DetailView: View {
     @Environment(BeadStore.self) private var store: BeadStore
     private var workspace: BeadWorkspaceStore { store.workspace }
     let requestClose: (BeadIssue) -> Void
-    @State private var draft: IssueDraft?
-    @State private var draftIssueID: String?
-    @State private var draftBaseline: IssueDraft?
-    @State private var draftConflictFields: Set<IssueDraftField> = []
     @State private var pendingDraftConflict: PendingDraftConflict?
     @State private var suppressesCreationDraftUpdates = false
     @State private var hierarchySheetRequest: DetailHierarchySheetRequest?
@@ -57,11 +53,11 @@ struct DetailView: View {
                     hideTextSection: hideTextSection,
                     isDirty: activeDraft(for: issue) != IssueDraft(issue: issue),
                     saveAction: { save(issue) },
-                    revertAction: resetDraft,
+                    revertAction: { resetDraft(issueID: issue.id) },
                     requestClose: requestClose
                 )
                 .onChange(of: issue.id) {
-                    resetDraft()
+                    pendingDraftConflict = nil
                     deferredStatusRequest = nil
                 }
                 .onChange(of: issue) { _, updatedIssue in
@@ -87,6 +83,9 @@ struct DetailView: View {
                 }
                 .onChange(of: activeDraft(for: issue).deferUntil) { _, newDate in
                     commitDeferredDateChangeIfNeeded(issueID: issue.id, deferUntil: newDate)
+                }
+                .task(id: issue.id) {
+                    store.rebaseIssueEditDraft(onto: issue)
                 }
             } else {
                 ContentUnavailableView("Select a Bead", systemImage: "circle.hexagongrid")
@@ -270,7 +269,7 @@ struct DetailView: View {
                     context: request.saveContext
                 )
                 if didSave {
-                    resetDraft()
+                    resetDraft(issueID: request.issueID)
                 }
                 return didSave
             }
@@ -303,7 +302,7 @@ struct DetailView: View {
                     context: request.saveContext
                 )
                 if didSave {
-                    resetDraft()
+                    resetDraft(issueID: request.issueID)
                 }
                 return didSave
             }
@@ -369,22 +368,14 @@ struct DetailView: View {
         Binding(
             get: { activeDraft(for: issue) },
             set: { nextDraft in
-                if draftIssueID != issue.id || draftBaseline == nil {
-                    draftBaseline = IssueDraft(issue: issue)
-                    draftConflictFields = []
-                    pendingDraftConflict = nil
-                }
-                draftIssueID = issue.id
-                draft = nextDraft
+                store.updateIssueEditDraft(nextDraft, for: issue)
+                pendingDraftConflict = nil
             }
         )
     }
 
     private func activeDraft(for issue: BeadIssue) -> IssueDraft {
-        if draftIssueID == issue.id, let draft {
-            return draft
-        }
-        return IssueDraft(issue: issue)
+        store.issueEditDraft(for: issue)
     }
 
     private func createDraft() {
@@ -410,7 +401,7 @@ struct DetailView: View {
     private func save(_ issue: BeadIssue, allowsConflictingChanges: Bool = false) {
         let draft = activeDraft(for: issue)
         let unresolvedConflicts = unresolvedDraftConflicts(draft: draft, issue: issue)
-        draftConflictFields = unresolvedConflicts
+        store.setIssueEditDraftConflicts(unresolvedConflicts, issueID: issue.id)
         if !allowsConflictingChanges, !unresolvedConflicts.isEmpty {
             pendingDraftConflict = PendingDraftConflict(
                 issueID: issue.id,
@@ -419,7 +410,7 @@ struct DetailView: View {
             return
         }
         let saveContext = IssueDraftSaveContext(
-            baseline: draftBaseline ?? IssueDraft(issue: issue),
+            baseline: store.issueEditDraftState(for: issue.id)?.baseline ?? IssueDraft(issue: issue),
             allowsConflictingChanges: allowsConflictingChanges
         )
         if !store.isDone(issue), store.statusClosesBeads(draft.status) {
@@ -454,13 +445,13 @@ struct DetailView: View {
 
         Task {
             if await store.save(draft, context: saveContext) {
-                resetDraft()
+                resetDraft(issueID: issue.id)
             }
         }
     }
 
     private func commitStatusChangeIfNeeded(issue: BeadIssue, status: String) {
-        guard draftIssueID == issue.id, draft != nil else { return }
+        guard store.issueEditDraftState(for: issue.id) != nil else { return }
         guard store.issue(with: issue.id)?.status != status else { return }
 
         if !store.isDone(issue), store.statusClosesBeads(status) {
@@ -503,7 +494,7 @@ struct DetailView: View {
     }
 
     private func commitTypeChangeIfNeeded(issueID: String, type: String) {
-        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issueEditDraftState(for: issueID) != nil else { return }
         guard store.issue(with: issueID)?.issueType != type else { return }
 
         Task { @MainActor in
@@ -515,7 +506,7 @@ struct DetailView: View {
     }
 
     private func commitPriorityChangeIfNeeded(issueID: String, priority: Int) {
-        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issueEditDraftState(for: issueID) != nil else { return }
         guard store.issue(with: issueID)?.priority != priority else { return }
 
         Task { @MainActor in
@@ -527,7 +518,7 @@ struct DetailView: View {
     }
 
     private func commitAssigneeChangeIfNeeded(issueID: String, assignee: String) {
-        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issueEditDraftState(for: issueID) != nil else { return }
         guard store.issue(with: issueID)?.assignee?.nilIfBlank != assignee.nilIfBlank else { return }
 
         Task { @MainActor in
@@ -539,7 +530,7 @@ struct DetailView: View {
     }
 
     private func commitLabelsChangeIfNeeded(issueID: String, labels: [String]) {
-        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issueEditDraftState(for: issueID) != nil else { return }
         guard store.issue(with: issueID)?.labels != labels else { return }
 
         Task { @MainActor in
@@ -551,7 +542,7 @@ struct DetailView: View {
     }
 
     private func commitDueDateChangeIfNeeded(issueID: String, dueAt: Date?) {
-        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issueEditDraftState(for: issueID) != nil else { return }
         guard store.issue(with: issueID)?.dueAt != dueAt else { return }
 
         Task { @MainActor in
@@ -563,7 +554,7 @@ struct DetailView: View {
     }
 
     private func commitDeferredDateChangeIfNeeded(issueID: String, deferUntil: Date?) {
-        guard draftIssueID == issueID, draft != nil else { return }
+        guard store.issueEditDraftState(for: issueID) != nil else { return }
         if suppressedDeferredDateWrite == DeferredDateWriteSuppression(issueID: issueID, date: deferUntil) {
             return
         }
@@ -601,14 +592,14 @@ struct DetailView: View {
 
     private func syncDraftAfterDeferredStatusChange(_ request: DeferredStatusRequest, deferUntil: Date?) {
         guard let issueID = request.issueIDs.first,
-              draftIssueID == issueID,
-              var currentDraft = draft
+              let issue = store.issue(with: issueID),
+              var currentDraft = store.issueEditDraftState(for: issueID)?.draft
         else { return }
         let suppression = DeferredDateWriteSuppression(issueID: issueID, date: deferUntil)
         suppressedDeferredDateWrite = suppression
         currentDraft.status = request.status
         currentDraft.deferUntil = deferUntil
-        draft = currentDraft
+        store.updateIssueEditDraft(currentDraft, for: issue)
         Task { @MainActor in
             await Task.yield()
             if suppressedDeferredDateWrite == suppression {
@@ -693,34 +684,21 @@ struct DetailView: View {
         matchesAttempt: (IssueDraft) -> Bool,
         apply rollback: (inout IssueDraft, BeadIssue) -> Void
     ) {
-        guard draftIssueID == issueID,
-              var currentDraft = draft,
+        guard var currentDraft = store.issueEditDraftState(for: issueID)?.draft,
               matchesAttempt(currentDraft),
               let currentIssue = store.issue(with: issueID)
         else { return }
         rollback(&currentDraft, currentIssue)
-        draft = currentDraft
+        store.updateIssueEditDraft(currentDraft, for: currentIssue)
     }
 
-    private func resetDraft() {
-        draft = nil
-        draftIssueID = nil
-        draftBaseline = nil
-        draftConflictFields = []
+    private func resetDraft(issueID: String) {
+        store.discardIssueEditDraft(issueID: issueID)
         pendingDraftConflict = nil
     }
 
     private func rebaseActiveDraft(onto issue: BeadIssue) {
-        guard draftIssueID == issue.id,
-              let draft,
-              let draftBaseline else { return }
-        let rebase = draft.rebased(from: draftBaseline, onto: issue)
-        let remoteDraft = IssueDraft(issue: issue)
-        var conflicts = draftConflictFields.union(rebase.conflictingFields)
-        conflicts = Set(conflicts.filter { !rebase.draft.matches(remoteDraft, field: $0) })
-        self.draft = rebase.draft
-        self.draftBaseline = remoteDraft
-        draftConflictFields = conflicts
+        store.rebaseIssueEditDraft(onto: issue)
         pendingDraftConflict = nil
         hierarchySheetRequest = nil
     }
@@ -730,7 +708,8 @@ struct DetailView: View {
         issue: BeadIssue
     ) -> Set<IssueDraftField> {
         let current = IssueDraft(issue: issue)
-        return Set(draftConflictFields.filter { !draft.matches(current, field: $0) })
+        let conflicts = store.issueEditDraftState(for: issue.id)?.conflictingFields ?? []
+        return Set(conflicts.filter { !draft.matches(current, field: $0) })
     }
 
     private func canSave(_ draft: IssueDraft) -> Bool {

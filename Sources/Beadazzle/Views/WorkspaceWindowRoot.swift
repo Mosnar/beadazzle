@@ -18,7 +18,7 @@ struct WorkspaceWindowRoot: View {
             .frame(minWidth: WindowLayout.minWidth, minHeight: WindowLayout.minHeight)
             .navigationTitle(store.projectName)
             .background {
-                WorkspaceWindowAccessor { window in
+                WorkspaceWindowAccessor(isDocumentEdited: store.hasRecoverableWorkspaceDrafts) { window in
                     registry.registerWindow(window, for: request.id)
                 }
                 .frame(width: 0, height: 0)
@@ -46,23 +46,27 @@ struct WorkspaceWindowRoot: View {
 /// first-party way to identify which window a scene ended up in, and window identity is
 /// what "focus the window already showing this project" needs.
 private struct WorkspaceWindowAccessor: NSViewRepresentable {
+    let isDocumentEdited: Bool
     let onResolve: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
-        WindowReportingView(onResolve: onResolve)
+        WindowReportingView(isDocumentEdited: isDocumentEdited, onResolve: onResolve)
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? WindowReportingView else { return }
+        view.isDocumentEdited = isDocumentEdited
         view.onResolve = onResolve
         view.reportWindowIfNeeded()
     }
 
     private final class WindowReportingView: NSView {
+        var isDocumentEdited: Bool
         var onResolve: (NSWindow) -> Void
         private weak var reportedWindow: NSWindow?
 
-        init(onResolve: @escaping (NSWindow) -> Void) {
+        init(isDocumentEdited: Bool, onResolve: @escaping (NSWindow) -> Void) {
+            self.isDocumentEdited = isDocumentEdited
             self.onResolve = onResolve
             super.init(frame: .zero)
         }
@@ -78,7 +82,9 @@ private struct WorkspaceWindowAccessor: NSViewRepresentable {
         }
 
         func reportWindowIfNeeded() {
-            guard let window, window !== reportedWindow else { return }
+            guard let window else { return }
+            window.isDocumentEdited = isDocumentEdited
+            guard window !== reportedWindow else { return }
             reportedWindow = window
             onResolve(window)
         }

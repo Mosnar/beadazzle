@@ -95,7 +95,7 @@ struct ProjectSettingsView: View {
             ),
             SettingsPaneGroup(
                 id: "issue-model",
-                title: "Issue Model",
+                title: "Bead Model",
                 panes: [.content, .properties, .types, .statuses]
             ),
             SettingsPaneGroup(

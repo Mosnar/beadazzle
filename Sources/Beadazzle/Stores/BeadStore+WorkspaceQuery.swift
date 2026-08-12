@@ -113,7 +113,9 @@ extension BeadStore {
             sortDirection: snapshotSort.direction,
             issueListMode: issueListMode,
             outlineState: outlineState,
-            creationDraft: creationDraft
+            creationDraft: creationDraft,
+            issueEditDrafts: issueEditDrafts,
+            commentDrafts: commentDrafts
         )
     }
 
@@ -139,6 +141,8 @@ extension BeadStore {
         _selectedIDs = []
         _fullPageDetailIssueID = nil
         creationDraft = nil
+        _issueEditDrafts = [:]
+        _commentDrafts = [:]
         outlineState = BeadOutlineSelectionState()
         suppressesFilterUpdates = false
         isRestoringWorkspace = false
@@ -150,6 +154,10 @@ extension BeadStore {
 
     internal func recordWorkspaceSnapshotIfNeeded() {
         guard !isRestoringWorkspace, !suppressesHistoryRecording, hasReadableProject else { return }
+        workspaceHistory.updateRecoverableDrafts(
+            issueEditDrafts: issueEditDrafts,
+            commentDrafts: commentDrafts
+        )
         workspaceHistory.record(makeWorkspaceSnapshot())
         syncWorkspaceHistoryAvailability()
         persistWorkspaceState()
@@ -199,6 +207,12 @@ extension BeadStore {
         _selectedIDs = snapshot.selectedIDs.intersection(index.allIssueIDs)
         _fullPageDetailIssueID = snapshot.fullPageDetailIssueID
         creationDraft = snapshot.creationDraft
+        _issueEditDrafts = snapshot.issueEditDrafts.filter { issueID, state in
+            index.isUserFacingIssueID(issueID)
+                && state.draft.id == issueID
+                && state.baseline.id == issueID
+        }
+        _commentDrafts = snapshot.commentDrafts.filter { index.isUserFacingIssueID($0.key) }
         searchText = snapshot.searchText
         statusFilters = snapshot.statusFilters
         typeFilters = Set(snapshot.typeFilters.filter {

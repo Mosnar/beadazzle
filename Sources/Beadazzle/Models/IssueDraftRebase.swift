@@ -1,6 +1,6 @@
 import Foundation
 
-enum IssueDraftField: String, CaseIterable, Hashable, Sendable {
+enum IssueDraftField: String, CaseIterable, Codable, Hashable, Sendable {
     case title
     case description
     case design
@@ -30,6 +30,14 @@ enum IssueDraftField: String, CaseIterable, Hashable, Sendable {
         case .deferUntil: "deferred date"
         }
     }
+}
+
+/// A recoverable, unsaved edit to an existing bead. The baseline travels with the
+/// draft so a later project reload can still distinguish local and remote changes.
+struct IssueEditDraftState: Codable, Equatable, Sendable {
+    var draft: IssueDraft
+    var baseline: IssueDraft
+    var conflictingFields: Set<IssueDraftField> = []
 }
 
 struct IssueDraftRebaseResult: Equatable, Sendable {

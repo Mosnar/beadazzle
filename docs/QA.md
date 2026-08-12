@@ -60,6 +60,31 @@ reconfigure beads. Launch the staged app with:
 - Select multiple beads, choose **Bulk Actions > Close Selected…**, enter a reason, and
   confirm all selected beads close.
 
+## Draft recovery and destructive actions
+
+- Change an existing bead's title and body without saving, navigate to another bead,
+  then return. Confirm the draft is intact and Revert clears it.
+- Repeat with an unfinished comment, switch projects, close the window, and reopen the
+  project. Confirm both kinds of draft return and the window's edited indicator clears
+  only after saving or reverting bead edits and posting or clearing comment text.
+- Force a comment command to fail in a disposable project. Confirm the typed comment
+  remains editable and Try Again can post it without retyping.
+- Delete a parent with descendants. Confirm the sheet lists every selected bead and
+  descendant by ID and title, and that cancelling changes nothing.
+
+## Accessibility and display comfort
+
+- In Settings ▸ Display, switch among Compact, Comfortable, and Large row density while
+  scrolling and changing selection. Confirm rows stay aligned and responsive.
+- Narrow the detail pane until metadata overflows. Confirm the horizontal affordance is
+  visible and every metadata control remains reachable by scrolling and keyboard.
+- Enable Reduce Motion in System Settings, then exercise project Sync status, folder
+  automation results, bead-picker keyboard navigation, and About email copying. Confirm
+  content updates without sliding or animated scrolling.
+- With VoiceOver, traverse the project picker, empty-state actions, Activity refresh and
+  comment controls, and delete preview. Confirm every icon-only action has a useful name
+  and the delete groups expose their counts and bead titles.
+
 ## Release smoke check
 
 - Run `./script/build_and_run.sh --verify` from a clean checkout.

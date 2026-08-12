@@ -6,6 +6,7 @@ struct IssueListView: View {
     private var project: BeadProjectStore { store.project }
     private var workspace: BeadWorkspaceStore { store.workspace }
     private var detail: BeadDetailStore { store.detail }
+    let openProject: () -> Void
     let requestClose: (BeadIssue) -> Void
     let requestSetStatus: (Set<String>, String) -> Void
     let requestBulkEdit: (Set<String>, BulkEditTarget) -> Void
@@ -24,24 +25,37 @@ struct IssueListView: View {
 
             Group {
                 if project.projectURL == nil {
-                    ContentUnavailableView("Open a Beads Project", systemImage: "folder.badge.plus")
+                    ContentUnavailableView {
+                        Label("Open a Project", systemImage: "folder.badge.plus")
+                    } description: {
+                        Text("Choose a project that uses a current Dolt-backed Beads tracker.")
+                    } actions: {
+                        Button("Open Project…", systemImage: "folder", action: openProject)
+                    }
                 } else if store.issues.isEmpty && !store.hasActiveFilters && store.searchText.isEmpty {
-                    ContentUnavailableView(
-                        "No Beads Yet",
-                        systemImage: "circle.hexagongrid",
-                        description: Text("Create a bead to start tracking work in this project.")
-                    )
+                    ContentUnavailableView {
+                        Label("No Beads Yet", systemImage: "circle.hexagongrid")
+                    } description: {
+                        Text("Create a bead to start tracking work in this project.")
+                    } actions: {
+                        Button("New Bead", systemImage: "plus", action: store.beginCreatingBead)
+                            .disabled(!store.canCreateBead)
+                    }
                 } else if store.isShowingFolderInIssueList,
                           let folder = store.activeIssueListFolderSavedView,
                           IssueListSurfacePolicy.showsEmptyFolderPlaceholder(
                               folderIsEmpty: folder.folder?.orderedIssueIDs.isEmpty == true,
                               hasSearchText: !store.trimmedSearchText.isEmpty
                           ) {
-                    ContentUnavailableView(
-                        "Folder is Empty",
-                        systemImage: "folder",
-                        description: Text("Drag beads here or use Add to Folder from any bead menu.")
-                    )
+                    ContentUnavailableView {
+                        Label("Folder is Empty", systemImage: "folder")
+                    } description: {
+                        Text("Drag beads here or use Add to Folder from any bead menu.")
+                    } actions: {
+                        Button("Show All Beads", systemImage: "circle.hexagongrid") {
+                            store.applyBookmark(.all)
+                        }
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if workspace.filteredIssueIDs.isEmpty {
                     noMatchesView
@@ -56,6 +70,7 @@ struct IssueListView: View {
                         bookmark: store.effectiveIssueListBookmark,
                         mode: store.effectiveIssueListMode,
                         displayOptions: store.beadListDisplayOptions,
+                        rowHeight: store.beadListDensity.rowHeight,
                         contentRevision: project.contentRevision,
                         gateClock: detail.gateClock,
                         store: store,
@@ -181,10 +196,13 @@ struct IssueListView: View {
     private var noMatchesView: some View {
         let query = store.trimmedSearchText
         if query.isEmpty {
-            ContentUnavailableView(
-                "No Beads Match",
-                systemImage: "line.3.horizontal.decrease.circle"
-            )
+            ContentUnavailableView {
+                Label("No Beads Match", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("Adjust the active view or filters to show more beads.")
+            } actions: {
+                noMatchFilterActions
+            }
         } else {
             ContentUnavailableView {
                 Label("No Beads Match", systemImage: "magnifyingglass")
@@ -192,8 +210,33 @@ struct IssueListView: View {
                 Text("No beads match “\(query)” in \(store.activeSearchCoverageTitle).")
             } actions: {
                 SearchCoverageActionButton()
+                if store.hasActiveFilters || store.advancedFilterCount > 0 {
+                    Button("Clear Filters", action: clearAllFilters)
+                }
+                Button("Clear Search") {
+                    store.searchText = ""
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var noMatchFilterActions: some View {
+        if store.isSavedViewDrifted {
+            Button("Revert to Bookmark", action: store.revertToSourceSavedView)
+        }
+        if store.hasActiveFilters || store.advancedFilterCount > 0 {
+            Button("Clear Filters", action: clearAllFilters)
+        } else if store.effectiveIssueListBookmark != .all || store.isShowingFolderInIssueList {
+            Button("Show All Beads") {
+                store.applyBookmark(.all)
+            }
+        }
+    }
+
+    private func clearAllFilters() {
+        store.clearFilters()
+        store.clearAdvancedFilters()
     }
 }
 
@@ -397,6 +440,7 @@ struct GateRowView: View, Equatable {
     let now: Date
     let showsDisclosure: Bool
     let allowsHoverPresentation: Bool
+    var rowHeight = IssueListMetrics.rowHeight
     let toggleExpansion: () -> Void
 
     nonisolated static func == (lhs: GateRowView, rhs: GateRowView) -> Bool {
@@ -405,6 +449,7 @@ struct GateRowView: View, Equatable {
             && lhs.now == rhs.now
             && lhs.showsDisclosure == rhs.showsDisclosure
             && lhs.allowsHoverPresentation == rhs.allowsHoverPresentation
+            && lhs.rowHeight == rhs.rowHeight
     }
 
     var body: some View {
@@ -421,7 +466,7 @@ struct GateRowView: View, Equatable {
                     Image(systemName: row.isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: IssueListMetrics.disclosureWidth, height: IssueListMetrics.rowHeight)
+                        .frame(width: IssueListMetrics.disclosureWidth, height: rowHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -481,7 +526,7 @@ struct GateRowView: View, Equatable {
                 .font(.caption)
             }
         }
-        .frame(height: IssueListMetrics.rowHeight, alignment: .center)
+        .frame(height: rowHeight, alignment: .center)
         .contentShape(Rectangle())
     }
 }
@@ -493,6 +538,7 @@ struct IssueRowView: View, Equatable {
     let displayOptions: BeadListDisplayOptions
     let blockedReason: BlockedReasonPresentation?
     let allowsHoverPresentation: Bool
+    var rowHeight = IssueListMetrics.rowHeight
     let openRelatedIssue: (String) -> Void
     let toggleExpansion: () -> Void
 
@@ -503,6 +549,7 @@ struct IssueRowView: View, Equatable {
             && lhs.displayOptions == rhs.displayOptions
             && lhs.blockedReason == rhs.blockedReason
             && lhs.allowsHoverPresentation == rhs.allowsHoverPresentation
+            && lhs.rowHeight == rhs.rowHeight
     }
 
     var body: some View {
@@ -515,7 +562,7 @@ struct IssueRowView: View, Equatable {
                     Image(systemName: row.isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: IssueListMetrics.disclosureWidth, height: IssueListMetrics.rowHeight)
+                        .frame(width: IssueListMetrics.disclosureWidth, height: rowHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -541,10 +588,11 @@ struct IssueRowView: View, Equatable {
                 showsDependencyCounts: true,
                 showsComments: displayOptions.showsComments,
                 showsLabels: true,
-                allowsHoverPresentation: allowsHoverPresentation
+                allowsHoverPresentation: allowsHoverPresentation,
+                rowHeight: rowHeight
             )
         }
-        .frame(height: IssueListMetrics.rowHeight, alignment: .center)
+        .frame(height: rowHeight, alignment: .center)
         .contentShape(Rectangle())
     }
 }

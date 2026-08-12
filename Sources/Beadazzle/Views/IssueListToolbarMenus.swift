@@ -88,7 +88,7 @@ struct IssueListViewOptionsMenu: View {
         @Bindable var store = store
 
         Menu {
-            Section("Issue Rows") {
+            Section("Bead Rows") {
                 Toggle("Show owner", isOn: $store.showsOwnerInBeadList)
                 Toggle("Show assignee", isOn: $store.showsAssigneeInBeadList)
                 Toggle("Show due date", isOn: $store.showsDueDateInBeadList)

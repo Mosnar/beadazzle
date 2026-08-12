@@ -91,21 +91,10 @@ struct ContentView: View {
                 }
             }
         }
-        .confirmationDialog(
-            pendingDeleteRequest?.dialogTitle ?? "Delete selected beads?",
-            isPresented: deleteConfirmationBinding,
-            titleVisibility: .visible,
-            presenting: pendingDeleteRequest
-        ) { request in
-            if request.childIssueIDs.isEmpty {
-                deleteButton(request.actionTitle, request: request, issueIDs: request.issueIDs)
-            } else {
-                deleteButton(request.deleteAllActionTitle, request: request, issueIDs: request.allIssueIDs)
-                deleteButton(request.deleteSelectedActionTitle, request: request, issueIDs: request.issueIDs)
+        .sheet(item: $pendingDeleteRequest) { request in
+            DeleteBeadsConfirmationSheet(request: request) { issueIDs in
+                await store.delete(issueIDs: issueIDs, expectedProjectURL: request.projectURL)
             }
-            Button("Cancel", role: .cancel) {}
-        } message: { request in
-            Text(request.message)
         }
         .sheet(item: $hierarchySheetRequest) { request in
             hierarchySheet(for: request)
@@ -291,6 +280,7 @@ struct ContentView: View {
             HSplitView {
                 if presentation.showsIssueList {
                     IssueListView(
+                        openProject: openProject,
                         requestClose: requestClose,
                         requestSetStatus: requestSetStatus,
                         requestBulkEdit: requestBulkEdit,
@@ -405,17 +395,6 @@ struct ContentView: View {
         project.projectURL != nil && !project.isApplyingBeadsSetup && !project.isLoading
     }
 
-    private var deleteConfirmationBinding: Binding<Bool> {
-        Binding(
-            get: { pendingDeleteRequest != nil },
-            set: { isPresented in
-                if !isPresented {
-                    pendingDeleteRequest = nil
-                }
-            }
-        )
-    }
-
     private func requestDeleteSelected() {
         requestDelete(workspace.selectedIDs)
     }
@@ -431,21 +410,13 @@ struct ContentView: View {
 
     private func requestDelete(_ issueIDs: Set<String>) {
         guard !issueIDs.isEmpty, let projectURL = project.projectURL else { return }
-        let sortedIssueIDs = issueIDs.sorted()
+        let selectedIssues = issueIDs.sorted().compactMap { store.issue(with: $0) }
+        guard !selectedIssues.isEmpty else { return }
         pendingDeleteRequest = DeleteBeadsRequest(
             projectURL: projectURL,
-            issueIDs: sortedIssueIDs,
-            childIssueIDs: store.childIssues(forDeleting: sortedIssueIDs).map(\.id)
+            selectedIssues: selectedIssues,
+            childIssues: store.childIssues(forDeleting: selectedIssues.map(\.id))
         )
-    }
-
-    @ViewBuilder
-    private func deleteButton(_ title: String, request: DeleteBeadsRequest, issueIDs: [String]) -> some View {
-        Button(title, role: .destructive) {
-            Task {
-                await store.delete(issueIDs: issueIDs, expectedProjectURL: request.projectURL)
-            }
-        }
     }
 
     private func openProject() {
@@ -615,55 +586,67 @@ struct ContentView: View {
 
 private struct FolderAutomationStatusOverlay: View {
     @Environment(BeadStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if let progress = store.folderAutomationProgress {
-            HStack(spacing: 10) {
-                Image(systemName: "bolt.fill")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(progress.folderName) automation")
-                        .font(.callout.weight(.medium))
-                    Text(progress.detail)
-                        .font(.caption)
+        Group {
+            if let progress = store.folderAutomationProgress {
+                HStack(spacing: 10) {
+                    Image(systemName: "bolt.fill")
                         .foregroundStyle(.secondary)
-                    ProgressView(value: progress.fractionCompleted)
-                        .frame(width: 220)
-                        .accessibilityLabel("\(progress.folderName) automation progress")
-                        .accessibilityValue(
-                            "\(progress.completedUnitCount) of \(progress.totalUnitCount) actions"
-                        )
-                }
+                        .accessibilityHidden(true)
 
-                Button(
-                    progress.isCancelling ? "Cancelling Automation" : "Cancel Automation",
-                    systemImage: "xmark.circle"
-                ) {
-                    store.cancelCurrentFolderAutomation()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(progress.folderName) automation")
+                            .font(.callout.weight(.medium))
+                        Text(progress.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: progress.fractionCompleted)
+                            .frame(width: 220)
+                            .accessibilityLabel("\(progress.folderName) automation progress")
+                            .accessibilityValue(
+                                "\(progress.completedUnitCount) of \(progress.totalUnitCount) actions"
+                            )
+                    }
+
+                    Button(
+                        progress.isCancelling ? "Cancelling Automation" : "Cancel Automation",
+                        systemImage: "xmark.circle"
+                    ) {
+                        store.cancelCurrentFolderAutomation()
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .disabled(progress.isCancelling)
                 }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .disabled(progress.isCancelling)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-            .shadow(radius: 4, y: 2)
-            .accessibilityElement(children: .contain)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        } else if let summary = store.folderAutomationSummary {
-            Label(summary, systemImage: "bolt.fill")
-                .font(.callout)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: Capsule())
+                .padding(.vertical, 9)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
                 .shadow(radius: 4, y: 2)
-                .allowsHitTesting(false)
-                .accessibilityElement(children: .combine)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .accessibilityElement(children: .contain)
+                .transition(statusTransition)
+            } else if let summary = store.folderAutomationSummary {
+                Label(summary, systemImage: "bolt.fill")
+                    .font(.callout)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(radius: 4, y: 2)
+                    .allowsHitTesting(false)
+                    .accessibilityElement(children: .combine)
+                    .transition(statusTransition)
+            }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: presentationID)
+    }
+
+    private var presentationID: String? {
+        store.folderAutomationProgress == nil ? store.folderAutomationSummary : "progress"
+    }
+
+    private var statusTransition: AnyTransition {
+        reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity)
     }
 }
 
@@ -684,10 +667,22 @@ private enum ContentHierarchySheetRequest: Identifiable, Equatable {
     }
 }
 
-struct DeleteBeadsRequest: Equatable {
+struct DeleteBeadsRequest: Identifiable, Equatable {
     let projectURL: URL
-    let issueIDs: [String]
-    let childIssueIDs: [String]
+    let selectedIssues: [BeadIssue]
+    let childIssues: [BeadIssue]
+
+    var id: String {
+        projectURL.standardizedFileURL.path + "|" + allIssueIDs.joined(separator: "|")
+    }
+
+    var issueIDs: [String] {
+        selectedIssues.map(\.id)
+    }
+
+    var childIssueIDs: [String] {
+        childIssues.map(\.id)
+    }
 
     var allIssueIDs: [String] {
         uniqueSortedIssueIDs(issueIDs + childIssueIDs)

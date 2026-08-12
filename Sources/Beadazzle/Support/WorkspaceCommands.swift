@@ -84,13 +84,13 @@ struct WorkspaceCommands: Commands {
         }
 
         CommandGroup(after: .importExport) {
-            Button("Open Beads Project...") {
+            Button("Open Project…") {
                 actions?.openProject()
             }
             .keyboardShortcut("o")
             .disabled(actions == nil)
 
-            Button("Open Beads Project in New Window...") {
+            Button("Open Project in New Window…") {
                 actions?.openProjectInNewWindow()
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])

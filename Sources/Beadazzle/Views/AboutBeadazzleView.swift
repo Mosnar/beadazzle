@@ -5,6 +5,7 @@ struct AboutBeadazzleView: View {
     static let windowID = "about"
 
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let info: AboutBeadazzleInfo
 
     @State private var didCopyEmail = false
@@ -98,7 +99,7 @@ struct AboutBeadazzleView: View {
         pasteboard.setString(AboutBeadazzleInfo.emailAddress, forType: .string)
 
         copyConfirmationTask?.cancel()
-        withAnimation(.easeInOut(duration: 0.15)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
             didCopyEmail = true
         }
 
@@ -106,7 +107,7 @@ struct AboutBeadazzleView: View {
             try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
                 didCopyEmail = false
             }
         }

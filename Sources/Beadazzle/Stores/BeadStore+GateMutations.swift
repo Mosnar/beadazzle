@@ -217,32 +217,41 @@ extension BeadStore {
         }
     }
 
-    func addComment(issueID: String, text: String) {
-        guard let projectURL else { return }
+    @discardableResult
+    func addComment(issueID: String, text: String) async -> Bool {
+        guard let projectURL, !_isAddingComment else { return false }
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return }
+        guard !trimmedText.isEmpty else { return false }
 
         _isAddingComment = true
+        let mutationLifetimeGeneration = beginMutation()
+        defer {
+            _isAddingComment = false
+            endMutation(generation: mutationLifetimeGeneration)
+        }
         let commands = commands
-        Task { @MainActor [weak self] in
-            do {
+        do {
+            try await enqueueMutationWrite {
                 try await commands.addComment(projectURL: projectURL, issueID: issueID, text: trimmedText)
-                guard let self else { return }
-                guard self.projectURL == projectURL else {
-                    self._isAddingComment = false
-                    return
-                }
-                self.cacheOptimisticComment(issueID: issueID, text: trimmedText)
-                if self.selectedIssue?.id == issueID {
-                    self._isLoadingComments = false
-                }
-                self._isAddingComment = false
-                self.requestReconcile()
-            } catch {
-                guard self?.projectURL == projectURL else { return }
-                self?._isAddingComment = false
-                self?.lastError = error.localizedDescription
             }
+            resolveSubmittedCommentDraft(trimmedText, issueID: issueID, projectURL: projectURL)
+            guard self.projectURL == projectURL else { return false }
+            cacheOptimisticComment(issueID: issueID, text: trimmedText)
+            if selectedIssue?.id == issueID {
+                _isLoadingComments = false
+            }
+            requestReconcile()
+            return true
+        } catch {
+            guard self.projectURL == projectURL else { return false }
+            reportMutationFailure(
+                error,
+                title: "Couldn't add comment to \(issueID)",
+                retry: { [weak self] in
+                    _ = await self?.addComment(issueID: issueID, text: trimmedText)
+                }
+            )
+            return false
         }
     }
 

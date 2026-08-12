@@ -6,8 +6,11 @@ final class ContentLayoutTests: XCTestCase {
     func testDeleteRequestOffersChildDeletionWithoutDuplicatingSelectedChildren() {
         let request = DeleteBeadsRequest(
             projectURL: URL(fileURLWithPath: "/tmp/project"),
-            issueIDs: ["bd-parent", "bd-child"],
-            childIssueIDs: ["bd-grandchild"]
+            selectedIssues: [
+                makeIssue(id: "bd-parent", title: "Parent"),
+                makeIssue(id: "bd-child", title: "Child")
+            ],
+            childIssues: [makeIssue(id: "bd-grandchild", title: "Grandchild")]
         )
 
         XCTAssertEqual(request.allIssueIDs, ["bd-child", "bd-grandchild", "bd-parent"])
@@ -19,11 +22,41 @@ final class ContentLayoutTests: XCTestCase {
 
         let singleRequest = DeleteBeadsRequest(
             projectURL: request.projectURL,
-            issueIDs: ["bd-parent"],
-            childIssueIDs: ["bd-child"]
+            selectedIssues: [makeIssue(id: "bd-parent", title: "Parent")],
+            childIssues: [makeIssue(id: "bd-child", title: "Child")]
         )
         XCTAssertEqual(singleRequest.dialogTitle, "Delete selected bead?")
         XCTAssertEqual(singleRequest.deleteSelectedActionTitle, "Delete Parent Only")
+    }
+
+    private func makeIssue(id: String, title: String) -> BeadIssue {
+        BeadIssue(
+            id: id,
+            title: title,
+            description: "",
+            design: "",
+            acceptanceCriteria: "",
+            notes: "",
+            status: "open",
+            priority: 1,
+            issueType: "task",
+            assignee: nil,
+            owner: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            closedAt: nil,
+            dueAt: nil,
+            deferUntil: nil,
+            externalRef: nil,
+            parentID: nil,
+            labels: [],
+            dependencyCount: 0,
+            dependentCount: 0,
+            commentCount: 0,
+            pinned: false,
+            ephemeral: false,
+            isTemplate: false
+        )
     }
 
     func testSidebarStaysVisibleAtListOnlyBreakpointAndCollapsesBelowIt() {

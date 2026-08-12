@@ -15,15 +15,18 @@ for users, not for the commit log.
 
 ### Added
 
-- Work on several projects at once, each in its own window. File ▸ Open Beads Project in New Window (⇧⌘O) opens a project alongside the one you already have, and holding Option while picking a project — or right-clicking it in the project picker — sends it to a new window too.
-- The project picker gained a new-window button on each recent project and on Add Folder, and marks the projects that are already open in another window so you can see where everything is before you switch.
+- Work on several projects at once, each in its own window. File ▸ Open Project in New Window (⇧⌘O) opens a project alongside the one you already have, and holding Option while picking a project — or right-clicking it in the project picker — sends it to a new window too.
+- The project picker gained a new-window button on each recent project and on Open Project, and marks the projects that are already open in another window so you can see where everything is before you switch.
 - A new Settings ▸ General option, "Open projects in", chooses whether a plain open reuses the current window or opens a new one.
+- A Settings ▸ Display row-density control offers Compact, Comfortable, and Large bead rows without giving up the virtualized list.
 - Project Settings ▸ Properties now suggests properties found in your existing `name:value` labels (like `area:ui`), listing them as unpinned properties alongside the ones recorded by `bd set-state`. Pinning one promotes the whole namespace to a managed property; until then those labels stay ordinary labels.
 
 ### Changed
 
 - Opening a project that is already open in another window now brings that window forward instead of opening it a second time.
 - Each window's title is the project it shows, so windows are easy to tell apart in the Window menu and Mission Control.
+- Empty project, list, folder, filter, and search states now offer the most useful next action instead of ending in a dead end.
+- Project controls now consistently say Project, bead-list controls consistently say Bead, and the project picker better accommodates system text sizing.
 
 ### Fixed
 
@@ -33,6 +36,10 @@ for users, not for the commit log.
 - A stuck snapshot export can no longer hold refresh, window reopening, or app termination indefinitely after ignoring normal cancellation.
 - Projects with very deep parent/child hierarchies now build their issue index in linear time instead of slowing dramatically as nesting grows.
 - Invalid snapshots with missing, non-text, or duplicate bead IDs now show an actionable line-level error and cannot replace the last readable snapshot.
+- Unsaved bead edits and comment drafts now survive navigation, project switching, window closing, and relaunching. Failed comments keep their text for retry, and edited windows show the native macOS edited indicator until drafts are saved or reverted.
+- Delete confirmation now lists the exact selected beads and descendants before any permanent deletion.
+- Narrow detail panes now visibly indicate that more metadata controls are available horizontally.
+- Status overlays, picker scrolling, and About feedback now respect Reduce Motion.
 
 ## [1.5.0] - 2026-08-04
 

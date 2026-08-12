@@ -50,6 +50,10 @@ extension BeadStore {
 
     func goBack() {
         guard !isSubmittingCreationDraft else { return }
+        workspaceHistory.updateRecoverableDrafts(
+            issueEditDrafts: issueEditDrafts,
+            commentDrafts: commentDrafts
+        )
         guard let snapshot = workspaceHistory.goBack() else { return }
         syncWorkspaceHistoryAvailability()
         restoreWorkspace(snapshot)
@@ -57,6 +61,10 @@ extension BeadStore {
 
     func goForward() {
         guard !isSubmittingCreationDraft else { return }
+        workspaceHistory.updateRecoverableDrafts(
+            issueEditDrafts: issueEditDrafts,
+            commentDrafts: commentDrafts
+        )
         guard let snapshot = workspaceHistory.goForward() else { return }
         syncWorkspaceHistoryAvailability()
         restoreWorkspace(snapshot)

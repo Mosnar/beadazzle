@@ -42,6 +42,49 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         XCTAssertTrue(secondStore.outlineState.expandedIssueIDs.contains("bd-parent"))
     }
 
+    func testExistingBeadAndCommentDraftsSurviveNavigationAndReopening() async throws {
+        let projectURL = try makeProject(issuesJSONL: issuesJSONL)
+        let defaults = makeUserDefaults()
+        let firstStore = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
+        firstStore.openProject(projectURL)
+        try await waitForStoreToLoad(firstStore)
+
+        let parent = try XCTUnwrap(firstStore.issue(with: "bd-parent"))
+        var editDraft = IssueDraft(issue: parent)
+        editDraft.title = "Unsaved parent title"
+        firstStore.updateIssueEditDraft(editDraft, for: parent)
+        firstStore.updateCommentDraft("Comment still being written", issueID: parent.id)
+
+        firstStore.select(["bd-sibling"])
+
+        XCTAssertEqual(firstStore.issueEditDraft(for: parent).title, "Unsaved parent title")
+        XCTAssertEqual(firstStore.commentDraft(for: parent.id), "Comment still being written")
+        XCTAssertTrue(firstStore.hasRecoverableWorkspaceDrafts)
+
+        firstStore.goBack()
+        XCTAssertEqual(firstStore.issueEditDraft(for: parent).title, "Unsaved parent title")
+        XCTAssertEqual(firstStore.commentDraft(for: parent.id), "Comment still being written")
+
+        firstStore.discardIssueEditDraft(issueID: parent.id)
+        firstStore.clearCommentDraft(issueID: parent.id)
+        firstStore.goForward()
+        XCTAssertEqual(firstStore.issueEditDraft(for: parent), IssueDraft(issue: parent))
+        XCTAssertEqual(firstStore.commentDraft(for: parent.id), "")
+
+        firstStore.updateIssueEditDraft(editDraft, for: parent)
+        firstStore.updateCommentDraft("Comment still being written", issueID: parent.id)
+
+        firstStore.flushPendingWorkspaceState()
+        let secondStore = BeadStore(userDefaults: defaults, commands: CurrentDoltTestCommands())
+        secondStore.openProject(projectURL)
+        try await waitForStoreToLoad(secondStore)
+
+        let reloadedParent = try XCTUnwrap(secondStore.issue(with: parent.id))
+        XCTAssertEqual(secondStore.issueEditDraft(for: reloadedParent).title, "Unsaved parent title")
+        XCTAssertEqual(secondStore.commentDraft(for: parent.id), "Comment still being written")
+        XCTAssertTrue(secondStore.hasRecoverableWorkspaceDrafts)
+    }
+
     func testRestoredHiddenPresetRemainsVisibleUntilNavigatingAway() async throws {
         let projectURL = try makeProject(issuesJSONL: issuesJSONL)
         let defaults = makeUserDefaults()
@@ -169,9 +212,16 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         store.issueListMode = .flat
         store.setStatusFilter("open", isOn: true)
         store.select(["bd-child"])
+        let child = try XCTUnwrap(store.issue(with: "bd-child"))
+        var editDraft = IssueDraft(issue: child)
+        editDraft.title = "Unfinished edit"
+        store.updateIssueEditDraft(editDraft, for: child)
+        store.updateCommentDraft("Unfinished comment", issueID: child.id)
         await store.waitForPendingQueryRecompute()
         try await waitForPersistedWorkspaceState(store, projectURL: projectURL) {
             $0.selectedIDs.contains("bd-child")
+                && $0.issueEditDrafts?["bd-child"]?.draft.title == "Unfinished edit"
+                && $0.commentDrafts?["bd-child"] == "Unfinished comment"
         }
 
         store.resetSavedWorkspaceState()
@@ -182,6 +232,8 @@ final class BeadStoreWorkspaceRestoreTests: XCTestCase {
         XCTAssertTrue(store.statusFilters.isEmpty)
         XCTAssertEqual(store.issueListMode, .outline)
         XCTAssertEqual(store.selectedBookmark, .ready)
+        XCTAssertNil(store.issueEditDraftState(for: "bd-child"))
+        XCTAssertEqual(store.commentDraft(for: "bd-child"), "")
     }
 
     func testSwitchingProjectsKeepsWorkspaceStateIndependent() async throws {

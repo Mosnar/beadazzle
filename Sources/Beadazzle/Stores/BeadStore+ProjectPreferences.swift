@@ -153,6 +153,8 @@ extension BeadStore {
 
         bdCLIPath = userDefaults.string(forKey: BeadazzlePreferenceKeys.bdCLIPath) ?? ""
         projectOpenDestination = Self.loadProjectOpenDestination(from: userDefaults)
+        beadListDensity = userDefaults.string(forKey: BeadazzlePreferenceKeys.beadListDensity)
+            .flatMap(BeadListDensity.init(rawValue:)) ?? .default
         defaultNewBeadAssignee = Self.loadNewBeadAssigneePreference(
             from: userDefaults,
             modeKey: BeadazzlePreferenceKeys.defaultNewBeadAssigneeMode,
@@ -230,6 +232,11 @@ extension BeadStore {
         preference: BeadazzleBoolPreferenceDescriptor
     ) {
         userDefaults.set(value, forKey: preference.key)
+        appPreferencesDidChange()
+    }
+
+    internal func persistBeadListDensity() {
+        userDefaults.set(beadListDensity.rawValue, forKey: BeadazzlePreferenceKeys.beadListDensity)
         appPreferencesDidChange()
     }
 

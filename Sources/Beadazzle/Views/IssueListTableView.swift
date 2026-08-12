@@ -15,6 +15,7 @@ struct IssueListTableView: NSViewRepresentable {
     let bookmark: BeadBookmark
     let mode: IssueListMode
     let displayOptions: BeadListDisplayOptions
+    var rowHeight = IssueListMetrics.rowHeight
     let contentRevision: Int
     let gateClock: Date
     let store: BeadStore
@@ -32,7 +33,7 @@ struct IssueListTableView: NSViewRepresentable {
         let coordinator = context.coordinator
 
         let tableView = IssueKeyboardTableView()
-        tableView.rowHeight = IssueListMetrics.rowHeight
+        tableView.rowHeight = rowHeight
         tableView.usesAutomaticRowHeights = false
         tableView.headerView = nil
         tableView.allowsMultipleSelection = true
@@ -206,8 +207,12 @@ struct IssueListTableView: NSViewRepresentable {
                 || updateKey.bookmark != previousUpdateKey?.bookmark
                 || updateKey.mode != previousUpdateKey?.mode
                 || updateKey.displayOptions != previousUpdateKey?.displayOptions
+                || updateKey.rowHeight != previousUpdateKey?.rowHeight
                 || updateKey.contentRevision != previousUpdateKey?.contentRevision
                 || updateKey.gateClock != previousUpdateKey?.gateClock
+            if tableView?.rowHeight != updateKey.rowHeight {
+                tableView?.rowHeight = updateKey.rowHeight
+            }
             let rows = parent.rows
             let previousRowByID = rowByID
             let previousIDs = orderedIDs
@@ -258,6 +263,7 @@ struct IssueListTableView: NSViewRepresentable {
             let bookmark: BeadBookmark
             let mode: IssueListMode
             let displayOptions: BeadListDisplayOptions
+            let rowHeight: CGFloat
             let contentRevision: Int
             let gateClock: Date
 
@@ -266,6 +272,7 @@ struct IssueListTableView: NSViewRepresentable {
                 bookmark = parent.bookmark
                 mode = parent.mode
                 displayOptions = parent.displayOptions
+                rowHeight = parent.rowHeight
                 contentRevision = parent.contentRevision
                 gateClock = parent.gateClock
             }
@@ -339,6 +346,7 @@ struct IssueListTableView: NSViewRepresentable {
                 readyGateGroupPosition: readyGateGroupPosition(for: itemID),
                 isContextFocused: isContextFocused,
                 allowsHoverPresentation: !isLiveScrolling,
+                rowHeight: parent.rowHeight,
                 openRelatedIssue: { store.openIssueFromDetail(issueID: $0) },
                 toggleExpansion: {
                     store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded)
@@ -1247,6 +1255,7 @@ private struct IssueListHostedRow: View {
     let readyGateGroupPosition: ReadyGateGroupPosition
     let isContextFocused: Bool
     let allowsHoverPresentation: Bool
+    let rowHeight: CGFloat
     let openRelatedIssue: (String) -> Void
     let toggleExpansion: () -> Void
 
@@ -1268,6 +1277,7 @@ private struct IssueListHostedRow: View {
         readyGateGroupPosition: .none,
         isContextFocused: false,
         allowsHoverPresentation: false,
+        rowHeight: IssueListMetrics.rowHeight,
         openRelatedIssue: { _ in },
         toggleExpansion: {}
     )
@@ -1292,6 +1302,7 @@ private struct IssueListHostedRow: View {
                 displayOptions: displayOptions,
                 blockedReason: blockedReason,
                 allowsHoverPresentation: allowsHoverPresentation,
+                rowHeight: rowHeight,
                 openRelatedIssue: openRelatedIssue,
                 toggleExpansion: toggleExpansion
             )
@@ -1303,6 +1314,7 @@ private struct IssueListHostedRow: View {
                 now: gateClock,
                 showsDisclosure: mode == .outline || bookmark == .gates,
                 allowsHoverPresentation: allowsHoverPresentation,
+                rowHeight: rowHeight,
                 toggleExpansion: toggleExpansion
             )
             .equatable()

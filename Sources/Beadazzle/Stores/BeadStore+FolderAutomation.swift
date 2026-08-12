@@ -585,15 +585,11 @@ extension BeadStore {
     }
 
     private func showFolderAutomationSummary(_ summary: String) {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            folderAutomationSummary = summary
-        }
+        folderAutomationSummary = summary
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(6))
             guard self?.folderAutomationSummary == summary else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                self?.folderAutomationSummary = nil
-            }
+            self?.folderAutomationSummary = nil
         }
     }
 

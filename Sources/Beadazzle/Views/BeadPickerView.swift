@@ -221,8 +221,12 @@ struct BeadPickerPopover: View {
             .frame(height: 326)
             .onChange(of: model.selectedIssueID) { _, issueID in
                 guard let issueID else { return }
-                withAnimation(.snappy(duration: 0.12)) {
+                if reduceMotion {
                     proxy.scrollTo(issueID, anchor: .center)
+                } else {
+                    withAnimation(.snappy(duration: 0.12)) {
+                        proxy.scrollTo(issueID, anchor: .center)
+                    }
                 }
             }
         }

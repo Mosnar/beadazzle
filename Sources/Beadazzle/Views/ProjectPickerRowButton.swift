@@ -14,9 +14,9 @@ struct ProjectPickerRowButton: View {
     var body: some View {
         Button(role: role, action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11))
+                .font(.caption)
                 .foregroundStyle(isActive ? .white.opacity(0.78) : .secondary)
-                .frame(width: 24, height: 24)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

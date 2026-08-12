@@ -17,7 +17,7 @@ struct ProjectUnavailableView: View {
                     .accessibilityHidden(true)
 
                 VStack(spacing: 8) {
-                    Text("Couldn’t Open Beads Project")
+                    Text("Couldn’t Open Project")
                         .font(.title2.weight(.semibold))
 
                     Text("Fix the issue below, then check again. Beadazzle will not initialize or modify this folder automatically.")

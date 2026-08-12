@@ -52,7 +52,7 @@ struct ProjectPickerButton: View {
     }
 
     private var projectHelp: String {
-        project.projectURL?.path ?? "Open a Beads project"
+        project.projectURL?.path ?? "Open a project"
     }
 
     private var projectState: ProjectPickerButtonState {
@@ -97,7 +97,7 @@ private enum ProjectPickerButtonState {
     var subtitle: String {
         switch self {
         case .noProject:
-            "Choose Folder"
+            "Choose Project"
         case .ready:
             "Project"
         case .needsSetup:
@@ -201,7 +201,7 @@ private struct ProjectPickerPopover: View {
                     .padding(.bottom, 13)
             } else {
                 Text("No Project")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20)
@@ -218,7 +218,7 @@ private struct ProjectPickerPopover: View {
 
                 if visibleRecentProjects.isEmpty {
                     Text("No Matches")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
@@ -259,7 +259,7 @@ private struct ProjectPickerPopover: View {
 
             VStack(spacing: 1) {
                 ProjectActionRow(
-                    title: "Add Folder...",
+                    title: "Open Project…",
                     isFocused: selectedItem == .addFolder,
                     focusedItem: $focusedRow,
                     focusID: .addFolder
@@ -383,7 +383,7 @@ private struct ProjectSearchField: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13))
+                .font(.body)
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
 
@@ -394,10 +394,10 @@ private struct ProjectSearchField: View {
                 moveDown: moveDown,
                 dismiss: dismiss
             )
-            .frame(height: 18)
+            .frame(minHeight: 18)
         }
         .padding(.horizontal, 9)
-        .frame(height: 28)
+        .frame(minHeight: 28)
         .background(searchFieldFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -425,7 +425,7 @@ private struct ProjectSearchTextField: NSViewRepresentable {
         let textField = ProjectSearchNSTextField()
         textField.delegate = context.coordinator
         textField.placeholderString = "Find"
-        textField.font = .systemFont(ofSize: 13)
+        textField.font = .preferredFont(forTextStyle: .body)
         textField.textColor = .labelColor
         textField.placeholderAttributedString = NSAttributedString(
             string: "Find",
@@ -546,7 +546,7 @@ private struct ProjectPickerSectionLabel: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 12, weight: .regular))
+            .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
     }
@@ -572,13 +572,13 @@ private struct CurrentProjectRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(project.name)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.headline)
                     .foregroundStyle(rowForeground)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
                 Text("Active Project")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(isActive ? .white.opacity(0.78) : .secondary)
                     .lineLimit(1)
             }
@@ -600,7 +600,7 @@ private struct CurrentProjectRow: View {
             .accessibilityLabel("Project Settings")
         }
         .padding(.horizontal, 7)
-        .frame(height: 48)
+        .frame(minHeight: 48)
         .background(rowBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
         .focusable()

@@ -28,6 +28,10 @@ struct BeadWorkspaceStatePayload: Codable, Sendable {
     var issueListMode: IssueListMode
     var outlineState: BeadOutlineSelectionState
     var creationDraft: IssueDraft?
+    /// Optional keeps version-1 payloads written before recoverable edit drafts
+    /// backward compatible without discarding the rest of the workspace state.
+    var issueEditDrafts: [String: IssueEditDraftState]?
+    var commentDrafts: [String: String]?
 
     init(snapshot: BeadWorkspaceSnapshot) {
         version = Self.currentVersion
@@ -49,6 +53,8 @@ struct BeadWorkspaceStatePayload: Codable, Sendable {
         issueListMode = snapshot.issueListMode
         outlineState = snapshot.outlineState
         creationDraft = snapshot.creationDraft
+        issueEditDrafts = snapshot.issueEditDrafts.isEmpty ? nil : snapshot.issueEditDrafts
+        commentDrafts = snapshot.commentDrafts.isEmpty ? nil : snapshot.commentDrafts
     }
 
     func snapshot() -> BeadWorkspaceSnapshot {
@@ -73,7 +79,9 @@ struct BeadWorkspaceStatePayload: Codable, Sendable {
             sortDirection: sortDirection,
             issueListMode: issueListMode,
             outlineState: outlineState,
-            creationDraft: creationDraft
+            creationDraft: creationDraft,
+            issueEditDrafts: issueEditDrafts ?? [:],
+            commentDrafts: commentDrafts ?? [:]
         )
     }
 }

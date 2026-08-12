@@ -571,6 +571,7 @@ extension BeadStore {
         context: IssueDraftSaveContext? = nil
     ) async -> Bool {
         guard let projectURL else { return false }
+        let submittedDraft = draft
 
         // The id is minted by `bd`, so create awaits that single write. Once the id arrives,
         // a projected issue is revealed immediately; snapshot export/reload happens later.
@@ -740,6 +741,7 @@ extension BeadStore {
                     originalIssue: commandOriginalIssue
                 )
             }
+            resolveSubmittedIssueEditDraft(submittedDraft, projectURL: projectURL)
             guard self.projectURL == projectURL,
                   mutations.metadataMutationGeneration == metadataMutation.generation
             else { return rejectStaleMutation(targeting: projectURL) }
@@ -1144,6 +1146,7 @@ extension BeadStore {
             pruneMissingFolderIssueIDs(
                 validIssueIDs: authoritativeIndex.allIssueIDs.subtracting(idSet)
             )
+            removeWorkspaceDrafts(issueIDs: ids)
             reconcileState.request(.mutation)
             announceCompletion(
                 requestedIDs.count == 1

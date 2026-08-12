@@ -30,7 +30,7 @@ struct RecentProjectRow: View {
                         .accessibilityHidden(true)
 
                     Label(project.name, systemImage: "folder")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.body.weight(.semibold))
                         .lineLimit(1)
                         .foregroundStyle(rowForeground)
                 }
@@ -97,7 +97,7 @@ struct RecentProjectRow: View {
             }
         }
         .padding(.horizontal, 7)
-        .frame(height: 24)
+        .frame(minHeight: 28)
         .background(rowBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .onHover { isHovered = $0 }
     }

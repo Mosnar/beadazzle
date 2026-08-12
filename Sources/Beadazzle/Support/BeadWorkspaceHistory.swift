@@ -21,6 +21,8 @@ struct BeadWorkspaceSnapshot: Equatable, Sendable {
     var issueListMode: IssueListMode
     var outlineState: BeadOutlineSelectionState
     var creationDraft: IssueDraft?
+    var issueEditDrafts: [String: IssueEditDraftState] = [:]
+    var commentDrafts: [String: String] = [:]
 }
 
 struct BeadWorkspaceHistory: Equatable, Sendable {
@@ -54,6 +56,25 @@ struct BeadWorkspaceHistory: Equatable, Sendable {
     mutating func updateCurrent(_ snapshot: BeadWorkspaceSnapshot) {
         guard currentSnapshot != nil else { return }
         currentSnapshot = snapshot
+    }
+
+    /// Recoverable drafts belong to the project workspace, not to a navigation point.
+    /// Keep every entry aligned so Back and Forward cannot discard current text or
+    /// resurrect a draft that was already saved, posted, or reverted.
+    mutating func updateRecoverableDrafts(
+        issueEditDrafts: [String: IssueEditDraftState],
+        commentDrafts: [String: String]
+    ) {
+        for index in backStack.indices {
+            backStack[index].issueEditDrafts = issueEditDrafts
+            backStack[index].commentDrafts = commentDrafts
+        }
+        currentSnapshot?.issueEditDrafts = issueEditDrafts
+        currentSnapshot?.commentDrafts = commentDrafts
+        for index in forwardStack.indices {
+            forwardStack[index].issueEditDrafts = issueEditDrafts
+            forwardStack[index].commentDrafts = commentDrafts
+        }
     }
 
     /// Removes a successfully submitted creation draft from every navigation entry so Back

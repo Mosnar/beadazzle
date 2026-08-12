@@ -15,6 +15,13 @@ struct DisplaySettingsPane: View {
             }
 
             Section {
+                Picker("Row density", selection: $store.beadListDensity) {
+                    ForEach(BeadListDensity.allCases) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 Toggle(
                     "Show all children, even if they don’t match filters",
                     isOn: $store.showsAllChildrenInOutline
@@ -28,7 +35,7 @@ struct DisplaySettingsPane: View {
             } footer: {
                 Text(
                     """
-                    Showing all children only affects expanded beads in Outline mode. \
+                    Row density keeps the list virtualized at every size. Showing all children only affects expanded beads in Outline mode. \
                     When split view opening is disabled, double-click a bead to open it.
                     """
                 )

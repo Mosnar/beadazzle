@@ -1523,11 +1523,18 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let replacementSucceeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
         XCTAssertFalse(replacementSucceeded)
         XCTAssertFalse(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+        let issue = try XCTUnwrap(store.issue(with: "bd-1"))
+        var draft = IssueDraft(issue: issue)
+        draft.title = "Unsaved title"
+        store.updateIssueEditDraft(draft, for: issue)
+        store.updateCommentDraft("Unsaved comment", issueID: issue.id)
 
         let deleteSucceeded = await store.delete(issueIDs: ["bd-1"])
 
         XCTAssertTrue(deleteSucceeded)
         XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
+        XCTAssertNil(store.issueEditDraftState(for: "bd-1"))
+        XCTAssertEqual(store.commentDraft(for: "bd-1"), "")
     }
 
     func testSuccessfulDeleteInvalidatesOverlappingFailedLabelSettlement() async throws {
@@ -3142,6 +3149,59 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.count, 1)
     }
 
+    func testExistingEditFinishingInAnotherProjectClearsMatchingPersistedDraft() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Project A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let defaults = makeUserDefaults()
+        let commands = RecordingBeadsCommands()
+        await commands.setUpdateDelay(.milliseconds(300))
+        let store = BeadStore(userDefaults: defaults, commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        let issue = try XCTUnwrap(store.issue(with: "bd-1"))
+        var editDraft = IssueDraft(issue: issue)
+        editDraft.title = "Saved while away"
+        store.updateIssueEditDraft(editDraft, for: issue)
+
+        let saveTask = Task { @MainActor in await store.save(editDraft) }
+        try await waitUntilAsync { await commands.updateCallStartCount == 1 }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let didSave = await saveTask.value
+        XCTAssertFalse(didSave)
+        XCTAssertNil(
+            store.workspaceStateRepository.load(projectURL: firstProjectURL)?
+                .issueEditDrafts?["bd-1"]
+        )
+    }
+
+    func testCommentFinishingInAnotherProjectClearsMatchingPersistedDraft() async throws {
+        let firstProjectURL = try makeProject(issueLine(id: "bd-1", title: "Project A"))
+        let secondProjectURL = try makeProject(issueLine(id: "bd-2", title: "Project B"))
+        let defaults = makeUserDefaults()
+        let commands = RecordingBeadsCommands()
+        await commands.setAddCommentDelay(.milliseconds(300))
+        let store = BeadStore(userDefaults: defaults, commands: commands)
+        store.openProject(firstProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.updateCommentDraft("Posted while away", issueID: "bd-1")
+
+        let addTask = Task { @MainActor in
+            await store.addComment(issueID: "bd-1", text: "Posted while away")
+        }
+        try await waitUntilAsync { await commands.addCommentCalls.count == 1 }
+        store.openProject(secondProjectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
+
+        let didAdd = await addTask.value
+        XCTAssertFalse(didAdd)
+        XCTAssertNil(
+            store.workspaceStateRepository.load(projectURL: firstProjectURL)?
+                .commentDrafts?["bd-1"]
+        )
+    }
+
     func testManualRefreshAfterDirectCreatePerformsExport() async throws {
         let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
         let commands = RecordingBeadsCommands()
@@ -3259,6 +3319,42 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         try await waitUntil { !store.isLoadingComments && store.commentLoadError(for: "bd-1") != nil }
         XCTAssertEqual(store.commentLoadError(for: "bd-1"), StoreMutationTestError.commandFailed.localizedDescription)
         XCTAssertNil(store.lastError)
+    }
+
+    func testAddingCommentClearsRecoverableDraftOnlyAfterSuccess() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.select(["bd-1"])
+        store.updateCommentDraft("  Ready to post  ", issueID: "bd-1")
+
+        let succeeded = await store.addComment(issueID: "bd-1", text: store.commentDraft(for: "bd-1"))
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.commentDraft(for: "bd-1"), "")
+        XCTAssertEqual(store.comments.map(\.text), ["Ready to post"])
+        let calls = await commands.addCommentCalls
+        XCTAssertEqual(calls.map(\.issueID), ["bd-1"])
+        XCTAssertEqual(calls.map(\.text), ["Ready to post"])
+    }
+
+    func testAddingCommentPreservesRecoverableDraftOnFailure() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let commands = RecordingBeadsCommands()
+        await commands.setAddCommentError(StoreMutationTestError.commandFailed)
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.updateCommentDraft("Try this again", issueID: "bd-1")
+
+        let succeeded = await store.addComment(issueID: "bd-1", text: "Try this again")
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(store.commentDraft(for: "bd-1"), "Try this again")
+        XCTAssertFalse(store.isAddingComment)
+        XCTAssertEqual(store.currentFailure?.title, "Couldn't add comment to bd-1")
     }
 
     func testRapidSelectionOnlyAppliesLatestSelectionSideData() async throws {
@@ -4499,6 +4595,33 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(Set(calls.map(\.issueID)), ["bd-1", "bd-2"])
     }
 
+    func testWindowClosePersistsCommentDraftClearedByDrainedWrite() async throws {
+        let projectURL = try makeProject(issueLine(id: "bd-1", title: "One"))
+        let defaults = makeUserDefaults()
+        let commands = RecordingBeadsCommands()
+        await commands.setAddCommentDelay(.milliseconds(300))
+        let store = BeadStore(userDefaults: defaults, commands: commands)
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        store.updateCommentDraft("Post before closing", issueID: "bd-1")
+
+        let addTask = Task { @MainActor in
+            await store.addComment(issueID: "bd-1", text: "Post before closing")
+        }
+        try await waitUntilAsync { await commands.addCommentCalls.count == 1 }
+        store.prepareForWindowClose()
+
+        XCTAssertTrue(store.requiresWindowCloseMutationFinalization)
+        let exportFailure = await store.finishRetirementAfterWindowClose()
+        let didAdd = await addTask.value
+
+        XCTAssertNil(exportFailure)
+        XCTAssertTrue(didAdd)
+        XCTAssertNil(
+            store.workspaceStateRepository.load(projectURL: projectURL)?.commentDrafts?["bd-1"]
+        )
+    }
+
     func testBulkSetStateStopsBeforeNextBeadAndRestoresUnattemptedOverrides() async throws {
         let projectURL = try makeProject(
             """
@@ -5398,6 +5521,7 @@ private actor SequencedOwnerIdentityResolver: BeadOwnerIdentityResolving {
 private actor RecordingBeadsCommands: BeadsCommanding {
     private(set) var createCalls: [(projectURL: URL, draft: IssueDraft)] = []
     private(set) var updateCalls: [(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?)] = []
+    private(set) var updateCallStartCount = 0
     private(set) var metadataUpdateCalls: [
         (
             projectURL: URL,
@@ -5439,6 +5563,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     ] = []
     private(set) var addGateWaiterCalls: [(projectURL: URL, id: String, waiter: String)] = []
     private(set) var loadCommentsCalls: [(projectURL: URL, issueID: String)] = []
+    private(set) var addCommentCalls: [(projectURL: URL, issueID: String, text: String)] = []
     private(set) var exportCallCount = 0
     private(set) var exportBeadsDirectoryURLs: [URL] = []
     private(set) var definitionLoadCallCount = 0
@@ -5476,6 +5601,8 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     private var commentsByIssueID: [String: [BeadComment]] = [:]
     private var commentLoadError: Error?
     private var commentLoadDelay: Duration?
+    private var addCommentError: Error?
+    private var addCommentDelay: Duration?
     private var gateDetail: BeadGate?
     private var checkGatesOutput = ""
     private var definitionLoadDelay: Duration?
@@ -5501,6 +5628,14 @@ private actor RecordingBeadsCommands: BeadsCommanding {
 
     func setCreateResult(issueID: String) {
         createIssueID = issueID
+    }
+
+    func setAddCommentError(_ error: Error?) {
+        addCommentError = error
+    }
+
+    func setAddCommentDelay(_ delay: Duration?) {
+        addCommentDelay = delay
     }
 
     func setCreateError(_ error: Error?) {
@@ -5711,6 +5846,7 @@ private actor RecordingBeadsCommands: BeadsCommanding {
     }
 
     func update(projectURL: URL, draft: IssueDraft, originalIssue: BeadIssue?) async throws {
+        updateCallStartCount += 1
         let delay = updateDelays.isEmpty ? updateDelay : updateDelays.removeFirst()
         if let delay {
             try await Task.sleep(for: delay)
@@ -5906,7 +6042,15 @@ private actor RecordingBeadsCommands: BeadsCommanding {
         return commentsByIssueID[issueID] ?? []
     }
 
-    func addComment(projectURL: URL, issueID: String, text: String) async throws {}
+    func addComment(projectURL: URL, issueID: String, text: String) async throws {
+        addCommentCalls.append((projectURL: projectURL, issueID: issueID, text: text))
+        if let addCommentDelay {
+            try await Task.sleep(for: addCommentDelay)
+        }
+        if let addCommentError {
+            throw addCommentError
+        }
+    }
 
     func loadGateDetail(projectURL: URL, id: String) async throws -> BeadGate? {
         loadGateDetailCalls.append((projectURL: projectURL, id: id))

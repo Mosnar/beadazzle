@@ -427,6 +427,8 @@ final class BeadDetailStore {
     fileprivate(set) var commentLoadError: String?
     fileprivate(set) var isLoadingComments = false
     fileprivate(set) var isAddingComment = false
+    fileprivate(set) var issueEditDrafts: [String: IssueEditDraftState] = [:]
+    fileprivate(set) var commentDrafts: [String: String] = [:]
     fileprivate(set) var activityItems: [IssueActivityItem] = []
     fileprivate(set) var activityIssueID: String?
     fileprivate(set) var activityRefreshIssueID: String?
@@ -520,6 +522,16 @@ final class BeadStore {
     internal var _activityRefreshIssueID: String? { get { detail.activityRefreshIssueID } set { detail.activityRefreshIssueID = newValue } }
     var activityLoadError: String? { detail.activityLoadError }
     internal var _activityLoadError: String? { get { detail.activityLoadError } set { detail.activityLoadError = newValue } }
+    var issueEditDrafts: [String: IssueEditDraftState] { detail.issueEditDrafts }
+    internal var _issueEditDrafts: [String: IssueEditDraftState] {
+        get { detail.issueEditDrafts }
+        set { detail.issueEditDrafts = newValue }
+    }
+    var commentDrafts: [String: String] { detail.commentDrafts }
+    internal var _commentDrafts: [String: String] {
+        get { detail.commentDrafts }
+        set { detail.commentDrafts = newValue }
+    }
     var selectedIDs: Set<String> { workspace.selectedIDs }
     internal var _selectedIDs: Set<String> { get { workspace.selectedIDs } set { workspace.selectedIDs = newValue } }
     var fullPageDetailIssueID: String? { workspace.fullPageDetailIssueID }
@@ -706,6 +718,12 @@ final class BeadStore {
         didSet {
             guard oldValue != projectOpenDestination else { return }
             persistProjectOpenDestination()
+        }
+    }
+    var beadListDensity = BeadListDensity.default {
+        didSet {
+            guard oldValue != beadListDensity else { return }
+            persistBeadListDensity()
         }
     }
     var defaultNewBeadAssignee = NewBeadAssigneePreference.unassigned {

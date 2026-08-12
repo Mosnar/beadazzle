@@ -5,7 +5,7 @@ import Foundation
 enum PanelService {
     static func chooseProjectFolder() -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Open Beads Project"
+        panel.title = "Open Project"
         panel.prompt = "Open"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true

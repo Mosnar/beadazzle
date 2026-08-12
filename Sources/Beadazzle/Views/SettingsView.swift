@@ -169,7 +169,7 @@ private struct GeneralSettingsPane: View {
             } header: {
                 Text("Projects")
             } footer: {
-                Text("Applies when you open a project without saying where. Open Beads Project in New Window, and holding Option in the project picker, always open a new window. A project that is already open comes forward instead of opening twice.")
+                Text("Applies when you open a project without saying where. Open Project in New Window, and holding Option in the project picker, always open a new window. A project that is already open comes forward instead of opening twice.")
             }
 
             Section {

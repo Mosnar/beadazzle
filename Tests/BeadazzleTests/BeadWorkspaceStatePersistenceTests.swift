@@ -28,6 +28,21 @@ final class BeadWorkspaceStatePersistenceTests: XCTestCase {
         XCTAssertEqual(decoded.snapshot().bookmark, .inProgress)
     }
 
+    func testPayloadWithoutRecoverableDraftFieldsRemainsBackwardCompatible() throws {
+        let encoded = try JSONEncoder().encode(BeadWorkspaceStatePayload(snapshot: makeSnapshot()))
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "issueEditDrafts")
+        object.removeValue(forKey: "commentDrafts")
+
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(BeadWorkspaceStatePayload.self, from: legacyData)
+
+        XCTAssertTrue(decoded.snapshot().issueEditDrafts.isEmpty)
+        XCTAssertTrue(decoded.snapshot().commentDrafts.isEmpty)
+    }
+
     func testRepositorySaveThenLoadReturnsEquivalentSnapshot() {
         let defaults = makeUserDefaults()
         let repository = BeadWorkspaceStateRepository(userDefaults: defaults)
@@ -97,6 +112,45 @@ final class BeadWorkspaceStatePersistenceTests: XCTestCase {
         XCTAssertFalse(archivedKeys.isEmpty)
     }
 
+    func testConfirmedWritesClearOnlyMatchingRecoverableDrafts() throws {
+        let defaults = makeUserDefaults()
+        let repository = BeadWorkspaceStateRepository(userDefaults: defaults)
+        let projectURL = URL(fileURLWithPath: "/tmp/BeadazzleTests/ProjectA")
+        let snapshot = makeSnapshot()
+        repository.save(BeadWorkspaceStatePayload(snapshot: snapshot), projectURL: projectURL)
+        let matchingEdit = try XCTUnwrap(snapshot.issueEditDrafts["bd-1"]?.draft)
+        var olderEdit = matchingEdit
+        olderEdit.title = "An older submission"
+
+        XCTAssertFalse(repository.clearIssueEditDraft(matching: olderEdit, projectURL: projectURL))
+        XCTAssertFalse(
+            repository.clearCommentDraft(
+                matching: "An older comment",
+                issueID: "bd-3",
+                projectURL: projectURL
+            )
+        )
+        XCTAssertEqual(
+            repository.load(projectURL: projectURL)?.issueEditDrafts?["bd-1"]?.draft,
+            matchingEdit
+        )
+        XCTAssertEqual(
+            repository.load(projectURL: projectURL)?.commentDrafts?["bd-3"],
+            "Comment in progress"
+        )
+
+        XCTAssertTrue(repository.clearIssueEditDraft(matching: matchingEdit, projectURL: projectURL))
+        XCTAssertTrue(
+            repository.clearCommentDraft(
+                matching: "Comment in progress",
+                issueID: "bd-3",
+                projectURL: projectURL
+            )
+        )
+        XCTAssertNil(repository.load(projectURL: projectURL)?.issueEditDrafts?["bd-1"])
+        XCTAssertNil(repository.load(projectURL: projectURL)?.commentDrafts?["bd-3"])
+    }
+
     // MARK: - Helpers
 
     private func makeSnapshot() -> BeadWorkspaceSnapshot {
@@ -108,6 +162,12 @@ final class BeadWorkspaceStatePersistenceTests: XCTestCase {
         draft.title = "Draft in progress"
         draft.priority = 1
         draft.labelsText = "wip"
+
+        var baseline = IssueDraft.blank(defaultType: "task", defaultStatus: "open")
+        baseline.id = "bd-1"
+        baseline.title = "Original bead"
+        var edited = baseline
+        edited.title = "Unsaved bead title"
 
         return BeadWorkspaceSnapshot(
             bookmark: .inProgress,
@@ -126,7 +186,15 @@ final class BeadWorkspaceStatePersistenceTests: XCTestCase {
             sortDirection: .descending,
             issueListMode: .flat,
             outlineState: outline,
-            creationDraft: draft
+            creationDraft: draft,
+            issueEditDrafts: [
+                "bd-1": IssueEditDraftState(
+                    draft: edited,
+                    baseline: baseline,
+                    conflictingFields: [.description]
+                )
+            ],
+            commentDrafts: ["bd-3": "Comment in progress"]
         )
     }
 

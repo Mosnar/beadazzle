@@ -5,6 +5,7 @@ import SwiftUI
 /// menu closes, then leaves a short-lived result without obscuring the active workspace.
 struct ProjectDoltSyncStatusOverlay: View {
     @Environment(BeadStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var presentedFailureOutcome: ProjectDoltSyncOutcome?
 
     private var project: BeadProjectStore { store.project }
@@ -21,7 +22,7 @@ struct ProjectDoltSyncStatusOverlay: View {
                     .padding(.bottom, 10)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: presentationID)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: presentationID)
         .sheet(item: $presentedFailureOutcome) { outcome in
             ProjectDoltSyncFailureDetailsSheet(outcome: outcome)
         }
@@ -94,7 +95,7 @@ struct ProjectDoltSyncStatusOverlay: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .shadow(radius: 3, y: 1)
         .accessibilityElement(children: .contain)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(statusTransition)
     }
 
     private func progressMetadata(for action: ProjectHealthAction, at date: Date?) -> some View {
@@ -141,7 +142,11 @@ struct ProjectDoltSyncStatusOverlay: View {
         .shadow(radius: 3, y: 1)
         .help(outcome.detail)
         .accessibilityElement(children: .contain)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(statusTransition)
+    }
+
+    private var statusTransition: AnyTransition {
+        reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity)
     }
 
     private func outcomeSummary(

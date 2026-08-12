@@ -4,6 +4,7 @@ enum BeadazzlePreferenceKeys {
     static let bdCLIPath = "BDCLIPath"
     static let receivesBetaUpdates = "ReceivesBetaUpdates"
     static let projectOpenDestination = "Projects.OpenDestination"
+    static let beadListDensity = "Display.BeadList.RowDensity"
     static let defaultNewBeadAssigneeMode = "NewBeads.DefaultAssignee.Mode"
     static let defaultNewBeadAssigneeValue = "NewBeads.DefaultAssignee.Value"
     static let issueTextSectionVisibilityMode = "Editor.BeadContent.EmptySectionMode"
@@ -208,7 +209,7 @@ enum BeadazzleAppBoolPreferences {
 }
 
 /// Where a project opens when the user does not say otherwise. Explicit commands
-/// ("Open Beads Project in New Window…", ⌥-clicking a recent) always win over this;
+/// ("Open Project in New Window…", ⌥-clicking a recent) always win over this;
 /// it only decides the plain path.
 enum BeadProjectOpenDestinationPreference: String, CaseIterable, Identifiable, Sendable {
     case currentWindow
@@ -224,6 +225,32 @@ enum BeadProjectOpenDestinationPreference: String, CaseIterable, Identifiable, S
             "Current Window"
         case .newWindow:
             "New Window"
+        }
+    }
+}
+
+enum BeadListDensity: String, CaseIterable, Identifiable, Sendable {
+    case compact
+    case comfortable
+    case large
+
+    static let `default` = BeadListDensity.comfortable
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .compact: "Compact"
+        case .comfortable: "Comfortable"
+        case .large: "Large"
+        }
+    }
+
+    var rowHeight: CGFloat {
+        switch self {
+        case .compact: 48
+        case .comfortable: 54
+        case .large: 64
         }
     }
 }
@@ -281,6 +308,15 @@ enum BeadazzleOptionInventory {
             defaultValue: BeadProjectOpenDestinationPreference.default.title,
             uiLocation: "Settings > General",
             behavior: "Chooses whether opening a project reuses the current window or opens a new one. Explicit new-window commands ignore this."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "beadListDensity",
+            title: "Bead row density",
+            scope: .appPreference,
+            persistence: BeadazzlePreferenceKeys.beadListDensity,
+            defaultValue: BeadListDensity.default.title,
+            uiLocation: "Settings > Display",
+            behavior: "Adjusts the fixed virtualized bead-row height without changing list performance."
         ),
         BeadazzleOptionInventoryEntry(
             id: "automaticallyChecksForUpdates",
@@ -601,7 +637,7 @@ enum BeadazzleOptionInventory {
             persistence: "WorkspaceState.<project path>",
             defaultValue: "None",
             uiLocation: "Project Settings > Storage",
-            behavior: "Remembers the last view, filters, sort, selection, and expansion for this project on this Mac."
+            behavior: "Remembers the last view, filters, sort, selection, expansion, and unfinished bead or comment drafts for this project on this Mac."
         )
     ]
 }

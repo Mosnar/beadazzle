@@ -63,7 +63,7 @@ struct ProjectBehaviorSettingsPane: View {
             } header: {
                 Text("Saved Workspace")
             } footer: {
-                Text("Beadazzle remembers this project's last view, filters, sort, selection, and expansion on this Mac. Resetting returns it to defaults.")
+                Text("Beadazzle remembers this project's last view, filters, sort, selection, expansion, and unfinished bead or comment drafts on this Mac. Resetting returns the view to defaults and discards those drafts.")
             }
         }
         .settingsGroupedForm()
@@ -75,7 +75,7 @@ struct ProjectBehaviorSettingsPane: View {
                 store.resetSavedWorkspaceState()
             }
         } message: {
-            Text("The remembered view, filters, sort, selection, and expansion for this project will be cleared.")
+            Text("The remembered view, filters, sort, selection, and expansion for this project will be cleared. Any unfinished bead edits or comments will also be discarded.")
         }
     }
 }
