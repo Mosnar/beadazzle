@@ -161,7 +161,7 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                Picker("Open projects in", selection: $store.projectOpenDestination) {
+                Picker("When opening a project", selection: $store.projectOpenDestination) {
                     ForEach(BeadProjectOpenDestinationPreference.allCases) { destination in
                         Text(destination.title).tag(destination)
                     }
@@ -169,7 +169,7 @@ private struct GeneralSettingsPane: View {
             } header: {
                 Text("Projects")
             } footer: {
-                Text("Applies when you open a project without saying where. Open Project in New Window, and holding Option in the project picker, always open a new window. A project that is already open comes forward instead of opening twice.")
+                Text("Ask Every Time lets you choose when a project would replace the one in this window. Explicit window choices bypass the prompt, and a project that is already open comes forward instead of opening twice.")
             }
 
             Section {

@@ -209,18 +209,20 @@ enum BeadazzleAppBoolPreferences {
 }
 
 /// Where a project opens when the user does not say otherwise. Explicit commands
-/// ("Open Project in New Window…", ⌥-clicking a recent) always win over this;
-/// it only decides the plain path.
+/// ("Open Project in New Window…", ⌥-clicking a recent) always win over this.
 enum BeadProjectOpenDestinationPreference: String, CaseIterable, Identifiable, Sendable {
+    case askEveryTime
     case currentWindow
     case newWindow
 
-    static let `default` = BeadProjectOpenDestinationPreference.currentWindow
+    static let `default` = BeadProjectOpenDestinationPreference.askEveryTime
 
     var id: Self { self }
 
     var title: String {
         switch self {
+        case .askEveryTime:
+            "Ask Every Time"
         case .currentWindow:
             "Current Window"
         case .newWindow:
@@ -302,12 +304,12 @@ enum BeadazzleOptionInventory {
         ),
         BeadazzleOptionInventoryEntry(
             id: "projectOpenDestination",
-            title: "Open projects in",
+            title: "When opening a project",
             scope: .appPreference,
             persistence: BeadazzlePreferenceKeys.projectOpenDestination,
             defaultValue: BeadProjectOpenDestinationPreference.default.title,
             uiLocation: "Settings > General",
-            behavior: "Chooses whether opening a project reuses the current window or opens a new one. Explicit new-window commands ignore this."
+            behavior: "Asks whether to reuse the current window or open a new one, unless the user remembers a choice. Explicit destination commands ignore this preference."
         ),
         BeadazzleOptionInventoryEntry(
             id: "beadListDensity",

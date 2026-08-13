@@ -38,6 +38,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertTrue(store.showsGatesInSidebar)
         XCTAssertTrue(store.showsZeroCountSidebarSections)
         XCTAssertEqual(store.beadListDensity, .comfortable)
+        XCTAssertEqual(store.projectOpenDestination, .askEveryTime)
     }
 
     func testAppPreferencesPersistThroughInjectedUserDefaults() {
@@ -61,6 +62,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         store.showsGatesInSidebar = false
         store.showsZeroCountSidebarSections = false
         store.beadListDensity = .large
+        store.projectOpenDestination = .newWindow
 
         let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
 
@@ -87,6 +89,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertFalse(reloadedStore.showsGatesInSidebar)
         XCTAssertFalse(reloadedStore.showsZeroCountSidebarSections)
         XCTAssertEqual(reloadedStore.beadListDensity, .large)
+        XCTAssertEqual(reloadedStore.projectOpenDestination, .newWindow)
         XCTAssertEqual(reloadedStore.staleCutoffDays, 14)
         XCTAssertEqual(reloadedStore.beadListDisplayOptions, .compact)
     }

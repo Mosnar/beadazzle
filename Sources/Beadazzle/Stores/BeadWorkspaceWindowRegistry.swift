@@ -56,6 +56,7 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     @ObservationIgnored private var deferredProjectOpenTokenByWindowID: [UUID: UUID] = [:]
     @ObservationIgnored private var detachedStore: BeadStore?
     @ObservationIgnored private let makeStore: @MainActor () -> BeadStore
+    @ObservationIgnored private let projectOpenDestinationPrompter: any ProjectOpenDestinationPrompting
     @ObservationIgnored private var windowObservers: [any NSObjectProtocol] = []
 
     /// Supplied by the workspace scene, which is where SwiftUI's `openWindow` is reachable.
@@ -73,7 +74,12 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         let token: UUID
     }
 
-    init(makeStore: @escaping @MainActor () -> BeadStore = { BeadStore() }) {
+    init(
+        projectOpenDestinationPrompter: (any ProjectOpenDestinationPrompting)? = nil,
+        makeStore: @escaping @MainActor () -> BeadStore = { BeadStore() }
+    ) {
+        self.projectOpenDestinationPrompter = projectOpenDestinationPrompter
+            ?? AppKitProjectOpenDestinationPrompter()
         self.makeStore = makeStore
         windowObservers = [
             observeWindows(NSWindow.didBecomeKeyNotification) { $0.windowDidBecomeKey($1) },
@@ -440,7 +446,9 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     /// that window comes forward instead of a second one contending for the same tracker
     /// directory with its own write queue and snapshot monitor.
     ///
-    /// - Returns: `true` when the project opened in `store`'s own window.
+    /// - Returns: `true` when the project opened in `store`'s own window immediately.
+    ///   Prompted and otherwise deferred opens return `false`; their eventual routing is
+    ///   reflected by the store or new-window request after the asynchronous choice.
     @discardableResult
     func openProject(
         _ url: URL,
@@ -529,6 +537,18 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             focusWindow(existingWindowID)
             return false
         }
+        if destination == .preferred,
+           store.projectURL != nil,
+           store.projectOpenDestination == .askEveryTime {
+            promptForProjectOpenDestination(
+                standardizedURL,
+                from: store,
+                forcingSnapshotExport: forcingSnapshotExport,
+                trackerIdentityPath: trackerIdentityPath,
+                routing: routing
+            )
+            return false
+        }
         let forcesSnapshotExport = forcingSnapshotExport || consumeSnapshotExportRequirement(
             for: standardizedURL,
             trackerIdentityPath: trackerIdentityPath
@@ -546,6 +566,45 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             )
         )
         return false
+    }
+
+    private func promptForProjectOpenDestination(
+        _ projectURL: URL,
+        from store: BeadStore,
+        forcingSnapshotExport: Bool,
+        trackerIdentityPath: String?,
+        routing: DeferredProjectOpen?
+    ) {
+        let request = ProjectOpenDestinationPromptRequest(
+            projectName: projectURL.lastPathComponent,
+            currentProjectName: store.projectName
+        )
+        let window = windowID(for: store).flatMap { windowsByWindowID[$0] }
+
+        Task { @MainActor [weak self, weak store] in
+            guard let self, let store else { return }
+            let response = await projectOpenDestinationPrompter.prompt(
+                request,
+                attachedTo: window
+            )
+            guard projectOpenIsCurrent(routing, for: store),
+                  let destination = response.choice.destination else {
+                return
+            }
+            if response.remembersChoice,
+               let preference = response.choice.preference {
+                store.projectOpenDestination = preference
+            }
+            _ = routeProjectOpen(
+                projectURL,
+                from: store,
+                destination: destination,
+                forcingSnapshotExport: forcingSnapshotExport,
+                trackerIdentityPath: trackerIdentityPath,
+                attemptedTrackerResolution: true,
+                routing: routing
+            )
+        }
     }
 
     private func openPreparedProject(
@@ -705,7 +764,14 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             // An empty window is the current window the user is looking at; sending the
             // first project somewhere else would leave them staring at a blank one.
             guard store.projectURL != nil else { return .currentWindow }
-            return store.projectOpenDestination == .newWindow ? .newWindow : .currentWindow
+            switch store.projectOpenDestination {
+            case .askEveryTime, .currentWindow:
+                // Ask Every Time is intercepted before this resolver. Treat it as current
+                // here as a defensive fallback if a caller reaches this seam directly.
+                return .currentWindow
+            case .newWindow:
+                return .newWindow
+            }
         }
     }
 

@@ -5,10 +5,11 @@ import XCTest
 
 @MainActor
 final class BeadWorkspaceWindowRegistryTests: XCTestCase {
-    func testPreferredDestinationOpensInCurrentWindowByDefault() throws {
+    func testPreferredDestinationOpensInCurrentWindowWhenPreferenceSaysSo() throws {
         let context = try makeContext()
         let window = context.makeWindow()
         window.store.openProject(context.projectA)
+        window.store.projectOpenDestination = .currentWindow
 
         let openedHere = context.registry.openProject(
             context.projectB,
@@ -19,6 +20,67 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertTrue(openedHere)
         XCTAssertEqual(window.store.projectURL?.path, context.projectB.standardizedFileURL.path)
         XCTAssertTrue(context.openedRequests.isEmpty)
+        XCTAssertTrue(context.destinationPrompter.requests.isEmpty)
+    }
+
+    func testPreferredDestinationPromptsByDefaultAndUsesChoiceWithoutRemembering() async throws {
+        let context = try makeContext(promptResponses: [
+            ProjectOpenDestinationPromptResponse(
+                choice: .newWindow,
+                remembersChoice: false
+            )
+        ])
+        let window = context.makeWindow()
+        window.store.openProject(context.projectA)
+
+        let openedHere = context.registry.openProject(
+            context.projectB,
+            from: window.store,
+            destination: .preferred
+        )
+
+        XCTAssertFalse(openedHere)
+        try await waitUntil { context.openedRequests.count == 1 }
+        XCTAssertEqual(window.store.projectURL?.path, context.projectA.standardizedFileURL.path)
+        XCTAssertEqual(window.store.projectOpenDestination, .askEveryTime)
+        XCTAssertEqual(
+            context.destinationPrompter.requests,
+            [
+                ProjectOpenDestinationPromptRequest(
+                    projectName: "Beta",
+                    currentProjectName: "Alpha"
+                )
+            ]
+        )
+    }
+
+    func testRememberingPromptChoicePersistsAndReachesPeerWindows() async throws {
+        let context = try makeContext(promptResponses: [
+            ProjectOpenDestinationPromptResponse(
+                choice: .currentWindow,
+                remembersChoice: true
+            )
+        ])
+        let first = context.makeWindow()
+        let second = context.makeWindow()
+        first.store.openProject(context.projectA)
+
+        let openedHere = context.registry.openProject(
+            context.projectB,
+            from: first.store,
+            destination: .preferred
+        )
+
+        XCTAssertFalse(openedHere)
+        try await waitUntil {
+            first.store.projectURL?.standardizedFileURL == context.projectB.standardizedFileURL
+        }
+        XCTAssertEqual(first.store.projectOpenDestination, .currentWindow)
+        XCTAssertEqual(second.store.projectOpenDestination, .currentWindow)
+        XCTAssertEqual(
+            context.defaults.string(forKey: BeadazzlePreferenceKeys.projectOpenDestination),
+            BeadProjectOpenDestinationPreference.currentWindow.rawValue
+        )
     }
 
     func testPreferredDestinationOpensNewWindowWhenPreferenceSaysSo() throws {
@@ -39,6 +101,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
             context.openedRequests.map(\.projectPath),
             [context.projectB.standardizedFileURL.path]
         )
+        XCTAssertTrue(context.destinationPrompter.requests.isEmpty)
     }
 
     /// An empty window is the one the user is looking at, so the first project has to land
@@ -46,7 +109,6 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     func testPreferredDestinationFillsAnEmptyWindowInsteadOfOpeningAnother() throws {
         let context = try makeContext()
         let window = context.makeWindow()
-        window.store.projectOpenDestination = .newWindow
 
         let openedHere = context.registry.openProject(
             context.projectA,
@@ -57,6 +119,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertTrue(openedHere)
         XCTAssertEqual(window.store.projectURL?.path, context.projectA.standardizedFileURL.path)
         XCTAssertTrue(context.openedRequests.isEmpty)
+        XCTAssertTrue(context.destinationPrompter.requests.isEmpty)
     }
 
     func testExplicitNewWindowIgnoresCurrentWindowPreference() throws {
@@ -74,6 +137,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         XCTAssertFalse(openedHere)
         XCTAssertEqual(window.store.projectURL?.path, context.projectA.standardizedFileURL.path)
         XCTAssertEqual(context.openedRequests.count, 1)
+        XCTAssertTrue(context.destinationPrompter.requests.isEmpty)
     }
 
     /// Two windows on one project would each run their own write queue and snapshot
@@ -88,13 +152,14 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         let openedHere = context.registry.openProject(
             context.projectA,
             from: second.store,
-            destination: .newWindow
+            destination: .preferred
         )
 
         XCTAssertFalse(openedHere)
         XCTAssertEqual(second.store.projectURL?.path, context.projectB.standardizedFileURL.path)
         XCTAssertTrue(context.openedRequests.isEmpty)
         XCTAssertEqual(context.registry.windowID(showing: context.projectA), first.id)
+        XCTAssertTrue(context.destinationPrompter.requests.isEmpty)
     }
 
     /// Picking the current project again is the user's retry path after a failed load, so
@@ -555,8 +620,33 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     }
 
     @MainActor
+    private final class RecordingProjectOpenDestinationPrompter: ProjectOpenDestinationPrompting {
+        private var responses: [ProjectOpenDestinationPromptResponse]
+        private(set) var requests: [ProjectOpenDestinationPromptRequest] = []
+
+        init(responses: [ProjectOpenDestinationPromptResponse]) {
+            self.responses = responses
+        }
+
+        func prompt(
+            _ request: ProjectOpenDestinationPromptRequest,
+            attachedTo window: NSWindow?
+        ) async -> ProjectOpenDestinationPromptResponse {
+            requests.append(request)
+            guard !responses.isEmpty else {
+                return ProjectOpenDestinationPromptResponse(
+                    choice: .cancel,
+                    remembersChoice: false
+                )
+            }
+            return responses.removeFirst()
+        }
+    }
+
+    @MainActor
     private final class Context {
         let registry: BeadWorkspaceWindowRegistry
+        let destinationPrompter: RecordingProjectOpenDestinationPrompter
         let defaults: UserDefaults
         let projectA: URL
         let projectB: URL
@@ -564,8 +654,15 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         /// unit test has no scene to create.
         var openedRequests: [BeadWorkspaceWindowRequest] = []
 
-        init(registry: BeadWorkspaceWindowRegistry, defaults: UserDefaults, projectA: URL, projectB: URL) {
+        init(
+            registry: BeadWorkspaceWindowRegistry,
+            destinationPrompter: RecordingProjectOpenDestinationPrompter,
+            defaults: UserDefaults,
+            projectA: URL,
+            projectB: URL
+        ) {
             self.registry = registry
+            self.destinationPrompter = destinationPrompter
             self.defaults = defaults
             self.projectA = projectA
             self.projectB = projectB
@@ -577,13 +674,22 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         }
     }
 
-    private func makeContext(commands: (any BeadsCommanding)? = nil) throws -> Context {
+    private func makeContext(
+        commands: (any BeadsCommanding)? = nil,
+        promptResponses: [ProjectOpenDestinationPromptResponse] = []
+    ) throws -> Context {
         let defaults = makeUserDefaults()
-        let registry = BeadWorkspaceWindowRegistry {
+        let destinationPrompter = RecordingProjectOpenDestinationPrompter(
+            responses: promptResponses
+        )
+        let registry = BeadWorkspaceWindowRegistry(
+            projectOpenDestinationPrompter: destinationPrompter
+        ) {
             BeadStore(userDefaults: defaults, commands: commands ?? CurrentDoltTestCommands())
         }
         let context = Context(
             registry: registry,
+            destinationPrompter: destinationPrompter,
             defaults: defaults,
             projectA: try makeProject(named: "Alpha"),
             projectB: try makeProject(named: "Beta")

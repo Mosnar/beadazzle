@@ -2,7 +2,6 @@ import SwiftUI
 
 struct RecentProjectRow: View {
     let project: RecentProject
-    let isCurrent: Bool
     let isOpenInAnotherWindow: Bool
     let isFocused: Bool
     let focusedItem: FocusState<ProjectPickerFocus?>.Binding
@@ -19,20 +18,20 @@ struct RecentProjectRow: View {
                 open(ProjectOpenModifier.destination)
             } label: {
                 HStack(spacing: 8) {
-                    // One fixed-width slot for both states: a project can be the current
-                    // window's or another window's, never both, and a stable column keeps
-                    // the names aligned down the list.
-                    Image(systemName: statusSymbol ?? "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(rowForeground)
-                        .opacity(statusSymbol == nil ? 0 : 1)
-                        .frame(width: 12)
-                        .accessibilityHidden(true)
-
                     Label(project.name, systemImage: "folder")
                         .font(.body.weight(.semibold))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                         .foregroundStyle(rowForeground)
+
+                    Spacer(minLength: 8)
+
+                    if isOpenInAnotherWindow {
+                        Text("Other Window")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(isActive ? .white.opacity(0.78) : .secondary)
+                            .fixedSize()
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -57,14 +56,18 @@ struct RecentProjectRow: View {
                 remove()
             }
             .contextMenu {
-                Button(primaryActionTitle) {
-                    open(.currentWindow)
+                if isOpenInAnotherWindow {
+                    Button("Bring Window Forward") {
+                        open(.currentWindow)
+                    }
+                } else {
+                    Button("Open in This Window") {
+                        open(.currentWindow)
+                    }
+                    Button("Open in New Window") {
+                        open(.newWindow)
+                    }
                 }
-                .disabled(isCurrent)
-                Button("Open in New Window") {
-                    open(.newWindow)
-                }
-                .disabled(isCurrent || isOpenInAnotherWindow)
                 Divider()
                 Button("Remove from Recents", role: .destructive) {
                     remove()
@@ -74,16 +77,6 @@ struct RecentProjectRow: View {
             .accessibilityLabel(project.name)
             .accessibilityValue(accessibilityStatus)
             .accessibilityHint(accessibilityHint)
-
-            ProjectPickerRowButton(
-                systemImage: "macwindow.badge.plus",
-                isVisible: isActive && canOpenInNewWindow,
-                isActive: isActive,
-                help: "Open in New Window",
-                accessibilityLabel: "Open \(project.name) in New Window"
-            ) {
-                open(.newWindow)
-            }
 
             ProjectPickerRowButton(
                 systemImage: "xmark.circle.fill",
@@ -102,32 +95,12 @@ struct RecentProjectRow: View {
         .onHover { isHovered = $0 }
     }
 
-    /// Neither the current window's project nor one already open elsewhere can go to a new
-    /// window — the first is already here, and the second would be a duplicate.
-    private var canOpenInNewWindow: Bool {
-        !isCurrent && !isOpenInAnotherWindow
-    }
-
-    private var statusSymbol: String? {
-        if isCurrent {
-            return "checkmark"
-        }
-        return isOpenInAnotherWindow ? "macwindow" : nil
-    }
-
-    private var primaryActionTitle: String {
-        isOpenInAnotherWindow ? "Bring Window Forward" : "Open"
-    }
-
     private var helpText: String {
         guard isOpenInAnotherWindow else { return project.path }
         return "\(project.path)\nAlready open in another window"
     }
 
     private var accessibilityStatus: String {
-        if isCurrent {
-            return "Current Project"
-        }
         return isOpenInAnotherWindow ? "Open in another window" : ""
     }
 

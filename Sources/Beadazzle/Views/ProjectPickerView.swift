@@ -146,7 +146,10 @@ private struct ProjectPickerPopover: View {
     }
 
     private var visibleRecentProjects: [RecentProject] {
-        let recentProjects = project.recentProjects
+        // The current project already has a dedicated, richer row above. Repeating it in
+        // Recents added a second leading status glyph and made window state look like an
+        // action instead of project metadata.
+        let recentProjects = project.recentProjects.filter { $0.id != currentProject?.id }
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return recentProjects }
 
@@ -191,6 +194,8 @@ private struct ProjectPickerPopover: View {
                     focusedItem: $focusedRow,
                     focusID: .currentProject
                 ) {
+                    reloadCurrentProject()
+                } openSettings: {
                     openProjectSettings()
                 } moveUp: {
                     selectItem(.search)
@@ -230,7 +235,6 @@ private struct ProjectPickerPopover: View {
                             let focusID = ProjectPickerFocus.recent(project.id)
                             RecentProjectRow(
                                 project: project,
-                                isCurrent: project.id == currentProject?.id,
                                 isOpenInAnotherWindow: registry.isProjectOpenInAnotherWindow(
                                     project.url,
                                     from: store
@@ -307,6 +311,12 @@ private struct ProjectPickerPopover: View {
     ) {
         isPresented = false
         registry.openProject(project.url, from: store, destination: destination)
+    }
+
+    private func reloadCurrentProject() {
+        guard let projectURL = project.projectURL else { return }
+        isPresented = false
+        registry.openProject(projectURL, from: store, destination: .currentWindow)
     }
 
     private func openProjectSettings() {
@@ -557,6 +567,7 @@ private struct CurrentProjectRow: View {
     let isFocused: Bool
     let focusedItem: FocusState<ProjectPickerFocus?>.Binding
     let focusID: ProjectPickerFocus
+    let reloadProject: () -> Void
     let openSettings: () -> Void
     let moveUp: () -> Void
     let moveDown: () -> Void
@@ -585,19 +596,21 @@ private struct CurrentProjectRow: View {
 
             Spacer(minLength: 0)
 
-            Button(action: openSettings) {
+            Menu {
+                Button("Reload Project", action: reloadProject)
+                Divider()
+                Button("Project Settings…", action: openSettings)
+            } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(rowForeground)
+                    .foregroundStyle(actionForeground)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .opacity(isActive ? 1 : 0)
-            .allowsHitTesting(isActive)
-            .accessibilityHidden(!isActive)
-            .help("Project Settings")
-            .accessibilityLabel("Project Settings")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Project Actions")
+            .accessibilityLabel("Project Actions")
         }
         .padding(.horizontal, 7)
         .frame(minHeight: 48)
@@ -617,6 +630,11 @@ private struct CurrentProjectRow: View {
             openSettings()
             return .handled
         }
+        .contextMenu {
+            Button("Reload Project", action: reloadProject)
+            Divider()
+            Button("Project Settings…", action: openSettings)
+        }
         .onHover { isHovered = $0 }
         .help(project.path)
     }
@@ -627,6 +645,10 @@ private struct CurrentProjectRow: View {
 
     private var rowForeground: Color {
         isActive ? .white : .primary
+    }
+
+    private var actionForeground: Color {
+        isActive ? .white : Color(nsColor: .secondaryLabelColor)
     }
 
     private var isActive: Bool {
