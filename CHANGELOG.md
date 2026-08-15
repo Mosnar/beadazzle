@@ -30,6 +30,9 @@ for users, not for the commit log.
 
 ### Fixed
 
+- A project whose tracker still needs the one-time database upgrade that a new `bd` release introduces now says so and offers to run it, instead of failing with errors that pointed at the `bd` binary. Previously the project only started working after you ran a `bd` command yourself in a terminal. Beadazzle runs the upgrade for you when the tracker is local, asks first when it has a Dolt remote (upgrading more than one clone independently would break `bd dolt pull`), and keeps showing the last exported data — with editing paused — until it finishes.
+- A project that has no exported snapshot yet and cannot be opened at all now identifies the pending tracker upgrade as the reason and offers to run it, instead of reporting the underlying export failure.
+- A first-run tracker upgrade is no longer cut short partway through on large projects, and Beadazzle no longer suggests choosing a different `bd` executable for failures that have nothing to do with locating it.
 - Interrupted snapshot refreshes no longer leave temporary JSONL files in project worktrees.
 - Queued edits now finish safely when closing a project window or quitting Beadazzle. Worktree and redirected project aliases share the same handoff, and a failed final snapshot export is retried from whichever alias opens next.
 - Project windows no longer cycle between recent folders when several folders point to the same Beads tracker.

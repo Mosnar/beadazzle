@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var bulkEditRequest: BulkEditRequest?
     @State private var beadsSetupRequest: BeadsSetupRequest?
     @State private var doltRemoteFreshnessSceneID = UUID()
+    @State private var isConfirmingTrackerUpgrade = false
 
     var body: some View {
         @Bindable var store = store
@@ -27,6 +28,21 @@ struct ContentView: View {
         .overlay(alignment: .bottom) {
             FolderAutomationStatusOverlay()
             .padding(.bottom, 12)
+        }
+        // Lives here rather than on the banner: a tracker that blocked the project from
+        // opening offers the same upgrade from the unavailable view, which the banner
+        // never reaches.
+        .confirmationDialog(
+            "Upgrade this tracker?",
+            isPresented: $isConfirmingTrackerUpgrade,
+            titleVisibility: .visible
+        ) {
+            Button("Upgrade Tracker") {
+                store.startTrackerMigration(confirmedByUser: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(trackerUpgradeConfirmationMessage)
         }
         .toolbar {
             if store.showsBackNavigationButton || store.showsForwardNavigationButton {
@@ -269,6 +285,18 @@ struct ContentView: View {
         let presentation = workspacePresentation
 
         VStack(spacing: 0) {
+            // A pending schema upgrade outranks setup advice: until it runs, `bd` cannot
+            // read the database at all, so anything else the app reports about this
+            // project is derived from the last export.
+            if store.trackerMigration.isPending {
+                TrackerMigrationBanner(
+                    state: store.trackerMigration,
+                    upgrade: { store.startTrackerMigration(confirmedByUser: false) },
+                    confirmUpgrade: { isConfirmingTrackerUpgrade = true },
+                    retry: store.retryTrackerMigrationAfterFailure
+                )
+            }
+
             if store.showsBeadsSetupAdvisory {
                 BeadsSetupAdvisoryBanner(
                     findings: store.actionableBeadsSetupFindings,
@@ -304,6 +332,15 @@ struct ContentView: View {
         }
     }
 
+    /// Spells out the consequence `bd` itself guards against, so confirming is an
+    /// informed choice rather than a click-through.
+    private var trackerUpgradeConfirmationMessage: String {
+        guard case .awaitingConfirmation(_, let reason) = store.trackerMigration else {
+            return "This applies the pending bd schema migration to this tracker."
+        }
+        return reason.explanation
+    }
+
     @ViewBuilder
     private func workspaceDetailContent(for presentation: WorkspacePresentation) -> some View {
         switch presentation {
@@ -335,7 +372,11 @@ struct ContentView: View {
                     detail: unavailableProject.detail,
                     isRetrying: project.isLoading,
                     onRetry: store.refresh,
-                    onOpenProject: openProject
+                    onOpenProject: openProject,
+                    trackerMigration: store.trackerMigration,
+                    // The project never opened, so its remote list is unknown and the
+                    // upgrade is always an explicit choice here.
+                    onUpgradeTracker: { isConfirmingTrackerUpgrade = true }
                 )
             }
         case .splitDetail, .fullPageDetail, .creation:

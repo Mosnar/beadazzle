@@ -168,6 +168,7 @@ protocol BeadsCommanding: BeadsSetupServicing, Sendable {
         projectURL: URL,
         settings: BeadsCreationValidationSettings
     ) async throws
+    func migrateTrackerSchema(projectURL: URL, allowsRemoteMigration: Bool) async throws
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext
     func loadProjectStorageConfig(projectURL: URL) async throws -> ProjectStorageConfig
     func loadDoltRemotes(projectURL: URL) async throws -> BeadsDoltRemotes
@@ -191,6 +192,13 @@ protocol BeadsCommanding: BeadsSetupServicing, Sendable {
 }
 
 extension BeadsCommanding {
+    func migrateTrackerSchema(projectURL _: URL, allowsRemoteMigration _: Bool) async throws {
+        throw BeadError.commandFailed(
+            command: "bd migrate",
+            output: "Tracker migration is not supported by this command service."
+        )
+    }
+
     func verifyDoltRemoteAccess(projectURL _: URL, remote _: BeadsDoltRemote) async throws {
         throw BeadError.commandFailed(
             command: "git ls-remote",
@@ -426,8 +434,10 @@ struct BeadsCommandService {
     typealias CommandExecutable = (url: URL, prefix: [String])
 
     // Leave a wide margin beyond the normal export timeout so a second app
-    // process cannot prune another export that is still in flight.
-    private static let staleTemporaryExportArtifactAge: TimeInterval = 5 * 60
+    // process cannot prune another export that is still in flight. This must stay
+    // ahead of `snapshotExportTimeout`, which now allows for an export that carries a
+    // first-run schema migration.
+    private static let staleTemporaryExportArtifactAge: TimeInterval = 20 * 60
     private static let temporaryExportFilenamePrefix = "issues.jsonl.tmp."
     private static let atomicTemporaryExportFilenamePrefix = ".~issues.jsonl.tmp."
     private static let atomicInstalledSnapshotFilenamePrefix = ".~issues.jsonl."
@@ -436,20 +446,50 @@ struct BeadsCommandService {
     private let snapshotExportTimeout: Duration
     private let writeCommandTimeout: Duration
     private let remoteSyncCommandTimeout: Duration
+    private let migrationCommandTimeout: Duration
     private let executable: @Sendable () -> CommandExecutable
 
     init(
         readOnlyCommandTimeout: Duration = .seconds(10),
-        snapshotExportTimeout: Duration = .seconds(60),
+        // `bd export` opens the database for writing, so it is the command that performs
+        // a pending schema migration when one is outstanding. That scales with database
+        // size, not with the export itself — a ~700MB embedded tracker measured ~160s —
+        // and killing `bd` partway through a migration is worse than waiting for it. Keep
+        // a bound, but well clear of a first-run migration.
+        snapshotExportTimeout: Duration = .seconds(600),
         writeCommandTimeout: Duration = .seconds(120),
         remoteSyncCommandTimeout: Duration = .seconds(1_800),
+        // A schema migration rewrites the whole tracker, so it scales with database
+        // size rather than with the work the user asked for: a ~700MB embedded Dolt
+        // tracker takes minutes. Interrupting one is worse than waiting for it, so it
+        // gets the same generous ceiling as remote sync instead of the write timeout.
+        migrationCommandTimeout: Duration = .seconds(1_800),
         executable: @escaping @Sendable () -> CommandExecutable = { BeadsCLI.executable() }
     ) {
         self.readOnlyCommandTimeout = readOnlyCommandTimeout
         self.snapshotExportTimeout = snapshotExportTimeout
         self.writeCommandTimeout = writeCommandTimeout
         self.remoteSyncCommandTimeout = remoteSyncCommandTimeout
+        self.migrationCommandTimeout = migrationCommandTimeout
         self.executable = executable
+    }
+
+    /// Applies pending `bd` schema migrations for this tracker.
+    ///
+    /// `bd migrate` is idempotent and must run in write mode — the read-only opens
+    /// Beadazzle uses everywhere else cannot migrate. `allowsRemoteMigration` maps to
+    /// `--force`, which `bd` requires before migrating a remote-backed database in
+    /// place; only pass it once the user has confirmed they are the designated migrator.
+    func migrateTrackerSchema(projectURL: URL, allowsRemoteMigration: Bool) async throws {
+        var arguments = ["migrate"]
+        if allowsRemoteMigration {
+            arguments.append("--force")
+        }
+        try await run(
+            projectURL: projectURL,
+            arguments: arguments,
+            timeout: migrationCommandTimeout
+        )
     }
 
     func inspectSetup(

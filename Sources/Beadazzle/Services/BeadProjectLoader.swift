@@ -10,12 +10,23 @@ struct BeadSemanticDefinitions: Codable, Sendable, Equatable {
     var types: [BeadTypeDefinition]
 }
 
+/// The outcome of reading status/type definitions from `bd`.
+struct LoadedSemanticDefinitions: Sendable {
+    var definitions: BeadSemanticDefinitions?
+    /// Set when the read failed because the tracker needs a one-time `bd` migration.
+    var schemaSkew: BeadsSchemaSkew?
+}
+
 struct LoadedProject: Sendable {
     var environment: BeadsProjectEnvironment
     var source: BeadsDataSource
     var snapshot: BeadsSnapshot
     var index: BeadProjectIndex
     var snapshotRefreshWarning: String?
+    /// Set when `bd` refused to read this tracker because its schema predates the
+    /// installed binary. The snapshot still loads (it is a plain file), so the project
+    /// opens with stale data while the migration is offered.
+    var schemaSkew: BeadsSchemaSkew?
     /// The definitions used to build `index.semantics`, so the caller can cache them and
     /// pass them back on subsequent reloads. `nil` when the `bd` read failed (built-in
     /// fallbacks were used) — the caller should not cache a failure.
@@ -128,14 +139,17 @@ struct BeadProjectLoader: Sendable {
         try Task.checkCancellation()
         let definitions: BeadSemanticDefinitions?
         let definitionsLoadedFromCommands: Bool
+        var schemaSkew: BeadsSchemaSkew?
         let cacheMatchesResolvedTracker = cachedDefinitionsTrackerDirectoryURL?
             .standardizedFileURL.path == environment.beadsDirectoryURL.standardizedFileURL.path
         if let cachedDefinitions, cacheMatchesResolvedTracker {
             definitions = cachedDefinitions
             definitionsLoadedFromCommands = false
         } else if loadsDefinitionsIfMissing {
-            definitions = await loadDefinitions(projectURL: projectURL)
-            definitionsLoadedFromCommands = definitions != nil
+            let loadedDefinitions = await loadDefinitions(projectURL: projectURL)
+            definitions = loadedDefinitions.definitions
+            definitionsLoadedFromCommands = loadedDefinitions.definitions != nil
+            schemaSkew = loadedDefinitions.schemaSkew
         } else {
             definitions = nil
             definitionsLoadedFromCommands = false
@@ -167,6 +181,7 @@ struct BeadProjectLoader: Sendable {
                 snapshot: loadedSnapshot.snapshot,
                 index: index,
                 snapshotRefreshWarning: nil,
+                schemaSkew: schemaSkew,
                 definitions: definitions,
                 definitionsLoadedFromCommands: definitionsLoadedFromCommands
             )
@@ -197,10 +212,23 @@ struct BeadProjectLoader: Sendable {
                 output: "The reported tracker directory does not exist: \(environment.beadsDirectoryURL.path)"
             )
         }
-        let exportResult = try await commands.exportReadableSnapshotWithResult(
-            projectURL: projectURL,
-            beadsDirectoryURL: environment.beadsDirectoryURL
-        )
+        let exportResult: ReadableSnapshotExportResult
+        do {
+            exportResult = try await commands.exportReadableSnapshotWithResult(
+                projectURL: projectURL,
+                beadsDirectoryURL: environment.beadsDirectoryURL
+            )
+        } catch {
+            // There is no snapshot to fall back on here, so this failure blocks the whole
+            // project. A pending schema migration is a common and fixable cause — `bd`
+            // refuses to migrate some databases in place, and a first-run migration on a
+            // large tracker can outlast the export timeout. Ask `bd` directly rather than
+            // guessing from the export failure, which reports a timeout, not the skew.
+            if let skew = try await detectSchemaSkew(projectURL: projectURL, exportError: error) {
+                throw BeadError.trackerNeedsMigration(skew)
+            }
+            throw error
+        }
         return try await loadResolvedProject(
             projectURL: projectURL,
             environment: environment,
@@ -211,6 +239,20 @@ struct BeadProjectLoader: Sendable {
             loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
             preparedSnapshot: exportResult.loadedSnapshot
         )
+    }
+
+    /// Confirms whether a failed export was caused by a tracker whose schema predates the
+    /// installed `bd`. Runs only on the failure path, so the successful open still costs
+    /// no extra subprocess.
+    private func detectSchemaSkew(
+        projectURL: URL,
+        exportError: Error
+    ) async throws -> BeadsSchemaSkew? {
+        if let skew = BeadsSchemaSkew.detect(in: exportError) {
+            return skew
+        }
+        try Task.checkCancellation()
+        return await loadDefinitions(projectURL: projectURL).schemaSkew
     }
 
     /// Re-exports the readable JSONL snapshot before reading, then loads.
@@ -262,15 +304,22 @@ struct BeadProjectLoader: Sendable {
         return loadedProject
     }
 
-    /// Reads status/type definitions from `bd`. Returns `nil` if the read fails, so the
-    /// caller falls back to built-in definitions without caching the failure.
-    func loadDefinitions(projectURL: URL) async -> BeadSemanticDefinitions? {
+    /// Reads status/type definitions from `bd`. Returns `nil` definitions if the read
+    /// fails, so the caller falls back to built-in definitions without caching the
+    /// failure, and reports a pending schema migration when that is what caused it.
+    func loadDefinitions(projectURL: URL) async -> LoadedSemanticDefinitions {
         do {
             let statuses = try await commands.loadStatusDefinitions(projectURL: projectURL)
             let types = try await commands.loadTypeDefinitions(projectURL: projectURL)
-            return BeadSemanticDefinitions(statuses: statuses, types: types)
+            return LoadedSemanticDefinitions(
+                definitions: BeadSemanticDefinitions(statuses: statuses, types: types),
+                schemaSkew: nil
+            )
         } catch {
-            return nil
+            return LoadedSemanticDefinitions(
+                definitions: nil,
+                schemaSkew: BeadsSchemaSkew.detect(in: error)
+            )
         }
     }
 

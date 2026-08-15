@@ -292,6 +292,16 @@ extension BeadStore {
         resetWorkspaceHistory()
     }
 
+    /// The project could not be opened at all because its tracker predates the installed
+    /// `bd`. Unlike the pending-upgrade banner, there is no snapshot to keep showing, so
+    /// this reports the blocked state while still offering the upgrade that fixes it.
+    internal func setTrackerMigrationRequired(_ url: URL, skew: BeadsSchemaSkew?) {
+        setProjectUnavailable(url, detail: BeadError.trackerNeedsMigration(skew).localizedDescription)
+        // Order matters: `setProjectUnavailable` resets loaded project state, so the
+        // migration state is recorded after it rather than being cleared by it.
+        noteTrackerSchemaSkew(skew ?? BeadsSchemaSkew())
+    }
+
     private func clearLoadedProjectData() {
         project.cancelReconciliationWork()
         reconcileState.reset()
@@ -621,6 +631,10 @@ extension BeadStore {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setUnsupportedProject(unsupportedURL, detail: detail)
                     return false
+                } catch BeadError.trackerNeedsMigration(let skew) {
+                    guard !Task.isCancelled, self.projectURL == projectURL else { return false }
+                    self.setTrackerMigrationRequired(projectURL, skew: skew)
+                    return false
                 } catch {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setProjectUnavailable(projectURL, detail: error.localizedDescription)
@@ -630,6 +644,14 @@ extension BeadStore {
             } catch BeadError.unsupportedProjectMode(let unsupportedURL, let detail) {
                 guard !Task.isCancelled, let self, self.projectURL == projectURL else { return false }
                 self.setUnsupportedProject(unsupportedURL, detail: detail)
+                self.finishReconcileAfterRefreshTermination(
+                    projectURL: projectURL,
+                    refreshGeneration: refreshGeneration
+                )
+                return false
+            } catch BeadError.trackerNeedsMigration(let skew) {
+                guard !Task.isCancelled, let self, self.projectURL == projectURL else { return false }
+                self.setTrackerMigrationRequired(projectURL, skew: skew)
                 self.finishReconcileAfterRefreshTermination(
                     projectURL: projectURL,
                     refreshGeneration: refreshGeneration
@@ -747,6 +769,14 @@ extension BeadStore {
         if let warning = loadedProject.snapshotRefreshWarning {
             _snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: warning)
         }
+        // The snapshot is a plain file, so it still loaded; `bd` just cannot read the
+        // database behind it until the schema is migrated. Record that before the UI
+        // settles so the workspace opens with stale data plus an upgrade affordance.
+        if let schemaSkew = loadedProject.schemaSkew {
+            noteTrackerSchemaSkew(schemaSkew)
+        } else if loadedProject.definitionsLoadedFromCommands {
+            clearTrackerMigrationStateAfterSuccessfulRead()
+        }
         _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
         pruneExpandedIssueIDs()
         expandAncestorsForSelection(rebuildRows: false)
@@ -845,7 +875,7 @@ extension BeadStore {
                     self.semanticDefinitionsRefreshTask = nil
                 }
             }
-            let refreshedDefinitions = await projectLoader.loadDefinitions(projectURL: projectURL)
+            let loadedDefinitions = await projectLoader.loadDefinitions(projectURL: projectURL)
             guard !Task.isCancelled,
                   let self,
                   self.projectURL == projectURL,
@@ -855,7 +885,10 @@ extension BeadStore {
             else {
                 return
             }
-            guard let refreshedDefinitions else { return }
+            if let schemaSkew = loadedDefinitions.schemaSkew {
+                self.noteTrackerSchemaSkew(schemaSkew)
+            }
+            guard let refreshedDefinitions = loadedDefinitions.definitions else { return }
 
             if self.cachedDefinitions == refreshedDefinitions {
                 let refreshedAt = Date()

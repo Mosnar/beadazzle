@@ -314,6 +314,9 @@ extension BeadStore {
     }
 
     func projectDoltRemotesDidLoad(previousRemote: BeadsDoltRemote?) {
+        // A pending schema upgrade waits on this answer: it is only safe to migrate
+        // without asking once the tracker is known to have no remote to fork from.
+        reevaluateTrackerMigrationAfterRemotesLoaded()
         let currentRemote = projectDoltRemotes?.value.flatMap {
             doltRemoteFreshnessRemote(in: $0)
         }

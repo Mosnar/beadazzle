@@ -7,8 +7,17 @@ struct CancellableProcessResult: Sendable {
     var outputWasTruncated: Bool
 }
 
-enum CancellableProcessRunnerError: Error, Equatable, Sendable {
+/// `timedOut` reaches callers that surface it directly to the UI, so it carries its own
+/// description rather than falling back to an opaque `NSError` code.
+enum CancellableProcessRunnerError: LocalizedError, Equatable, Sendable {
     case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .timedOut:
+            return "Timed out waiting for the command to finish."
+        }
+    }
 }
 
 /// Runs read-only subprocesses without occupying Swift's cooperative executor.

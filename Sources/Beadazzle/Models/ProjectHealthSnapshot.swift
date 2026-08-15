@@ -344,13 +344,27 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             )
         }
         if let errorMessage = health?.context.errorMessage {
+            // A pending schema migration is not a broken `bd` install, and pointing the
+            // user at the executable picker sends them to fix something that is fine.
+            if let skew = BeadsSchemaSkew.detect(in: errorMessage) {
+                return Check(
+                    id: .bdCLI,
+                    title: "bd CLI",
+                    status: .blocked,
+                    summary: "This tracker needs a one-time upgrade",
+                    detail: [skew.versionSummary, errorMessage]
+                        .compactMap { $0 }
+                        .joined(separator: " "),
+                    actionHint: "Upgrade the tracker to continue."
+                )
+            }
             return Check(
                 id: .bdCLI,
                 title: "bd CLI",
                 status: .blocked,
                 summary: "Cannot run bd for this project",
                 detail: errorMessage,
-                actionHint: "Choose a bd executable in Settings."
+                actionHint: Self.bdCLIActionHint(for: errorMessage)
             )
         }
         return pendingCheck(
@@ -359,6 +373,18 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             isLoading: isLoading,
             unloadedSummary: "bd status has not loaded"
         )
+    }
+
+    /// `bd` failing is not evidence that the wrong binary was found. Only suggest the
+    /// executable picker for failures that are actually about locating or running it —
+    /// a timeout means `bd` ran and was too slow, and sending the user to Settings for
+    /// that is a dead end.
+    private static func bdCLIActionHint(for errorMessage: String) -> String {
+        let lowercased = errorMessage.lowercased()
+        if lowercased.contains("timed out") {
+            return "bd started but did not finish in time. Try again, or run `bd` in this project to see what it is waiting on."
+        }
+        return "Choose a bd executable in Settings."
     }
 
     private static func readableDataCheck(

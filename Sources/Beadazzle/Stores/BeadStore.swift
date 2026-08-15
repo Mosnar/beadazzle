@@ -48,6 +48,8 @@ final class BeadProjectStore {
     fileprivate(set) var projectEnvironment: BeadsProjectEnvironment?
     fileprivate(set) var ownerIdentity = BeadOwnerIdentity.unavailable
     fileprivate(set) var snapshotFreshness = ProjectSnapshotFreshness.unknown
+    fileprivate(set) var trackerMigration = BeadsTrackerMigrationState.notNeeded
+    @ObservationIgnored fileprivate(set) var trackerMigrationTask: Task<Void, Never>?
     fileprivate(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     fileprivate(set) var isLoadingProjectHealth = false
     fileprivate(set) var projectHealthAction: ProjectHealthAction?
@@ -616,6 +618,15 @@ final class BeadStore {
     }
     var snapshotFreshness: ProjectSnapshotFreshness { project.snapshotFreshness }
     internal var _snapshotFreshness: ProjectSnapshotFreshness { get { project.snapshotFreshness } set { project.snapshotFreshness = newValue } }
+    var trackerMigration: BeadsTrackerMigrationState { project.trackerMigration }
+    internal var _trackerMigration: BeadsTrackerMigrationState {
+        get { project.trackerMigration }
+        set { project.trackerMigration = newValue }
+    }
+    internal var _trackerMigrationTask: Task<Void, Never>? {
+        get { project.trackerMigrationTask }
+        set { project.trackerMigrationTask = newValue }
+    }
     var projectHealthSnapshot: ProjectHealthSnapshot? { project.projectHealthSnapshot }
     internal var _projectHealthSnapshot: ProjectHealthSnapshot? { get { project.projectHealthSnapshot } set { project.projectHealthSnapshot = newValue } }
     var isLoadingProjectHealth: Bool { project.isLoadingProjectHealth }

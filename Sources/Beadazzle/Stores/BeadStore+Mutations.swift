@@ -181,6 +181,12 @@ extension BeadStore {
     internal func enqueueMutationWrite<Value: Sendable>(
         _ operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {
+        // Refuse writes while the tracker's schema is behind the installed `bd`. Each
+        // write would otherwise fail on its own with `bd`'s raw mismatch text, after the
+        // optimistic UI state had already been applied.
+        guard !trackerMigration.blocksWrites else {
+            throw BeadError.trackerNeedsMigration(trackerMigration.skew)
+        }
         // Mark this before enqueueing, not only after success. A command can durably write
         // before reporting an error, and a window can close after the queue drains but
         // before the coalesced reconcile starts.
