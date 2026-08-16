@@ -8,6 +8,7 @@ profiles/
 .dolt/
 *.db
 .beads-credential-key
+.beads.gate.lock
 
 # AI bullshit
 .omc/
