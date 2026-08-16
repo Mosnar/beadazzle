@@ -270,6 +270,33 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         )
     }
 
+    /// A window opened for a specific project keeps it when SwiftUI swaps its presented
+    /// value a beat later. A second window is where this bites hardest: it has a project it
+    /// was explicitly opened with and nothing else to fall back to, so losing it to the swap
+    /// leaves the user looking at a window that came up and then emptied itself.
+    func testASecondWindowKeepsItsProjectWhenItsRequestIsSwapped() throws {
+        let context = try makeContext()
+        let first = context.makeWindow()
+        first.store.openProject(context.projectA)
+        context.registry.openProject(
+            context.projectB,
+            from: first.store,
+            destination: .newWindow
+        )
+        let request = try XCTUnwrap(context.openedRequests.first)
+        let secondID = UUID()
+        let second = context.registry.store(for: secondID)
+        context.registry.prepareWindow(secondID, request: request)
+        XCTAssertEqual(second.projectURL?.path, context.projectB.standardizedFileURL.path)
+
+        // Restoration hands the window a value it never appeared with, carrying no project.
+        context.registry.prepareWindow(secondID, request: BeadWorkspaceWindowRequest())
+
+        XCTAssertTrue(context.registry.store(for: secondID) === second)
+        XCTAssertEqual(second.projectURL?.path, context.projectB.standardizedFileURL.path)
+        XCTAssertEqual(first.store.projectURL?.path, context.projectA.standardizedFileURL.path)
+    }
+
     /// SwiftUI can hand a live window a different presented value after it has appeared —
     /// scene restoration swaps its own stored value in a beat after launch — without a
     /// second `onAppear`. The window's registry identity is its own, so the replacement

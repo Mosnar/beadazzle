@@ -7,122 +7,116 @@ struct IssueMetadataRibbon: View {
     @State private var viewportWidth: CGFloat = 0
 
     var body: some View {
-        ZStack(alignment: .trailing) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    IssueMetadataOptionControl(
-                        title: "Status",
-                        systemImage: store.statusSymbol(for: draft.status),
-                        tint: store.statusColor(for: draft.status),
-                        options: store.statusOptions(including: draft.status),
-                        selected: $draft.status,
-                        presentation: .ribbonChip,
-                        numericShortcutStart: 1,
-                        displayValue: { $0 }
-                    )
-
-                    IssueMetadataOptionControl(
-                        title: "Type",
-                        systemImage: "tag",
-                        options: store.mutableTypeOptions(including: draft.issueType),
-                        selected: $draft.issueType,
-                        presentation: .ribbonChip,
-                        numericShortcutStart: 1,
-                        displayValue: { $0 }
-                    )
-
-                    IssueMetadataOptionControl(
-                        title: "Priority",
-                        systemImage: "exclamationmark.triangle",
-                        tint: BeadVisualStyle.priorityColor(for: draft.priority),
-                        options: Array(0...4),
-                        selected: $draft.priority,
-                        presentation: .ribbonChip,
-                        numericShortcutStart: 0,
-                        displayValue: { "P\($0)" }
-                    )
-
-                    if let issueID = draft.id, let issue = store.issue(with: issueID) {
-                        ParentBeadPickerControl(
-                            issue: issue,
-                            draft: $draft,
-                            presentation: .ribbonChip
-                        )
-                    }
-
-                    IssueMetadataAssigneeControl(
-                        assignee: $draft.assignee,
-                        availableAssignees: store.availableAssignees,
-                        presentation: .ribbonChip
-                    )
-
-                    IssueMetadataLabelsControl(
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                IssueMetadataOptionControl(
+                    title: "Status",
+                    systemImage: store.statusSymbol(for: draft.status),
+                    tint: store.statusColor(for: draft.status),
+                    options: store.statusOptions(including: draft.status),
+                    selected: $draft.status,
+                    presentation: .ribbonChip,
+                    numericShortcutStart: 1,
+                    displayValue: { $0 }
+                )
+                IssueMetadataOptionControl(
+                    title: "Type",
+                    systemImage: "tag",
+                    options: store.mutableTypeOptions(including: draft.issueType),
+                    selected: $draft.issueType,
+                    presentation: .ribbonChip,
+                    numericShortcutStart: 1,
+                    displayValue: { $0 }
+                )
+                IssueMetadataOptionControl(
+                    title: "Priority",
+                    systemImage: "exclamationmark.triangle",
+                    tint: BeadVisualStyle.priorityColor(for: draft.priority),
+                    options: Array(0...4),
+                    selected: $draft.priority,
+                    presentation: .ribbonChip,
+                    numericShortcutStart: 0,
+                    displayValue: { "P\($0)" }
+                )
+                if let issueID = draft.id, let issue = store.issue(with: issueID) {
+                    ParentBeadPickerControl(
+                        issue: issue,
                         draft: $draft,
-                        availableLabels: store.availableLabels,
-                        presentation: .ribbonChip,
-                        managedStateDimensions: store.pinnedStateDimensions
+                        presentation: .ribbonChip
                     )
-
-                    if let issueID = draft.id {
-                        ForEach(store.gatesBlocking(issueID: issueID)) { gate in
-                            Button {
-                                store.select([gate.id])
-                            } label: {
-                                IssueMetadataRibbonChipLabel(
-                                    systemImage: gate.systemImage,
-                                    tint: GatePresentation.tint(for: gate),
-                                    value: gate.id,
-                                    showsChevron: false,
-                                    isHighlighted: false
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .help("Blocked by \(gate.awaitType.title) gate \(gate.id) — open it")
+                }
+                IssueMetadataAssigneeControl(
+                    assignee: $draft.assignee,
+                    availableAssignees: store.availableAssignees,
+                    presentation: .ribbonChip
+                )
+                IssueMetadataLabelsControl(
+                    draft: $draft,
+                    availableLabels: store.availableLabels,
+                    presentation: .ribbonChip,
+                    managedStateDimensions: store.pinnedStateDimensions
+                )
+                if let issueID = draft.id {
+                    ForEach(store.gatesBlocking(issueID: issueID)) { gate in
+                        Button {
+                            store.select([gate.id])
+                        } label: {
+                            IssueMetadataRibbonChipLabel(
+                                systemImage: gate.systemImage,
+                                tint: GatePresentation.tint(for: gate),
+                                value: gate.id,
+                                showsChevron: false,
+                                isHighlighted: false
+                            )
                         }
-                    }
-
-                    IssueMetadataDateControl(
-                        title: "Due",
-                        systemImage: "calendar",
-                        value: $draft.dueAt,
-                        includesDeferredShortcuts: false,
-                        presentation: .ribbonChip
-                    )
-
-                    IssueMetadataDateControl(
-                        title: "Deferred",
-                        systemImage: "pause.circle",
-                        value: $draft.deferUntil,
-                        includesDeferredShortcuts: true,
-                        presentation: .ribbonChip
-                    )
-
-                    // Local progress: appears only when this bead's write outlives the
-                    // perceptible-latency threshold. Quiet, non-blocking — navigation stays live.
-                    if let issueID = draft.id, store.isPerceptiblyBusy(issueID: issueID) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(.leading, 2)
-                            .accessibilityLabel("Saving \(issueID)")
+                        .buttonStyle(.plain)
+                        .help("Blocked by \(gate.awaitType.title) gate \(gate.id) — open it")
                     }
                 }
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: MetadataRibbonContentWidthKey.self,
-                            value: proxy.size.width
-                        )
-                    }
+                IssueMetadataDateControl(
+                    title: "Due",
+                    systemImage: "calendar",
+                    value: $draft.dueAt,
+                    includesDeferredShortcuts: false,
+                    presentation: .ribbonChip
+                )
+                IssueMetadataDateControl(
+                    title: "Deferred",
+                    systemImage: "pause.circle",
+                    value: $draft.deferUntil,
+                    includesDeferredShortcuts: true,
+                    presentation: .ribbonChip
+                )
+                // Local progress: appears only when this bead's write outlives the
+                // perceptible-latency threshold. Quiet, non-blocking — navigation stays live.
+                if let issueID = draft.id, store.isPerceptiblyBusy(issueID: issueID) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.leading, 2)
+                        .accessibilityLabel("Saving \(issueID)")
                 }
-                .padding(.leading, 14)
-                .padding(.trailing, 42)
-                .padding(.vertical, 8)
             }
-            .scrollIndicators(.hidden)
-            .accessibilityHint(
-                showsOverflowCue ? "Scroll horizontally for more metadata controls." : ""
-            )
-
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: MetadataRibbonContentWidthKey.self,
+                        value: proxy.size.width
+                    )
+                }
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 42)
+            .padding(.vertical, 8)
+        }
+        .scrollIndicators(.hidden)
+        // A horizontal `ScrollView` is greedy in both axes. Left unconstrained in the
+        // compact detail layout it claimed a share of the page's height and floated the
+        // chips in the middle of a tall empty band, so pin it to the row's own height.
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityHint(
+            showsOverflowCue ? "Scroll horizontally for more metadata controls." : ""
+        )
+        .overlay(alignment: .trailing) {
             if showsOverflowCue {
                 LinearGradient(
                     colors: [.clear, InspectorChrome.ribbonFill],

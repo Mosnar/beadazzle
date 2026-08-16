@@ -39,7 +39,7 @@ for users, not for the commit log.
 - Snapshots with missing, non-text, or duplicate bead IDs now report the offending line and cannot replace the last readable snapshot.
 - Projects with very deep parent/child hierarchies now build their issue index in linear time instead of slowing dramatically as nesting grows.
 - Delete confirmation now lists the exact beads and descendants it will remove.
-- Narrow detail panes now show that more metadata controls are available horizontally.
+- Narrow detail panes now show that more metadata controls are available horizontally, and the metadata row sits at its own height instead of floating in a tall band of empty space.
 - Status overlays, picker scrolling, and About feedback now respect Reduce Motion.
 
 ## [1.5.0] - 2026-08-04
