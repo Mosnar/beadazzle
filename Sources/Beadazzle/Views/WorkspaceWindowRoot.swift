@@ -14,8 +14,9 @@ struct WorkspaceWindowRoot: View {
     /// appeared — scene restoration swaps its own stored value in a beat after launch —
     /// and `onAppear` does not run again for the replacement. Keying the registry on
     /// `request.id` therefore rebound the window to a fresh, empty store and stranded the
-    /// loaded one: its project stayed reserved, its file monitors kept running, and the
-    /// switcher advertised it as open in a window that no longer existed. `@State` is
+    /// loaded one: its project stayed reserved and its file monitors kept running, while the
+    /// switcher advertised that project as open in another window. Activating it did
+    /// nothing, because the stranded entry still pointed at this very window. `@State` is
     /// created once per window and survives every value swap, so the window keeps its store.
     @State private var windowID = UUID()
 
