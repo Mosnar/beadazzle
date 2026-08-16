@@ -393,17 +393,14 @@ final class ContentLayoutTests: XCTestCase {
         XCTAssertFalse(IssueDetailLayout.usesInspectorRail(for: IssueDetailLayout.railBreakpoint - 1))
     }
 
-    func testIssueBreadcrumbsHideBelowTheIdealDetailWidth() {
-        XCTAssertTrue(
-            IssueBreadcrumbLayout.showsBreadcrumbs(
-                for: IssueBreadcrumbLayout.minimumWidthForBreadcrumbs
-            )
-        )
-        XCTAssertFalse(
-            IssueBreadcrumbLayout.showsBreadcrumbs(
-                for: IssueBreadcrumbLayout.minimumWidthForBreadcrumbs - 1
-            )
-        )
+    func testIssueBreadcrumbsYieldToEditActionsOnlyWhileDirty() {
+        let clean = IssueBreadcrumbToolbarPresentation(isDirty: false)
+        XCTAssertTrue(clean.showsBreadcrumbs)
+        XCTAssertFalse(clean.showsEditActions)
+
+        let dirty = IssueBreadcrumbToolbarPresentation(isDirty: true)
+        XCTAssertFalse(dirty.showsBreadcrumbs)
+        XCTAssertTrue(dirty.showsEditActions)
     }
 
     func testIssueDetailPaddingTracksInspectorRailMode() {

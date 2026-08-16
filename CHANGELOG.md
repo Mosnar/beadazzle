@@ -15,7 +15,7 @@ for users, not for the commit log.
 
 ### Fixed
 
-- Narrow bead editors hide breadcrumbs so Revert, Save, Copy, and More actions remain fully visible.
+- Unsaved bead edits replace breadcrumbs with Revert and Save actions; otherwise, narrow breadcrumbs scroll horizontally instead of crowding other controls.
 
 ## [1.6.0] - 2026-08-16
 

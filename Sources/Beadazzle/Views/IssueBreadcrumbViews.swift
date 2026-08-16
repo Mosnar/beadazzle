@@ -16,12 +16,11 @@ struct IssueCreationToolbarPresentation: Equatable {
     }
 }
 
-enum IssueBreadcrumbLayout {
-    static let minimumWidthForBreadcrumbs = IssueDetailLayout.mainColumnIdealWidth
+struct IssueBreadcrumbToolbarPresentation: Equatable {
+    let isDirty: Bool
 
-    static func showsBreadcrumbs(for width: CGFloat) -> Bool {
-        width >= minimumWidthForBreadcrumbs
-    }
+    var showsBreadcrumbs: Bool { !isDirty }
+    var showsEditActions: Bool { isDirty }
 }
 
 struct IssueCreationToolbar: View {
@@ -111,7 +110,6 @@ struct IssueBreadcrumbBar: View {
     let requestClose: (BeadIssue) -> Void
     @State private var showingGateCreation = false
     @State private var pickerConfiguration: BeadPickerConfiguration?
-    @State private var availableWidth: CGFloat = 0
     @FocusState private var isCopyButtonFocused: Bool
     @FocusState private var isMoreMenuFocused: Bool
 
@@ -119,62 +117,23 @@ struct IssueBreadcrumbBar: View {
         let canCreateGate = store.canCreateGate(blocking: issue)
         let completionTitle = store.completionActionTitle(for: [issue.id])
         let completionSystemImage = store.completionActionSystemImage(for: [issue.id])
-        let showsBookmarkCrumb = workspace.selectedBookmark != .gates
-        let parentIssue = store.parentIssue(for: issue.id)
-        let showsBreadcrumbs = IssueBreadcrumbLayout.showsBreadcrumbs(for: availableWidth)
+        let presentation = IssueBreadcrumbToolbarPresentation(isDirty: isDirty)
         HStack(spacing: 8) {
-            if showsBreadcrumbs {
-                if store.showsProjectNameInBreadcrumbs {
-                    BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
-                        store.clearSelection()
-                    }
+            if presentation.showsBreadcrumbs {
+                ScrollView(.horizontal) {
+                    breadcrumbTrail
                 }
-                // The Gates crumb is dropped here — a task nested under a gate doesn't belong to
-                // "Gates", and hiding it reclaims horizontal space.
-                if showsBookmarkCrumb {
-                    if store.showsProjectNameInBreadcrumbs {
-                        BreadcrumbSeparator()
-                    }
-                    BreadcrumbLabel(
-                        workspace.selectedBookmark.title,
-                        systemImage: workspace.selectedBookmark.systemImage
-                    )
-                }
+                .scrollIndicators(.hidden)
+                .defaultScrollAnchor(.trailing)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
-                if let parentIssue {
-                    let parentPresentation = ParentBeadPresentation(issue: parentIssue)
-                    if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb {
-                        BreadcrumbSeparator()
-                    }
-                    BreadcrumbButton(
-                        parentPresentation.id,
-                        systemImage: store.statusSymbol(for: parentIssue.status),
-                        iconTint: store.statusColor(for: parentIssue.status),
-                        help: parentPresentation.helpText,
-                        accessibilityLabel: parentPresentation.accessibilityLabel,
-                        accessibilityValue: parentPresentation.accessibilityValue
-                    ) {
-                        store.openIssueFromDetail(issueID: parentIssue.id)
-                    }
-                }
-                if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb || parentIssue != nil {
-                    BreadcrumbSeparator()
-                }
-
-                BreadcrumbIssueLabel(
-                    issueID: issue.id,
-                    title: issue.title,
-                    statusDescription: issue.status,
-                    statusSymbol: store.statusSymbol(for: issue.status),
-                    statusColor: store.statusColor(for: issue.status)
-                )
-                .layoutPriority(-1)
+                Spacer(minLength: 12)
+            } else {
+                Spacer(minLength: 0)
             }
 
-            Spacer(minLength: showsBreadcrumbs ? 12 : 0)
-
             HStack(spacing: 8) {
-                if isDirty {
+                if presentation.showsEditActions {
                     Button("Revert") {
                         revertAction()
                     }
@@ -285,11 +244,59 @@ struct IssueBreadcrumbBar: View {
         .padding(.horizontal, 14)
         .frame(height: ContentLayout.workspaceToolbarHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { width in
-            availableWidth = width
+    }
+
+    private var breadcrumbTrail: some View {
+        let showsBookmarkCrumb = workspace.selectedBookmark != .gates
+        let parentIssue = store.parentIssue(for: issue.id)
+
+        return HStack(spacing: 8) {
+            if store.showsProjectNameInBreadcrumbs {
+                BreadcrumbButton(store.projectName, systemImage: "folder", help: "Back to beads") {
+                    store.clearSelection()
+                }
+            }
+            // The Gates crumb is dropped here — a task nested under a gate doesn't belong to
+            // "Gates", and hiding it reclaims horizontal space.
+            if showsBookmarkCrumb {
+                if store.showsProjectNameInBreadcrumbs {
+                    BreadcrumbSeparator()
+                }
+                BreadcrumbLabel(
+                    workspace.selectedBookmark.title,
+                    systemImage: workspace.selectedBookmark.systemImage
+                )
+            }
+
+            if let parentIssue {
+                let parentPresentation = ParentBeadPresentation(issue: parentIssue)
+                if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb {
+                    BreadcrumbSeparator()
+                }
+                BreadcrumbButton(
+                    parentPresentation.id,
+                    systemImage: store.statusSymbol(for: parentIssue.status),
+                    iconTint: store.statusColor(for: parentIssue.status),
+                    help: parentPresentation.helpText,
+                    accessibilityLabel: parentPresentation.accessibilityLabel,
+                    accessibilityValue: parentPresentation.accessibilityValue
+                ) {
+                    store.openIssueFromDetail(issueID: parentIssue.id)
+                }
+            }
+            if store.showsProjectNameInBreadcrumbs || showsBookmarkCrumb || parentIssue != nil {
+                BreadcrumbSeparator()
+            }
+
+            BreadcrumbIssueLabel(
+                issueID: issue.id,
+                title: issue.title,
+                statusDescription: issue.status,
+                statusSymbol: store.statusSymbol(for: issue.status),
+                statusColor: store.statusColor(for: issue.status)
+            )
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
