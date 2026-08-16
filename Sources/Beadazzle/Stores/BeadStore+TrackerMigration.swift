@@ -63,16 +63,26 @@ extension BeadStore {
         return remotes.remotes.isEmpty ? nil : .remoteBackedTracker
     }
 
-    /// Starts an upgrade that was held back only because the Dolt remote list had not
-    /// loaded yet, now that it confirms this tracker is local-only. A tracker that really
-    /// is remote-backed or shared still reports a reason here and stays held.
+    /// Settles a hold taken while the Dolt remote list was still loading, now that it has
+    /// answered: the upgrade starts if the tracker turns out to be local-only, and stays
+    /// held under the real reason if it does not.
+    ///
+    /// Naming the real reason matters as much as starting the upgrade. A hold recorded
+    /// against an unknown remote state tells the user to continue if the tracker is local;
+    /// leaving that on screen after the list has proven there *is* a remote would advise
+    /// exactly the migration `bd` refuses, in the case where getting it wrong is silent
+    /// and unrecoverable.
     internal func reevaluateTrackerMigrationAfterRemotesLoaded() {
-        guard case .awaitingConfirmation(let skew, _) = trackerMigration,
-              trackerMigrationConfirmationReason() == nil else {
+        guard case .awaitingConfirmation(let skew, let heldReason) = trackerMigration else {
             return
         }
-        _trackerMigration = .ready(skew)
-        startTrackerMigration(confirmedByUser: false)
+        guard let reason = trackerMigrationConfirmationReason() else {
+            _trackerMigration = .ready(skew)
+            startTrackerMigration(confirmedByUser: false)
+            return
+        }
+        guard reason != heldReason else { return }
+        _trackerMigration = .awaitingConfirmation(skew, reason: reason)
     }
 
     /// True when the tracker needs upgrading before Beadazzle can write to it.

@@ -137,8 +137,13 @@ final class BeadStoreTrackerMigrationTests: XCTestCase {
 
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        // The hold arrives before the remote list does, so it is first recorded against an
+        // unknown remote state. Wait for the settled reason rather than the first hold, or
+        // this races the remote load and reads whichever won on the day.
         try await waitUntil {
-            if case .awaitingConfirmation = store.trackerMigration { return true }
+            if case .awaitingConfirmation(_, .remoteBackedTracker) = store.trackerMigration {
+                return true
+            }
             return false
         }
 
@@ -156,6 +161,37 @@ final class BeadStoreTrackerMigrationTests: XCTestCase {
         // Confirmation is what unlocks `--force`.
         let allowedRemote = await commands.lastMigrateAllowedRemote()
         XCTAssertEqual(allowedRemote, true)
+    }
+
+    /// A slow remote list is the ordinary case, and it decides which explanation the user
+    /// reads. Holding under "could not check" is right until the list answers; leaving that
+    /// there afterwards would tell someone with a remote-backed tracker to continue if it
+    /// is local, which is the one mistake `bd` cannot undo.
+    func testHoldRecordedBeforeRemotesLoadNamesTheRealReasonOnceTheyDo() async throws {
+        let projectURL = try makeProject(named: "LateRemotes")
+        let commands = SchemaSkewTestCommands(
+            remoteNames: ["origin"],
+            remoteLoadDelay: .milliseconds(250)
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+
+        store.openProject(projectURL)
+        try await waitUntil {
+            if case .awaitingConfirmation(_, .unverifiedRemoteState) = store.trackerMigration {
+                return true
+            }
+            return false
+        }
+        try await waitUntil {
+            if case .awaitingConfirmation(_, .remoteBackedTracker) = store.trackerMigration {
+                return true
+            }
+            return false
+        }
+
+        // Refining the explanation must not quietly start the upgrade it is still holding.
+        let migrateCalls = await commands.migrateCallCount()
+        XCTAssertEqual(migrateCalls, 0)
     }
 
     /// The remote list is normally still loading when the first failing read reports the
