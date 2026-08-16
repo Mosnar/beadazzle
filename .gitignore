@@ -23,3 +23,7 @@ skills-lock.json
 .bv/
 
 docs/autobot/*
+
+# Python bytecode from the release helper scripts and their tests.
+__pycache__/
+*.pyc
