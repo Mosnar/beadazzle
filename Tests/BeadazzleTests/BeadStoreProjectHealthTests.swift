@@ -1468,13 +1468,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadStoreProjectHealthTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
     private func makeProject(named name: String, issueID: String) throws -> URL {

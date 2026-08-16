@@ -198,10 +198,7 @@ final class BeadStoreDomainObservationTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadStoreDomainObservationTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
     private func temporaryProjectURL() -> URL {

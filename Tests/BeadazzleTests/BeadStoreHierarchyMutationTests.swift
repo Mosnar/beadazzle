@@ -445,10 +445,7 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadStoreHierarchyMutationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
     private func issueLine(

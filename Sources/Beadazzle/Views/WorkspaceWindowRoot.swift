@@ -8,9 +8,19 @@ struct WorkspaceWindowRoot: View {
     let registry: BeadWorkspaceWindowRegistry
     @Binding var request: BeadWorkspaceWindowRequest
     @Environment(\.openWindow) private var openWindow
+    /// This window's registry identity, deliberately independent of the presented value.
+    ///
+    /// SwiftUI can hand a live window a different `BeadWorkspaceWindowRequest` after it has
+    /// appeared — scene restoration swaps its own stored value in a beat after launch —
+    /// and `onAppear` does not run again for the replacement. Keying the registry on
+    /// `request.id` therefore rebound the window to a fresh, empty store and stranded the
+    /// loaded one: its project stayed reserved, its file monitors kept running, and the
+    /// switcher advertised it as open in a window that no longer existed. `@State` is
+    /// created once per window and survives every value swap, so the window keeps its store.
+    @State private var windowID = UUID()
 
     var body: some View {
-        let store = registry.store(for: request)
+        let store = registry.store(for: windowID)
 
         ContentView()
             .beadStoreEnvironment(store)
@@ -19,26 +29,37 @@ struct WorkspaceWindowRoot: View {
             .navigationTitle(store.projectName)
             .background {
                 WorkspaceWindowAccessor(isDocumentEdited: store.hasRecoverableWorkspaceDrafts) { window in
-                    registry.registerWindow(window, for: request.id)
+                    registry.registerWindow(window, for: windowID)
                 }
                 .frame(width: 0, height: 0)
             }
             .onAppear {
                 registry.openNewWindow = { openWindow(value: $0) }
-                registry.prepareWindow(request)
+                registry.prepareWindow(windowID, request: request)
+            }
+            .onChange(of: request.id) {
+                // A value the window never appeared with: restoration replacing its own
+                // stored value, or a swap SwiftUI made for its own reasons. Honor a project
+                // the replacement asks for only while this window has none — `prepareWindow`
+                // no-ops otherwise, so a window already showing work is never yanked.
+                registry.prepareWindow(windowID, request: request)
+                recordProjectPath(store.projectURL)
             }
             .onChange(of: store.projectURL) { _, projectURL in
-                // Window restoration encodes the presented value, so it must record the
-                // project the window actually shows — a window that switched projects
-                // would otherwise restore the one it was first opened with. The id stays
-                // untouched: it keys this window's registry entry.
-                let path = projectURL?.standardizedFileURL.path
-                guard request.projectPath != path else { return }
-                request.projectPath = path
+                recordProjectPath(projectURL)
             }
             .onDisappear {
-                registry.releaseWindow(request.id)
+                registry.releaseWindow(windowID)
             }
+    }
+
+    /// Keeps the presented value pointed at the project the window actually shows. Window
+    /// restoration encodes that value, so a window that switched projects — or was handed a
+    /// replacement value — would otherwise restore the wrong one.
+    private func recordProjectPath(_ projectURL: URL?) {
+        let path = projectURL?.standardizedFileURL.path
+        guard request.projectPath != path else { return }
+        request.projectPath = path
     }
 }
 

@@ -4,21 +4,14 @@ import XCTest
 @MainActor
 final class BeadSemanticDefinitionsRepositoryTests: XCTestCase {
     private var userDefaults: UserDefaults!
-    private var suiteName: String!
 
     override func setUp() {
         super.setUp()
-        suiteName = "BeadSemanticDefinitionsRepositoryTests-\(UUID().uuidString)"
-        userDefaults = UserDefaults(suiteName: suiteName)
-        userDefaults.removePersistentDomain(forName: suiteName)
+        userDefaults = makeIsolatedUserDefaults()
     }
 
     override func tearDown() {
-        if let suiteName {
-            userDefaults.removePersistentDomain(forName: suiteName)
-        }
         userDefaults = nil
-        suiteName = nil
         super.tearDown()
     }
 

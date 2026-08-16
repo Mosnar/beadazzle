@@ -199,7 +199,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         let context = try makeContext()
         let request = BeadWorkspaceWindowRequest(projectURL: context.projectA)
 
-        let store = context.registry.store(for: request)
+        let store = context.registry.store(for: request.id)
 
         XCTAssertNil(store.projectURL)
     }
@@ -207,9 +207,9 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     func testPreparingAWindowOpensTheRequestedProject() throws {
         let context = try makeContext()
         let request = BeadWorkspaceWindowRequest(projectURL: context.projectA)
-        let store = context.registry.store(for: request)
+        let store = context.registry.store(for: request.id)
 
-        context.registry.prepareWindow(request)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertEqual(store.projectURL?.path, context.projectA.standardizedFileURL.path)
     }
@@ -219,13 +219,79 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     func testPreparingAWindowTwiceLeavesTheCurrentProjectAlone() throws {
         let context = try makeContext()
         let request = BeadWorkspaceWindowRequest(projectURL: context.projectA)
-        let store = context.registry.store(for: request)
-        context.registry.prepareWindow(request)
+        let store = context.registry.store(for: request.id)
+        context.registry.prepareWindow(request.id, request: request)
         store.openProject(context.projectB)
 
-        context.registry.prepareWindow(request)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertEqual(store.projectURL?.path, context.projectB.standardizedFileURL.path)
+    }
+
+    /// The whole second-window flow at the seam the window root drives: the request the
+    /// registry hands SwiftUI, the store the new window resolves from its own identity, the
+    /// project each window ends up on, what the switcher reports from both, and what closing
+    /// the first one frees.
+    func testOpeningASecondWindowGivesItItsOwnStoreAndProject() throws {
+        let context = try makeContext()
+        let first = context.makeWindow()
+        first.store.openProject(context.projectA)
+
+        let openedHere = context.registry.openProject(
+            context.projectB,
+            from: first.store,
+            destination: .newWindow
+        )
+
+        XCTAssertFalse(openedHere)
+        let request = try XCTUnwrap(context.openedRequests.first)
+        // SwiftUI creates the window: a fresh identity resolves a store, then the request is
+        // prepared into it — the sequence `WorkspaceWindowRoot` performs when it appears.
+        let secondID = UUID()
+        let second = context.registry.store(for: secondID)
+        context.registry.prepareWindow(secondID, request: request)
+
+        XCTAssertFalse(second === first.store)
+        XCTAssertEqual(second.projectURL?.path, context.projectB.standardizedFileURL.path)
+        XCTAssertEqual(first.store.projectURL?.path, context.projectA.standardizedFileURL.path)
+        XCTAssertTrue(
+            context.registry.isProjectOpenInAnotherWindow(context.projectA, from: second)
+        )
+        XCTAssertTrue(
+            context.registry.isProjectOpenInAnotherWindow(context.projectB, from: first.store)
+        )
+
+        context.registry.releaseWindow(first.id)
+
+        XCTAssertEqual(second.projectURL?.path, context.projectB.standardizedFileURL.path)
+        XCTAssertEqual(context.registry.windowID(showing: context.projectB), secondID)
+        XCTAssertFalse(
+            context.registry.isProjectOpenInAnotherWindow(context.projectA, from: second)
+        )
+    }
+
+    /// SwiftUI can hand a live window a different presented value after it has appeared —
+    /// scene restoration swaps its own stored value in a beat after launch — without a
+    /// second `onAppear`. The window's registry identity is its own, so the replacement
+    /// must find the same store, still showing the project the window loaded, rather than
+    /// rebinding the window to an empty one and stranding the loaded store.
+    func testAReplacementRequestKeepsTheWindowsStoreAndProject() throws {
+        let context = try makeContext()
+        let windowID = UUID()
+        let store = context.registry.store(for: windowID)
+        let opened = BeadWorkspaceWindowRequest(projectURL: context.projectA)
+        context.registry.prepareWindow(windowID, request: opened)
+        XCTAssertEqual(store.projectURL?.path, context.projectA.standardizedFileURL.path)
+
+        // The value restoration swaps in carries no project of its own.
+        context.registry.prepareWindow(windowID, request: BeadWorkspaceWindowRequest())
+
+        XCTAssertTrue(context.registry.store(for: windowID) === store)
+        XCTAssertEqual(store.projectURL?.path, context.projectA.standardizedFileURL.path)
+        XCTAssertEqual(context.registry.windowID(showing: context.projectA), windowID)
+        XCTAssertFalse(
+            context.registry.isProjectOpenInAnotherWindow(context.projectA, from: store)
+        )
     }
 
     func testPreparingAWindowWithoutAProjectFallsBackToRecents() throws {
@@ -234,8 +300,8 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         first.store.openProject(context.projectA)
 
         let request = BeadWorkspaceWindowRequest()
-        let store = context.registry.store(for: request)
-        context.registry.prepareWindow(request)
+        let store = context.registry.store(for: request.id)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertNil(store.projectURL)
         XCTAssertEqual(
@@ -255,8 +321,8 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         )
 
         let request = BeadWorkspaceWindowRequest()
-        let store = context.registry.store(for: request)
-        context.registry.prepareWindow(request)
+        let store = context.registry.store(for: request.id)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertEqual(store.projectURL?.path, context.projectB.standardizedFileURL.path)
     }
@@ -270,8 +336,8 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         first.store.openProject(context.projectA)
 
         let request = BeadWorkspaceWindowRequest(projectURL: context.projectA)
-        let store = context.registry.store(for: request)
-        context.registry.prepareWindow(request)
+        let store = context.registry.store(for: request.id)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertEqual(store.projectURL?.path, context.projectB.standardizedFileURL.path)
     }
@@ -290,8 +356,8 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
             projectURL: context.projectA,
             opensProjectExplicitly: true
         )
-        let store = context.registry.store(for: request)
-        context.registry.prepareWindow(request)
+        let store = context.registry.store(for: request.id)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertEqual(store.projectURL?.path, context.projectA.standardizedFileURL.path)
     }
@@ -324,8 +390,8 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         try FileManager.default.removeItem(at: context.projectA)
 
         let request = BeadWorkspaceWindowRequest(projectURL: context.projectA)
-        let store = context.registry.store(for: request)
-        context.registry.prepareWindow(request)
+        let store = context.registry.store(for: request.id)
+        context.registry.prepareWindow(request.id, request: request)
 
         XCTAssertEqual(store.projectURL?.path, context.projectB.standardizedFileURL.path)
     }
@@ -361,7 +427,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     func testClosingTheWindowReleasesItsStore() throws {
         let context = try makeContext()
         let request = BeadWorkspaceWindowRequest()
-        let store = context.registry.store(for: request)
+        let store = context.registry.store(for: request.id)
         store.openProject(context.projectA)
         let window = makeWindow()
         context.registry.registerWindow(window, for: request.id)
@@ -371,6 +437,32 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         window.close()
 
         XCTAssertNil(context.registry.windowID(showing: context.projectA))
+    }
+
+    /// One `NSWindow` backs one registry entry. If a window ever reports itself under a new
+    /// identity, the superseded entry has to be retired: otherwise its project stays
+    /// reserved and the switcher advertises it as open in a window nobody can bring forward.
+    func testReRegisteringOneWindowUnderANewIdentityRetiresTheSupersededEntry() async throws {
+        let context = try makeContext()
+        let supersededID = UUID()
+        let supersededStore = context.registry.store(for: supersededID)
+        supersededStore.openProject(context.projectA)
+        let window = makeWindow()
+        context.registry.registerWindow(window, for: supersededID)
+        XCTAssertEqual(context.registry.windowID(showing: context.projectA), supersededID)
+
+        let currentID = UUID()
+        let currentStore = context.registry.store(for: currentID)
+        context.registry.registerWindow(window, for: currentID)
+
+        // Retirement is deferred out of the SwiftUI update pass that reports the window.
+        try await waitUntil { context.registry.windowID(showing: context.projectA) == nil }
+        XCTAssertFalse(
+            context.registry.isProjectOpenInAnotherWindow(context.projectA, from: currentStore)
+        )
+        // The freed project is available again rather than permanently reserved.
+        context.registry.prepareWindow(currentID, request: BeadWorkspaceWindowRequest())
+        XCTAssertEqual(currentStore.projectURL?.path, context.projectA.standardizedFileURL.path)
     }
 
     /// `willClose` and `onDisappear` both release, and their order is not worth depending
@@ -669,8 +761,8 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         }
 
         func makeWindow() -> WorkspaceWindow {
-            let request = BeadWorkspaceWindowRequest()
-            return WorkspaceWindow(id: request.id, store: registry.store(for: request))
+            let windowID = UUID()
+            return WorkspaceWindow(id: windowID, store: registry.store(for: windowID))
         }
     }
 
@@ -715,13 +807,7 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadazzleTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
     private func makeProject(named name: String) throws -> URL {

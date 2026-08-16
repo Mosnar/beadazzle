@@ -169,10 +169,7 @@ final class BeadSavedViewRepositoryTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadSavedViewRepositoryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
 }

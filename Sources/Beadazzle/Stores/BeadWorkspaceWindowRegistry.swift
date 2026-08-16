@@ -120,22 +120,26 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
 
     // MARK: - Window lifecycle
 
-    /// Returns the store backing `request`'s window, creating an empty one on first use.
+    /// Returns the store backing the window identified by `windowID`, creating an empty one
+    /// on first use.
+    ///
+    /// `windowID` is the window's own identity, not the id of the value it presents: SwiftUI
+    /// can swap a live window's presented value, and a store must survive that.
     ///
     /// Deliberately loads nothing: SwiftUI evaluates window bodies freely, and opening a
     /// project spawns `bd`, starts file-system monitors, and schedules async loads. The
-    /// window asks for its project from `prepareWindow(_:)` once it is on screen.
-    func store(for request: BeadWorkspaceWindowRequest) -> BeadStore {
-        if let existing = storesByWindowID[request.id] {
+    /// window asks for its project from `prepareWindow(_:request:)` once it is on screen.
+    func store(for windowID: UUID) -> BeadStore {
+        if let existing = storesByWindowID[windowID] {
             return existing
         }
         let store = makeStore()
         store.appStateBroadcaster = self
-        storesByWindowID[request.id] = store
-        storeOrdinalByWindowID[request.id] = nextStoreOrdinal
+        storesByWindowID[windowID] = store
+        storeOrdinalByWindowID[windowID] = nextStoreOrdinal
         nextStoreOrdinal += 1
-        if !windowOrder.contains(request.id) {
-            windowOrder.append(request.id)
+        if !windowOrder.contains(windowID) {
+            windowOrder.append(windowID)
         }
         // First resolution happens inside the window body's view update; mutating the
         // observed revision there is undefined behavior, so the bump waits a turn.
@@ -149,12 +153,13 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         }
     }
 
-    /// Loads the window's project now that it exists: the one it was opened with, or the
+    /// Loads the window's project now that it exists: the one its request asks for, or the
     /// most recent project no sibling window has taken. Idempotent, and a no-op once the
-    /// window has a project, so a repeated `onAppear` never reloads or resets it.
-    func prepareWindow(_ request: BeadWorkspaceWindowRequest) {
-        guard let store = storesByWindowID[request.id], store.projectURL == nil else { return }
-        let takenPaths = takenProjectPaths(excludingWindowID: request.id)
+    /// window has a project, so a repeated `onAppear` — or a presented value SwiftUI swaps
+    /// in later — never reloads or resets it.
+    func prepareWindow(_ windowID: UUID, request: BeadWorkspaceWindowRequest) {
+        guard let store = storesByWindowID[windowID], store.projectURL == nil else { return }
+        let takenPaths = takenProjectPaths(excludingWindowID: windowID)
         // Restoration can hand two windows the same recorded project, or a project whose
         // folder was deleted while the app was closed. Fall through to the recents rather
         // than opening it twice or landing the window on a missing directory. An explicit
@@ -206,15 +211,40 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         if !windowOrder.contains(windowID) {
             windowOrder.append(windowID)
         }
-        guard window.isKeyWindow else { return }
         // Windows report themselves from inside a SwiftUI update pass
-        // (`updateNSView`/`viewDidMoveToWindow`), so the observed frontmost change is
-        // deferred out of it. Later key changes arrive via the AppKit notification.
+        // (`updateNSView`/`viewDidMoveToWindow`), so everything below — retiring a
+        // superseded entry, changing which window is frontmost — is deferred out of it
+        // rather than mutating observed state the update in progress is reading. Later key
+        // changes arrive via the AppKit notification.
         Task { @MainActor [weak self] in
-            guard let self,
-                  self.windowsByWindowID[windowID] === window,
-                  window.isKeyWindow else { return }
+            guard let self, self.windowsByWindowID[windowID] === window else { return }
+            self.retireEntriesSuperseded(backedBy: window)
+            guard window.isKeyWindow else { return }
             self.windowDidBecomeKey(window)
+        }
+    }
+
+    /// One `NSWindow` backs exactly one entry. If SwiftUI ever rebuilds a window's root view
+    /// — handing the same window a new identity — the superseded entry has to be retired
+    /// rather than left holding a project no window shows. A duplicate would also make
+    /// `windowID(for:)` answer arbitrarily, since it resolves a window to a single id.
+    ///
+    /// The newest binding keeps the window, because it is the one the window's current root
+    /// view resolves its store from. That is the opposite of `repairDuplicateTrackerBinding`,
+    /// where the oldest binding wins: two windows contending for one tracker is a different
+    /// question from one window whose older binding is now a phantom. Deciding it from the
+    /// stored ordinals rather than from which deferred registration runs first keeps the
+    /// outcome the same no matter how the two interleave.
+    private func retireEntriesSuperseded(backedBy window: NSWindow) {
+        let boundIDs = windowsByWindowID.filter { $0.value === window }.keys
+        guard boundIDs.count > 1,
+              let currentID = boundIDs.max(by: { lhs, rhs in
+                  (storeOrdinalByWindowID[lhs] ?? .min) < (storeOrdinalByWindowID[rhs] ?? .min)
+              }) else {
+            return
+        }
+        for supersededID in boundIDs where supersededID != currentID {
+            releaseWindow(supersededID)
         }
     }
 

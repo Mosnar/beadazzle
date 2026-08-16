@@ -296,10 +296,7 @@ final class BeadStoreTrackerMigrationTests: XCTestCase {
 
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadStoreTrackerMigrationTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
     private func waitUntil(

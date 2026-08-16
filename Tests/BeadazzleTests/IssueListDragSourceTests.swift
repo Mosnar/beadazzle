@@ -234,9 +234,6 @@ final class IssueListDragSourceTests: XCTestCase {
     }
 
     private func makeStore() -> BeadStore {
-        let suiteName = "IssueListDragSourceTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return BeadStore(userDefaults: defaults)
+        BeadStore(userDefaults: makeIsolatedUserDefaults())
     }
 }

@@ -5,6 +5,7 @@ Beadazzle is a SwiftPM native macOS app. Prefer small, focused SwiftUI files and
 ## Build and Run
 
 - Build with `swift build`, test with `swift test`.
+- Tests that need `UserDefaults` call `makeIsolatedUserDefaults()`, never `UserDefaults(suiteName:)` directly. `removePersistentDomain(forName:)` empties a suite but leaves its plist in `~/Library/Preferences`; the helper's sweeps are what keep a run from leaving files behind.
 - Launch with `./script/build_and_run.sh`; verify launch with `./script/build_and_run.sh --verify`.
 - The Codex Run action points at `./script/build_and_run.sh`.
 

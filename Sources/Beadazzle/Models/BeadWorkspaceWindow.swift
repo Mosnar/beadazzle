@@ -9,6 +9,11 @@ import Foundation
 /// new one. Reusing an already-open project is decided in `BeadWorkspaceWindowRegistry`
 /// instead, which can match a project even after a window switched to it from the inside —
 /// something a value comparison can't see.
+///
+/// It identifies the *request*, not the window. SwiftUI can hand a live window a different
+/// presented value — scene restoration swaps its own stored value in shortly after launch —
+/// so `WorkspaceWindowRoot` keys its registry entry on a `@State` identity of its own and
+/// treats this value purely as payload.
 struct BeadWorkspaceWindowRequest: Hashable, Codable, Identifiable {
     var id: UUID
     var projectPath: String?

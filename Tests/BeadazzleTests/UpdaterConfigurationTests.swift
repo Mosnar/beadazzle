@@ -55,7 +55,7 @@ final class UpdaterConfigurationTests: XCTestCase {
     @MainActor
     func testControllerDoesNotStartSparkleWithoutPublicKey() {
         let controller = UpdaterController(
-            userDefaults: UserDefaults(suiteName: UUID().uuidString)!,
+            userDefaults: makeIsolatedUserDefaults(),
             infoDictionary: [
                 "SUFeedURL": "https://example.com/appcast.xml"
             ]
@@ -71,12 +71,7 @@ final class UpdaterConfigurationTests: XCTestCase {
 
     @MainActor
     func testBetaUpdatePreferencePersistsThroughInjectedUserDefaults() {
-        let suiteName = "UpdaterConfigurationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeIsolatedUserDefaults()
 
         let controller = UpdaterController(userDefaults: defaults, infoDictionary: nil)
         XCTAssertFalse(controller.receivesBetaUpdates)
@@ -127,12 +122,7 @@ final class UpdaterConfigurationTests: XCTestCase {
 
     @MainActor
     func testBetaPreferenceChangeResetsUpdateCycle() {
-        let suiteName = "UpdaterConfigurationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeIsolatedUserDefaults()
         let updater = MockSparkleUpdater(automaticallyChecksForUpdates: false)
         let controller = UpdaterController(
             userDefaults: defaults,

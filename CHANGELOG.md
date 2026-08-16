@@ -15,33 +15,29 @@ for users, not for the commit log.
 
 ### Added
 
-- Work on several projects at once, each in its own window. File ▸ Open Project in New Window (⇧⌘O) opens a project alongside the one you already have, and holding Option while picking a project does the same.
-- When opening another project, Beadazzle can ask whether to use this window or a new one and remember the answer. Settings ▸ General lets you ask every time again or choose a default destination directly.
-- A Settings ▸ Display row-density control offers Compact, Comfortable, and Large bead rows without giving up the virtualized list.
-- Project Settings ▸ Properties now suggests properties found in your existing `name:value` labels (like `area:ui`), listing them as unpinned properties alongside the ones recorded by `bd set-state`. Pinning one promotes the whole namespace to a managed property; until then those labels stay ordinary labels.
+- Work on several projects at once, each in its own window. File ▸ Open Project in New Window (⇧⌘O) opens one alongside the project you already have, and holding Option while picking a project does the same. Picking a project that is already open brings its window forward.
+- Beadazzle can ask whether to open a project in this window or a new one, and remember the answer. Settings ▸ General sets the default.
+- A Settings ▸ Display row-density control offers Compact, Comfortable, and Large bead rows.
+- Project Settings ▸ Properties now suggests properties found in your existing `name:value` labels, like `area:ui`. Pinning one promotes the whole namespace to a managed property.
 
 ### Changed
 
-- Opening a project that is already open in another window now brings that window forward instead of opening it a second time.
-- The project picker now keeps the current project out of Recents, offers Reload Project and Project Settings from its actions menu, marks projects open in other windows with a compact text status, and reserves trailing hover controls for removal.
 - Each window's title is the project it shows, so windows are easy to tell apart in the Window menu and Mission Control.
+- The project picker keeps the current project out of Recents and offers Reload Project and Project Settings from its actions menu.
 - Empty project, list, folder, filter, and search states now offer the most useful next action instead of ending in a dead end.
 - Project controls now consistently say Project, bead-list controls consistently say Bead, and the project picker better accommodates system text sizing.
 
 ### Fixed
 
-- A project whose tracker still needs the one-time database upgrade that a new `bd` release introduces now says so and offers to run it, instead of failing with errors that pointed at the `bd` binary. Previously the project only started working after you ran a `bd` command yourself in a terminal. Beadazzle runs the upgrade for you when the tracker is local, asks first when it has a Dolt remote (upgrading more than one clone independently would break `bd dolt pull`), and keeps showing the last exported data — with editing paused — until it finishes.
-- A project that has no exported snapshot yet and cannot be opened at all now identifies the pending tracker upgrade as the reason and offers to run it, instead of reporting the underlying export failure.
-- A first-run tracker upgrade is no longer cut short partway through on large projects, and Beadazzle no longer suggests choosing a different `bd` executable for failures that have nothing to do with locating it.
+- A project whose tracker needs the one-time database upgrade that a new `bd` release introduces now says so and offers to run it, instead of failing with errors that pointed at the `bd` binary. Beadazzle runs the upgrade for local trackers and asks first when the tracker has a Dolt remote.
+- Unsaved bead edits and comment drafts now survive navigation, project switching, and relaunching, and a window holding unsaved work shows the macOS edited indicator.
+- Queued edits now finish before a project window closes or Beadazzle quits.
+- A stuck snapshot export no longer holds up refresh or app termination.
 - Interrupted snapshot refreshes no longer leave temporary JSONL files in project worktrees.
-- Queued edits now finish safely when closing a project window or quitting Beadazzle. Worktree and redirected project aliases share the same handoff, and a failed final snapshot export is retried from whichever alias opens next.
-- Project windows no longer cycle between recent folders when several folders point to the same Beads tracker.
-- A stuck snapshot export can no longer hold refresh, window reopening, or app termination indefinitely after ignoring normal cancellation.
+- Snapshots with missing, non-text, or duplicate bead IDs now report the offending line and cannot replace the last readable snapshot.
 - Projects with very deep parent/child hierarchies now build their issue index in linear time instead of slowing dramatically as nesting grows.
-- Invalid snapshots with missing, non-text, or duplicate bead IDs now show an actionable line-level error and cannot replace the last readable snapshot.
-- Unsaved bead edits and comment drafts now survive navigation, project switching, window closing, and relaunching. Failed comments keep their text for retry, and edited windows show the native macOS edited indicator until drafts are saved or reverted.
-- Delete confirmation now lists the exact selected beads and descendants before any permanent deletion.
-- Narrow detail panes now visibly indicate that more metadata controls are available horizontally.
+- Delete confirmation now lists the exact beads and descendants it will remove.
+- Narrow detail panes now show that more metadata controls are available horizontally.
 - Status overlays, picker scrolling, and About feedback now respect Reduce Motion.
 
 ## [1.5.0] - 2026-08-04

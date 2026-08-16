@@ -4284,7 +4284,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let firstRequest = BeadWorkspaceWindowRequest()
-        let firstStore = registry.store(for: firstRequest)
+        let firstStore = registry.store(for: firstRequest.id)
         firstStore.openProject(projectURL)
         try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-2") != nil }
 
@@ -4299,14 +4299,14 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         // The draining tracker is reserved: the blank-window fallback must not take it.
         let blankRequest = BeadWorkspaceWindowRequest()
-        let blankStore = registry.store(for: blankRequest)
-        registry.prepareWindow(blankRequest)
+        let blankStore = registry.store(for: blankRequest.id)
+        registry.prepareWindow(blankRequest.id, request: blankRequest)
         XCTAssertNil(blankStore.projectURL)
 
         // An explicit reopen defers until the queue drains instead of opening a second
         // write queue against the tracker.
         let reopenRequest = BeadWorkspaceWindowRequest()
-        let reopenStore = registry.store(for: reopenRequest)
+        let reopenStore = registry.store(for: reopenRequest.id)
         let openedImmediately = registry.openProject(
             projectURL,
             from: reopenStore,
@@ -4350,7 +4350,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let firstRequest = BeadWorkspaceWindowRequest()
-        let firstStore = registry.store(for: firstRequest)
+        let firstStore = registry.store(for: firstRequest.id)
         firstStore.openProject(projectA)
         try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-2") != nil }
 
@@ -4364,7 +4364,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         registry.releaseWindow(firstRequest.id)
 
         let aliasRequest = BeadWorkspaceWindowRequest()
-        let aliasStore = registry.store(for: aliasRequest)
+        let aliasStore = registry.store(for: aliasRequest.id)
         XCTAssertFalse(
             registry.openProject(projectB, from: aliasStore, destination: .currentWindow)
         )
@@ -4396,7 +4396,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let request = BeadWorkspaceWindowRequest()
-        let store = registry.store(for: request)
+        let store = registry.store(for: request.id)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
 
@@ -4440,7 +4440,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let request = BeadWorkspaceWindowRequest()
-        let store = registry.store(for: request)
+        let store = registry.store(for: request.id)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         store.select(["bd-1"])
@@ -4474,7 +4474,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let request = BeadWorkspaceWindowRequest()
-        let store = registry.store(for: request)
+        let store = registry.store(for: request.id)
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         store.select(["bd-1"])
@@ -4499,7 +4499,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let firstRequest = BeadWorkspaceWindowRequest()
-        let firstStore = registry.store(for: firstRequest)
+        let firstStore = registry.store(for: firstRequest.id)
         firstStore.openProject(projectURL)
         try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-1") != nil }
         firstStore.select(["bd-1"])
@@ -4509,7 +4509,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         registry.releaseWindow(firstRequest.id)
         let reopenRequest = BeadWorkspaceWindowRequest()
-        let reopenStore = registry.store(for: reopenRequest)
+        let reopenStore = registry.store(for: reopenRequest.id)
         XCTAssertFalse(
             registry.openProject(projectURL, from: reopenStore, destination: .currentWindow)
         )
@@ -4535,7 +4535,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             BeadStore(userDefaults: defaults, commands: commands)
         }
         let firstRequest = BeadWorkspaceWindowRequest()
-        let firstStore = registry.store(for: firstRequest)
+        let firstStore = registry.store(for: firstRequest.id)
         firstStore.openProject(projectA)
         try await waitUntil { !firstStore.isLoading && firstStore.issue(with: "bd-1") != nil }
         firstStore.select(["bd-1"])
@@ -4550,7 +4550,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         await commands.setExportError(nil)
 
         let aliasRequest = BeadWorkspaceWindowRequest()
-        let aliasStore = registry.store(for: aliasRequest)
+        let aliasStore = registry.store(for: aliasRequest.id)
         XCTAssertFalse(
             registry.openProject(projectB, from: aliasStore, destination: .currentWindow)
         )
@@ -5444,13 +5444,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadStoreAsyncMutationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        return defaults
+        makeIsolatedUserDefaults()
     }
 
     private func waitUntil(

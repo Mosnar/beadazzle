@@ -680,9 +680,7 @@ final class BeadsSetupPlannerTests: XCTestCase {
 
 final class BeadsSetupPreferenceRepositoryTests: XCTestCase {
     func testIntentAndDismissalAreScopedToProjectAndSavingIntentClearsDismissal() {
-        let suiteName = "BeadsSetupPreferenceRepositoryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeIsolatedUserDefaults()
         let repository = BeadsSetupPreferenceRepository(userDefaults: defaults)
         let projectA = URL(fileURLWithPath: "/tmp/project-a")
         let projectB = URL(fileURLWithPath: "/tmp/project-b")
@@ -719,9 +717,7 @@ final class BeadsSetupPreferenceRepositoryTests: XCTestCase {
     }
 
     func testLoadIntentRejectsUnsupportedVersion() throws {
-        let suiteName = "BeadsSetupPreferenceRepositoryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeIsolatedUserDefaults()
         let repository = BeadsSetupPreferenceRepository(userDefaults: defaults)
         let projectURL = URL(fileURLWithPath: "/tmp/future-setup")
         var intent = BeadsSetupIntent(

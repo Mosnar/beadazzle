@@ -127,10 +127,6 @@ final class BeadStoreBookmarkTests: XCTestCase {
     }
 
     private func makeUserDefaults() -> UserDefaults {
-        let suiteName = "BeadazzleTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        return defaults
+        makeIsolatedUserDefaults()
     }
 }

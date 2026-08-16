@@ -252,10 +252,7 @@ final class ContentLayoutTests: XCTestCase {
 
     @MainActor
     func testIssueListActivationStillOpensDetailWhenSingleClickSplitViewIsDisabled() {
-        let suiteName = "ContentLayoutTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeIsolatedUserDefaults()
         let store = BeadStore(userDefaults: defaults)
         store.opensSplitViewOnSingleClick = false
         var openedIssueID: String?
