@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-16
+
 ### Added
 
 - Work on several projects at once, each in its own window. File ▸ Open Project in New Window (⇧⌘O) opens one alongside the project you already have, and holding Option while picking a project does the same. Picking a project that is already open brings its window forward.
@@ -314,7 +316,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Mosnar/beadazzle/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/Mosnar/beadazzle/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.3.0
