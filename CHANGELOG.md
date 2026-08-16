@@ -13,6 +13,10 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Fixed
+
+- Narrow bead editors hide breadcrumbs so Revert, Save, Copy, and More actions remain fully visible.
+
 ## [1.6.0] - 2026-08-16
 
 ### Added

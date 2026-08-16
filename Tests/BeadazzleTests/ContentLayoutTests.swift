@@ -393,6 +393,19 @@ final class ContentLayoutTests: XCTestCase {
         XCTAssertFalse(IssueDetailLayout.usesInspectorRail(for: IssueDetailLayout.railBreakpoint - 1))
     }
 
+    func testIssueBreadcrumbsHideBelowTheIdealDetailWidth() {
+        XCTAssertTrue(
+            IssueBreadcrumbLayout.showsBreadcrumbs(
+                for: IssueBreadcrumbLayout.minimumWidthForBreadcrumbs
+            )
+        )
+        XCTAssertFalse(
+            IssueBreadcrumbLayout.showsBreadcrumbs(
+                for: IssueBreadcrumbLayout.minimumWidthForBreadcrumbs - 1
+            )
+        )
+    }
+
     func testIssueDetailPaddingTracksInspectorRailMode() {
         XCTAssertEqual(
             IssueDetailLayout.horizontalPadding(usesInspectorRail: true),
