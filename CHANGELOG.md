@@ -15,7 +15,7 @@ for users, not for the commit log.
 
 ### Fixed
 
-- Unsaved bead edits replace breadcrumbs with Revert and Save actions; otherwise, narrow breadcrumbs scroll horizontally instead of crowding other controls.
+- Unsaved bead edits replace breadcrumbs with Revert and Save actions
 
 ## [1.6.0] - 2026-08-16
 

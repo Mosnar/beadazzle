@@ -120,10 +120,9 @@ struct IssueBreadcrumbBar: View {
         let presentation = IssueBreadcrumbToolbarPresentation(isDirty: isDirty)
         HStack(spacing: 8) {
             if presentation.showsBreadcrumbs {
-                ScrollView(.horizontal) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     breadcrumbTrail
                 }
-                .scrollIndicators(.hidden)
                 .defaultScrollAnchor(.trailing)
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
