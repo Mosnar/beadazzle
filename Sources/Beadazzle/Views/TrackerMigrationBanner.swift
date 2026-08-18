@@ -11,6 +11,7 @@ struct TrackerMigrationBanner: View {
     let upgrade: () -> Void
     let confirmUpgrade: () -> Void
     let retry: () -> Void
+    let reviewRecovery: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -40,8 +41,9 @@ struct TrackerMigrationBanner: View {
             ProgressView()
                 .controlSize(.small)
                 .accessibilityHidden(true)
-        case .notNeeded, .awaitingConfirmation, .ready, .failed:
-            Image(systemName: state.isFailure ? "exclamationmark.octagon.fill" : "arrow.up.circle.fill")
+        case .notNeeded, .awaitingConfirmation, .ready, .failed,
+             .recoveryAvailable, .recoveryBlocked:
+            Image(systemName: systemImage)
                 .foregroundStyle(tint)
                 .accessibilityHidden(true)
         }
@@ -58,6 +60,11 @@ struct TrackerMigrationBanner: View {
                 .buttonStyle(.borderedProminent)
         case .failed:
             Button("Try Again", action: retry)
+        case .recoveryAvailable:
+            Button("Review Recovery…", action: reviewRecovery)
+                .buttonStyle(.borderedProminent)
+        case .recoveryBlocked:
+            Link("Open Recovery Guide", destination: BeadsTrackerRecoveryGuide.url)
         case .migrating, .notNeeded:
             EmptyView()
         }
@@ -73,8 +80,11 @@ struct TrackerMigrationBanner: View {
             return "Upgrading tracker data…"
         case .failed:
             return "Tracker upgrade failed"
-        case .awaitingConfirmation, .ready, .notNeeded:
-            return "This tracker needs a one-time upgrade"
+        case .recoveryAvailable(let skew), .recoveryBlocked(let skew, _),
+             .awaitingConfirmation(let skew, _), .ready(let skew):
+            return skew.resolution.healthSummary
+        case .notNeeded:
+            return ""
         }
     }
 
@@ -99,15 +109,32 @@ struct TrackerMigrationBanner: View {
             \(message) bd will not upgrade a remote-backed database on its own. \
             Confirm you are the designated migrator, then push the upgraded schema.
             """
+        case .recoveryAvailable(let skew):
+            return [
+                skew.versionSummary,
+                "\(skew.resolution.guidance) Editing remains paused."
+            ]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        case .recoveryBlocked(let skew, let guidance):
+            return [skew.versionSummary, guidance]
+                .compactMap { $0 }
+                .joined(separator: " ")
         case .notNeeded:
             return ""
         }
+    }
+
+    private var systemImage: String {
+        state.schemaResolution?.systemImage ?? "arrow.up.circle.fill"
     }
 }
 
 extension BeadsTrackerMigrationState {
     fileprivate var isFailure: Bool {
-        if case .failed = self { return true }
-        return false
+        switch self {
+        case .failed, .recoveryBlocked: true
+        case .notNeeded, .awaitingConfirmation, .ready, .migrating, .recoveryAvailable: false
+        }
     }
 }

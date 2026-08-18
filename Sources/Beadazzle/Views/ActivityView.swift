@@ -166,7 +166,7 @@ private struct ActivityLoadTaskID: Hashable {
 /// Own view boundary for relative grouping so unrelated detail-store updates do
 /// not rebuild the presentation sequence. The reference date advances only when
 /// the system calendar day or time zone changes; neither path reloads activity.
-private struct ActivityFeed: View, Equatable {
+private struct ActivityFeed: View, @MainActor Equatable {
     @Environment(\.calendar) private var calendar
     @Environment(\.locale) private var locale
     @State private var referenceDate = Date.now
@@ -367,7 +367,7 @@ private struct ActivityReferenceLink: View {
 // Equatable on (comment, lookup revision) so `.equatable()` skips body — and
 // with it the reference-matching pass — unless the comment text or the
 // project's set of issue IDs actually changed.
-private struct CommentRow: View, Equatable {
+private struct CommentRow: View, @MainActor Equatable {
     let comment: BeadComment
     let issueReferenceLookup: IssueReferenceLookup
 

@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import MarkdownEngine
 
 struct IssueReferenceLookup: AutomaticLinkProvider, Sendable {
@@ -247,16 +247,13 @@ enum BeadIssueURL {
 
 enum IssueReferenceAttributedStringBuilder {
     static func make(text: String, lookup: IssueReferenceLookup) -> AttributedString {
-        var result = AttributedString(text)
+        let result = NSMutableAttributedString(string: text)
         for match in lookup.matcher.matches(in: text) {
-            guard let stringRange = Range(match.range, in: text),
-                  let lowerBound = AttributedString.Index(stringRange.lowerBound, within: result),
-                  let upperBound = AttributedString.Index(stringRange.upperBound, within: result),
-                  let url = BeadIssueURL.url(for: match.issueID) else {
+            guard let url = BeadIssueURL.url(for: match.issueID) else {
                 continue
             }
-            result[lowerBound..<upperBound].link = url
+            result.addAttribute(.link, value: url, range: match.range)
         }
-        return result
+        return AttributedString(result)
     }
 }

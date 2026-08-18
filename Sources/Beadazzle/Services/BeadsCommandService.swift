@@ -1073,21 +1073,31 @@ struct BeadsCommandService {
     }
 
     func loadStatusDefinitions(projectURL: URL) async throws -> [BeadStatusDefinition] {
+        let arguments = ["--readonly", "statuses", "--json"]
         let text = try await runOutput(
             projectURL: projectURL,
-            arguments: ["--readonly", "statuses", "--json"],
+            arguments: arguments,
             cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
+        )
+        try BeadsJSONCommandOutput.throwIfErrorEnvelope(
+            text,
+            command: Self.commandDescription(arguments)
         )
         return try BeadsMetadataService.decodeStatuses(from: Data(text.utf8))
     }
 
     func loadTypeDefinitions(projectURL: URL) async throws -> [BeadTypeDefinition] {
+        let arguments = ["--readonly", "types", "--json"]
         let text = try await runOutput(
             projectURL: projectURL,
-            arguments: ["--readonly", "types", "--json"],
+            arguments: arguments,
             cancellationBehavior: .terminate,
             timeout: readOnlyCommandTimeout
+        )
+        try BeadsJSONCommandOutput.throwIfErrorEnvelope(
+            text,
+            command: Self.commandDescription(arguments)
         )
         return try BeadsMetadataService.decodeTypes(from: Data(text.utf8))
     }

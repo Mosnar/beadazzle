@@ -68,6 +68,52 @@ final class BeadMutationWriteQueue {
             throw error
         }
     }
+
+    /// Serializes an operation like an ordinary mutation while forwarding caller
+    /// cancellation into the operation. Recovery uses this because its bounded process
+    /// runner terminates and awaits the current subprocess before returning; routine bead
+    /// writes keep using `enqueue` so an interrupted caller never abandons a normal write.
+    func enqueueCancellable<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let previousWrite = chain
+        let expectedLifecycleGeneration = lifecycleGeneration
+        generation += 1
+        let operationGeneration = generation
+        let resultTask = Task { () -> Result<Value, any Error> in
+            await previousWrite?.value
+            guard self.lifecycleGeneration == expectedLifecycleGeneration else {
+                return .failure(CancellationError())
+            }
+            do {
+                try Task.checkCancellation()
+                return .success(try await operation())
+            } catch {
+                return .failure(error)
+            }
+        }
+        chain = Task {
+            _ = await resultTask.value
+        }
+
+        defer {
+            if generation == operationGeneration {
+                chain = nil
+            }
+        }
+
+        let result = await withTaskCancellationHandler {
+            await resultTask.value
+        } onCancel: {
+            resultTask.cancel()
+        }
+        switch result {
+        case .success(let value):
+            return value
+        case .failure(let error):
+            throw error
+        }
+    }
 }
 
 @MainActor

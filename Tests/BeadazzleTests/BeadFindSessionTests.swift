@@ -7,6 +7,29 @@ final class BeadFindSessionTests: XCTestCase {
     private static let prefix = "bd-42"
     private static let projectKey = "/tmp/project-a"
 
+    private final class FindTrafficCounts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var queriesOnA = 0
+        private var queriesOnB = 0
+        private var clearsOnB = 0
+
+        func recordQueryOnA() {
+            lock.withLock { queriesOnA += 1 }
+        }
+
+        func recordQueryOnB() {
+            lock.withLock { queriesOnB += 1 }
+        }
+
+        func recordClearOnB() {
+            lock.withLock { clearsOnB += 1 }
+        }
+
+        func snapshot() -> (queriesOnA: Int, queriesOnB: Int, clearsOnB: Int) {
+            lock.withLock { (queriesOnA, queriesOnB, clearsOnB) }
+        }
+    }
+
     private static func scope(
         prefix: String = "bd-42",
         projectKey: String = "/tmp/project-a"
@@ -463,19 +486,17 @@ final class BeadFindSessionTests: XCTestCase {
     func testOneWindowsFindTrafficIsNotDeliveredToAnother() {
         let busA = BeadFindBus()
         let busB = BeadFindBus()
-        var queriesOnA = 0
-        var queriesOnB = 0
-        var clearsOnB = 0
+        let counts = FindTrafficCounts()
 
         let observers = [
             NotificationCenter.default.addObserver(forName: busA.query, object: nil, queue: nil) { _ in
-                queriesOnA += 1
+                counts.recordQueryOnA()
             },
             NotificationCenter.default.addObserver(forName: busB.query, object: nil, queue: nil) { _ in
-                queriesOnB += 1
+                counts.recordQueryOnB()
             },
             NotificationCenter.default.addObserver(forName: busB.clearHighlights, object: nil, queue: nil) { _ in
-                clearsOnB += 1
+                counts.recordClearOnB()
             }
         ]
         addTeardownBlock { @MainActor in
@@ -491,9 +512,10 @@ final class BeadFindSessionTests: XCTestCase {
         ))
         dispatcherA.clearHighlights()
 
-        XCTAssertEqual(queriesOnA, 1)
-        XCTAssertEqual(queriesOnB, 0)
-        XCTAssertEqual(clearsOnB, 0)
+        let snapshot = counts.snapshot()
+        XCTAssertEqual(snapshot.queriesOnA, 1)
+        XCTAssertEqual(snapshot.queriesOnB, 0)
+        XCTAssertEqual(snapshot.clearsOnB, 0)
     }
 
     func testRebindingToAnotherProjectWithTheSameIssueIDResetsResults() {

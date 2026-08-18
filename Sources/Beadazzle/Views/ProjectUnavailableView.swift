@@ -10,22 +10,27 @@ struct ProjectUnavailableView: View {
     /// Beadazzle can run itself. `nil` keeps the generic "fix it yourself" guidance.
     var trackerMigration: BeadsTrackerMigrationState = .notNeeded
     var onUpgradeTracker: (() -> Void)?
+    var onReviewRecovery: (() -> Void)?
 
     private var offersUpgrade: Bool {
-        onUpgradeTracker != nil && trackerMigration.isPending
+        onUpgradeTracker != nil && trackerMigration.usesUpwardMigration
+    }
+
+    private var offersRecovery: Bool {
+        onReviewRecovery != nil && trackerMigration.canReviewRecovery
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
-                Image(systemName: offersUpgrade ? "arrow.up.circle" : "exclamationmark.triangle")
+                Image(systemName: schemaSystemImage)
                     .font(.largeTitle)
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
 
                 VStack(spacing: 8) {
-                    Text(offersUpgrade ? "This Tracker Needs an Upgrade" : "Couldn’t Open Project")
+                    Text(title)
                         .font(.title2.weight(.semibold))
 
                     Text(guidance)
@@ -74,6 +79,12 @@ struct ProjectUnavailableView: View {
     }
 
     private var guidance: String {
+        if offersRecovery {
+            return BeadsSchemaSkewResolution.guidedRecovery.guidance
+        }
+        if case .recoveryBlocked(_, let guidance) = trackerMigration {
+            return guidance
+        }
         guard offersUpgrade else {
             return "Fix the issue below, then check again. Beadazzle will not initialize or modify this folder automatically."
         }
@@ -88,13 +99,34 @@ struct ProjectUnavailableView: View {
 
     @ViewBuilder
     private var primaryButtons: some View {
-        if offersUpgrade {
+        if offersRecovery {
+            recoveryButton
+            openProjectButton
+        } else if trackerMigration.isRecoveryBlocked {
+            Link(destination: BeadsTrackerRecoveryGuide.url) {
+                Label("Open Recovery Guide", systemImage: "safari")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            openProjectButton
+        } else if offersUpgrade {
             upgradeButton
             openProjectButton
         } else {
             retryButton
             openProjectButton
         }
+    }
+
+    private var recoveryButton: some View {
+        Button {
+            onReviewRecovery?()
+        } label: {
+            Label("Review Recovery", systemImage: "cross.case")
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(isRetrying)
     }
 
     @ViewBuilder
@@ -127,5 +159,13 @@ struct ProjectUnavailableView: View {
         }
         .controlSize(.large)
         .disabled(isRetrying)
+    }
+
+    private var title: String {
+        trackerMigration.schemaResolution?.title ?? "Couldn’t Open Project"
+    }
+
+    private var schemaSystemImage: String {
+        trackerMigration.schemaResolution?.systemImage ?? "exclamationmark.triangle"
     }
 }

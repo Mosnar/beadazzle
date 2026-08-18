@@ -16,52 +16,143 @@ struct BeadsMetadataService {
     }
 
     static func decodeStatuses(from data: Data) throws -> [BeadStatusDefinition] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-
-        let builtIn = statusDefinitions(from: object["built_in_statuses"], isBuiltIn: true, source: .builtIn)
-        let custom = statusDefinitions(from: object["custom_statuses"], isBuiltIn: false, source: .custom)
+        let payload = try JSONDecoder().decode(StatusPayload.self, from: data)
+        let builtIn = try statusDefinitions(
+            from: payload.builtInStatuses ?? [],
+            isBuiltIn: true,
+            source: .builtIn
+        )
+        let custom = try statusDefinitions(
+            from: payload.customStatuses ?? [],
+            isBuiltIn: false,
+            source: .custom
+        )
         return (builtIn + custom).sorted { $0.name < $1.name }
     }
 
     static func decodeTypes(from data: Data) throws -> [BeadTypeDefinition] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-
-        var definitions = typeDefinitions(from: object["core_types"], source: .core)
-        definitions += typeDefinitions(from: object["custom_types"], source: .custom)
+        let payload = try JSONDecoder().decode(TypePayload.self, from: data)
+        var definitions = try typeDefinitions(from: payload.coreTypes ?? [], source: .core)
+        definitions += try typeDefinitions(from: payload.customTypes ?? [], source: .custom)
         return definitions.sorted { $0.name < $1.name }
     }
 
-    private static func statusDefinitions(from value: Any?, isBuiltIn: Bool, source: BeadDefinitionSource) -> [BeadStatusDefinition] {
-        guard let records = value as? [[String: Any]] else { return [] }
-        return records.compactMap { record in
-            guard let name = record["name"] as? String, !name.isEmpty else { return nil }
-            let categoryName = record["category"] as? String
+    private static func statusDefinitions(
+        from records: [StatusRecord],
+        isBuiltIn: Bool,
+        source: BeadDefinitionSource
+    ) throws -> [BeadStatusDefinition] {
+        try records.map { record in
+            guard let name = record.name.nilIfBlank else {
+                throw invalidMetadata("A status definition is missing a name.")
+            }
             return BeadStatusDefinition(
                 name: name,
-                category: BeadStatusCategory(rawValue: categoryName ?? "") ?? .uncategorized,
-                icon: record["icon"] as? String,
-                description: record["description"] as? String,
+                category: BeadStatusCategory(rawValue: record.category ?? "") ?? .uncategorized,
+                icon: record.icon,
+                description: record.description,
                 isBuiltIn: isBuiltIn,
                 source: source
             )
         }
     }
 
-    private static func typeDefinitions(from value: Any?, source: BeadDefinitionSource) -> [BeadTypeDefinition] {
-        if let records = value as? [[String: Any]] {
-            return records.compactMap { record in
-                guard let name = record["name"] as? String, !name.isEmpty else { return nil }
-                return BeadTypeDefinition(name: name, description: record["description"] as? String, source: source)
+    private static func typeDefinitions(
+        from values: [TypeValue],
+        source: BeadDefinitionSource
+    ) throws -> [BeadTypeDefinition] {
+        try values.map { value in
+            let name: String
+            let description: String?
+            switch value {
+            case .name(let value):
+                name = value
+                description = nil
+            case .record(let record):
+                name = record.name
+                description = record.description
+            }
+            guard let name = name.nilIfBlank else {
+                throw invalidMetadata("A type definition is missing a name.")
+            }
+            return BeadTypeDefinition(name: name, description: description, source: source)
+        }
+    }
+
+    private static func invalidMetadata(_ description: String) -> DecodingError {
+        .dataCorrupted(.init(codingPath: [], debugDescription: description))
+    }
+
+    private struct StatusPayload: Decodable {
+        let builtInStatuses: [StatusRecord]?
+        let customStatuses: [StatusRecord]?
+
+        enum CodingKeys: String, CodingKey {
+            case builtInStatuses = "built_in_statuses"
+            case customStatuses = "custom_statuses"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            guard container.contains(.builtInStatuses) || container.contains(.customStatuses) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .builtInStatuses,
+                    in: container,
+                    debugDescription: "The status response did not include status definitions."
+                )
+            }
+            builtInStatuses = try container.decodeIfPresent([StatusRecord].self, forKey: .builtInStatuses)
+            customStatuses = try container.decodeIfPresent([StatusRecord].self, forKey: .customStatuses)
+        }
+    }
+
+    private struct StatusRecord: Decodable {
+        let name: String
+        let category: String?
+        let icon: String?
+        let description: String?
+    }
+
+    private struct TypePayload: Decodable {
+        let coreTypes: [TypeValue]?
+        let customTypes: [TypeValue]?
+
+        enum CodingKeys: String, CodingKey {
+            case coreTypes = "core_types"
+            case customTypes = "custom_types"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            guard container.contains(.coreTypes) || container.contains(.customTypes) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .coreTypes,
+                    in: container,
+                    debugDescription: "The type response did not include type definitions."
+                )
+            }
+            coreTypes = try container.decodeIfPresent([TypeValue].self, forKey: .coreTypes)
+            customTypes = try container.decodeIfPresent([TypeValue].self, forKey: .customTypes)
+        }
+    }
+
+    private enum TypeValue: Decodable {
+        case name(String)
+        case record(TypeRecord)
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let name = try? container.decode(String.self) {
+                self = .name(name)
+            } else {
+                self = .record(try container.decode(TypeRecord.self))
             }
         }
+    }
 
-        if let names = value as? [String] {
-            return names
-                .filter { !$0.isEmpty }
-                .map { BeadTypeDefinition(name: $0, description: nil, source: source) }
-        }
-
-        return []
+    private struct TypeRecord: Decodable {
+        let name: String
+        let description: String?
     }
 
     private func mergeStatusDefinitions(_ definitions: [BeadStatusDefinition], observedIssues: [BeadIssue]) -> [BeadStatusDefinition] {

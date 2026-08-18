@@ -3,17 +3,7 @@ import XCTest
 
 @MainActor
 final class BeadSemanticDefinitionsRepositoryTests: XCTestCase {
-    private var userDefaults: UserDefaults!
-
-    override func setUp() {
-        super.setUp()
-        userDefaults = makeIsolatedUserDefaults()
-    }
-
-    override func tearDown() {
-        userDefaults = nil
-        super.tearDown()
-    }
+    private lazy var userDefaults = makeIsolatedUserDefaults()
 
     func testRoundTripsDefinitionsThroughResolvedTrackerRoute() throws {
         let repository = BeadSemanticDefinitionsRepository(userDefaults: userDefaults)

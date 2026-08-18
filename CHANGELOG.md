@@ -13,9 +13,16 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-08-18
+
+### Added
+
+- Automatically opens the guided, backup-first recovery review when a project is affected by the supported bd v65-to-v53 schema incident, clearly identifying it as a known Beads issue rather than a Beadazzle problem.
+
 ### Fixed
 
-- Unsaved bead edits replace breadcrumbs with Revert and Save actions
+- Trackers affected by the accidental bd 1.2.0/1.2.1 schema upgrade now reliably offer a backup-first guided recovery when bd 1.2.2 reports the exact v65-to-v53 mismatch, while other forward or unknown schema mismatches stay read-only.
+- Unsaved bead edits replace breadcrumbs with Revert and Save actions.
 
 ## [1.6.0] - 2026-08-16
 
@@ -320,7 +327,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/Mosnar/beadazzle/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/Mosnar/beadazzle/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/Mosnar/beadazzle/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Mosnar/beadazzle/releases/tag/v1.4.0

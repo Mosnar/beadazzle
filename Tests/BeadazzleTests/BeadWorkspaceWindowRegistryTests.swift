@@ -534,6 +534,63 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
 
     // MARK: - Tracker identity
 
+    func testCanonicalRecoveryReservationSerializesDifferentStores() throws {
+        let context = try makeContext()
+        let first = context.makeWindow()
+        let second = context.makeWindow()
+        let trackerPath = context.projectA
+            .appendingPathComponent(".beads", isDirectory: true)
+            .path
+
+        XCTAssertNil(
+            context.registry.reserveTrackerRecovery(
+                for: first.store,
+                trackerIdentityPath: trackerPath
+            )
+        )
+        XCTAssertNotNil(
+            context.registry.reserveTrackerRecovery(
+                for: second.store,
+                trackerIdentityPath: trackerPath
+            )
+        )
+
+        context.registry.releaseTrackerRecovery(
+            for: first.store,
+            trackerIdentityPath: trackerPath
+        )
+        XCTAssertNil(
+            context.registry.reserveTrackerRecovery(
+                for: second.store,
+                trackerIdentityPath: trackerPath
+            )
+        )
+    }
+
+    func testReleasingRecoveryOwnerWindowReleasesCanonicalReservation() throws {
+        let context = try makeContext()
+        let first = context.makeWindow()
+        let second = context.makeWindow()
+        let trackerPath = context.projectA
+            .appendingPathComponent(".beads", isDirectory: true)
+            .path
+        XCTAssertNil(
+            context.registry.reserveTrackerRecovery(
+                for: first.store,
+                trackerIdentityPath: trackerPath
+            )
+        )
+
+        context.registry.releaseWindow(first.id)
+
+        XCTAssertNil(
+            context.registry.reserveTrackerRecovery(
+                for: second.store,
+                trackerIdentityPath: trackerPath
+            )
+        )
+    }
+
     /// Two project roots can resolve to one effective tracker (worktree redirects, routed
     /// `.beads` directories), which path-based routing cannot see until `bd context`
     /// answers. The registry repairs it at resolve time: the older binding keeps the

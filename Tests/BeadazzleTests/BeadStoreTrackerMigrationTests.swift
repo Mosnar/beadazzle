@@ -11,11 +11,60 @@ workspace to migrate, or set BD_IGNORE_SCHEMA_SKEW=1 to read anyway (queries tou
 newer schema may fail)
 """
 
+private let realForwardSchemaMismatchOutput = """
+Error: schema version mismatch: database is at v65, binary knows up to v53 \
+(12 migrations ahead)
+"""
+
 private let testSnapshotLine = """
 {"id":"bd-1","title":"One","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
 """
 
 final class BeadsSchemaSkewTests: XCTestCase {
+    func testKnownForwardSkewAutomaticallyRequestsRecoveryReview() throws {
+        let projectURL = URL(fileURLWithPath: "/tmp/ForwardSkewProject")
+        let skew = BeadsSchemaSkew(databaseVersion: 65, binaryVersion: 53)
+
+        let request = try XCTUnwrap(
+            TrackerRecoveryRequest.automatic(
+                projectURL: projectURL,
+                migrationState: .recoveryAvailable(skew)
+            )
+        )
+
+        XCTAssertEqual(request.projectURL, projectURL)
+    }
+
+    func testRecoveryReviewDoesNotAutomaticallyOpenForUnsafeOrUpwardSkew() {
+        let projectURL = URL(fileURLWithPath: "/tmp/OtherSkewProject")
+
+        XCTAssertNil(
+            TrackerRecoveryRequest.automatic(
+                projectURL: projectURL,
+                migrationState: .recoveryBlocked(
+                    BeadsSchemaSkew(databaseVersion: 66, binaryVersion: 53),
+                    guidance: "Use a compatible binary."
+                )
+            )
+        )
+        XCTAssertNil(
+            TrackerRecoveryRequest.automatic(
+                projectURL: projectURL,
+                migrationState: .ready(
+                    BeadsSchemaSkew(databaseVersion: 53, binaryVersion: 65)
+                )
+            )
+        )
+        XCTAssertNil(
+            TrackerRecoveryRequest.automatic(
+                projectURL: nil,
+                migrationState: .recoveryAvailable(
+                    BeadsSchemaSkew(databaseVersion: 65, binaryVersion: 53)
+                )
+            )
+        )
+    }
+
     func testDetectsVersionsFromRealBdReadOnlyRefusal() throws {
         let skew = try XCTUnwrap(BeadsSchemaSkew.detect(in: realSchemaMismatchOutput))
         XCTAssertEqual(skew.databaseVersion, 53)
@@ -29,6 +78,23 @@ final class BeadsSchemaSkewTests: XCTestCase {
         opened read-only; some queries may fail
         """
         XCTAssertNotNil(BeadsSchemaSkew.detect(in: warning))
+    }
+
+    func testDetectsPinnedForwardSkewWithoutTreatingItAsMigration() throws {
+        let skew = try XCTUnwrap(BeadsSchemaSkew.detect(in: realForwardSchemaMismatchOutput))
+        XCTAssertEqual(skew.databaseVersion, 65)
+        XCTAssertEqual(skew.binaryVersion, 53)
+        XCTAssertEqual(skew.direction, .databaseAhead)
+        XCTAssertTrue(skew.supportsPinnedV65ToV53Recovery)
+        XCTAssertEqual(skew.versionSummary, "Database is at v65; bd supports up to v53.")
+    }
+
+    func testDetectsReportedDirectionWhenVersionsAreNotParseable() throws {
+        let skew = try XCTUnwrap(BeadsSchemaSkew.detect(
+            in: "Warning: database is ahead of binary"
+        ))
+        XCTAssertEqual(skew.direction, .databaseAhead)
+        XCTAssertFalse(skew.supportsPinnedV65ToV53Recovery)
     }
 
     func testDetectsMismatchWithoutParseableVersions() throws {
@@ -52,9 +118,9 @@ final class BeadsSchemaSkewTests: XCTestCase {
         XCTAssertEqual(failure.schemaSkew?.databaseVersion, 53)
         XCTAssertEqual(BeadsSchemaSkew.detect(in: failure as Error)?.binaryVersion, 65)
         XCTAssertNil(BeadError.projectMissingDataSource(URL(fileURLWithPath: "/tmp")).schemaSkew)
-        XCTAssertNil(BeadError.trackerNeedsMigration(nil).schemaSkew)
+        XCTAssertNil(BeadError.trackerSchemaIncompatible(nil).schemaSkew)
         XCTAssertEqual(
-            BeadError.trackerNeedsMigration(
+            BeadError.trackerSchemaIncompatible(
                 BeadsSchemaSkew(databaseVersion: 53, binaryVersion: 65)
             ).schemaSkew?.binaryVersion,
             65
@@ -74,6 +140,13 @@ final class TrackerMigrationHealthCheckTests: XCTestCase {
         XCTAssertEqual(check.summary, "This tracker needs a one-time upgrade")
         XCTAssertEqual(check.actionHint, "Upgrade the tracker to continue.")
         XCTAssertEqual(check.detail?.contains("Database is at v53; bd expects v65."), true)
+    }
+
+    func testPinnedForwardSkewPointsAtGuidedRecovery() throws {
+        let check = try bdCLICheck(contextError: realForwardSchemaMismatchOutput)
+        XCTAssertEqual(check.summary, "This tracker needs guided recovery")
+        XCTAssertEqual(check.actionHint, "Review the backup-first v65-to-v53 recovery.")
+        XCTAssertEqual(check.detail?.contains("Database is at v65; bd supports up to v53."), true)
     }
 
     func testTimeoutDoesNotSendUserToTheExecutablePicker() throws {
@@ -115,6 +188,137 @@ final class TrackerMigrationHealthCheckTests: XCTestCase {
 
 @MainActor
 final class BeadStoreTrackerMigrationTests: XCTestCase {
+    func testRunningRecoveryKeepsTheStoreBoundToItsTracker() throws {
+        let originalProjectURL = try makeProject(named: "RecoveryOriginal")
+        let replacementProjectURL = try makeProject(named: "RecoveryReplacement")
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        store.openProject(originalProjectURL)
+        store._trackerRecovery = .running(BeadsTrackerRecoveryProgress(
+            phase: .repairingSchemaCursor,
+            log: ["Repairing"]
+        ))
+
+        store.openProject(replacementProjectURL)
+        XCTAssertEqual(store.projectURL, originalProjectURL.standardizedFileURL)
+
+        store.closeProject()
+        XCTAssertEqual(store.projectURL, originalProjectURL.standardizedFileURL)
+    }
+
+    func testOptInLiveForwardSkewProjectKeepsRecoveryStateAfterCachedFirstPaint() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BEADAZZLE_LIVE_SCHEMA_SKEW_PROJECT"] else {
+            throw XCTSkip("Set BEADAZZLE_LIVE_SCHEMA_SKEW_PROJECT to exercise a real skewed tracker.")
+        }
+        let projectURL = URL(fileURLWithPath: path).standardizedFileURL
+        let isolatedDefaults = makeUserDefaults()
+        let standardRepository = BeadSemanticDefinitionsRepository(userDefaults: .standard)
+        if let cached = standardRepository.load(projectURL: projectURL) {
+            BeadSemanticDefinitionsRepository(userDefaults: isolatedDefaults).save(
+                cached.entry.definitions,
+                projectURL: projectURL,
+                trackerDirectoryURL: cached.trackerDirectoryURL,
+                refreshedAt: cached.entry.refreshedAt
+            )
+        }
+        let store = BeadStore(
+            userDefaults: isolatedDefaults,
+            commands: BeadsCommandService()
+        )
+
+        store.openProject(projectURL)
+        try await waitUntil(timeout: .seconds(15)) {
+            !store.isLoading && store.hasReadableProject
+        }
+        try await waitUntil(timeout: .seconds(15)) {
+            if case .recoveryAvailable = store.trackerMigration { return true }
+            return false
+        }
+
+        XCTAssertTrue(store.hasReadableProject)
+        XCTAssertTrue(store.trackerMigration.canReviewRecovery)
+    }
+
+    func testReadableSnapshotForwardSkewOffersRecoveryAndNeverRunsBdMigrate() async throws {
+        let projectURL = try makeProject(named: "ReadableForwardSkew")
+        let commands = SchemaSkewTestCommands(
+            schemaMismatchOutput: realForwardSchemaMismatchOutput
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        try await waitUntil {
+            if case .recoveryAvailable = store.trackerMigration { return true }
+            return false
+        }
+
+        XCTAssertTrue(store.projectReadiness.isReady)
+        XCTAssertNotNil(store.issue(with: "bd-1"))
+        XCTAssertTrue(store.trackerMigration.isPending)
+        let migrateCalls = await commands.migrateCallCount()
+        XCTAssertEqual(migrateCalls, 0)
+    }
+
+    func testInitialForwardSkewRoutesToRecoveryAndNeverRunsBdMigrate() async throws {
+        let projectURL = try makeProject(named: "ForwardSkew")
+        let commands = SchemaSkewTestCommands(
+            contextError: BeadError.commandFailed(
+                command: "bd context --json",
+                output: realForwardSchemaMismatchOutput
+            )
+        )
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+
+        store.openProject(projectURL)
+        try await waitUntil {
+            if case .recoveryAvailable = store.trackerMigration { return true }
+            return false
+        }
+
+        guard case .recoveryAvailable(let skew) = store.trackerMigration else {
+            return XCTFail("Expected pinned recovery instead of an upward migration")
+        }
+        XCTAssertEqual(skew.direction, .databaseAhead)
+        XCTAssertEqual(store.projectReadiness.unavailableProject?.url, projectURL.standardizedFileURL)
+        store.startTrackerMigration(confirmedByUser: true)
+        try await Task.sleep(for: .milliseconds(50))
+        let migrateCalls = await commands.migrateCallCount()
+        XCTAssertEqual(migrateCalls, 0)
+    }
+
+    func testUnrecognizedForwardSkewStaysReadOnlyWithoutMigration() async throws {
+        let commands = SchemaSkewTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+        let skew = BeadsSchemaSkew(databaseVersion: 66, binaryVersion: 53)
+
+        store.noteTrackerSchemaSkew(skew)
+        guard case .recoveryBlocked(let blockedSkew, let guidance) = store.trackerMigration else {
+            return XCTFail("Expected unsupported forward skew to remain blocked")
+        }
+        XCTAssertEqual(blockedSkew, skew)
+        XCTAssertTrue(guidance.contains("compatible tested bd binary"))
+        store.startTrackerMigration(confirmedByUser: true)
+        try await Task.sleep(for: .milliseconds(50))
+        let migrateCalls = await commands.migrateCallCount()
+        XCTAssertEqual(migrateCalls, 0)
+    }
+
+    func testUnparseableSkewStaysReadOnlyWithoutMigration() async throws {
+        let commands = SchemaSkewTestCommands()
+        let store = BeadStore(userDefaults: makeUserDefaults(), commands: commands)
+
+        store.noteTrackerSchemaSkew(BeadsSchemaSkew())
+        guard case .recoveryBlocked(let skew, let guidance) = store.trackerMigration else {
+            return XCTFail("Expected unparseable skew to remain blocked")
+        }
+        XCTAssertEqual(skew.direction, .unknown)
+        XCTAssertTrue(guidance.contains("could not prove the mismatch direction"))
+        store.startTrackerMigration(confirmedByUser: true)
+        try await Task.sleep(for: .milliseconds(50))
+        let migrateCalls = await commands.migrateCallCount()
+        XCTAssertEqual(migrateCalls, 0)
+    }
+
     func testLocalTrackerWithoutRemoteMigratesWithoutAsking() async throws {
         let projectURL = try makeProject(named: "LocalSkew")
         let commands = SchemaSkewTestCommands()
@@ -232,7 +436,7 @@ final class BeadStoreTrackerMigrationTests: XCTestCase {
         do {
             _ = try await store.enqueueMutationWrite { "unexpected" }
             XCTFail("Expected the write to be refused while the upgrade is pending")
-        } catch BeadError.trackerNeedsMigration {
+        } catch BeadError.trackerSchemaIncompatible {
             // Refused before any `bd` subprocess ran.
         }
     }
@@ -357,6 +561,8 @@ private actor SchemaSkewTestCommands: BeadsCommanding {
     private let remoteLoadDelay: Duration?
     private let exportError: Error?
     private let writesSnapshotOnExportAfterMigration: Bool
+    private let contextError: Error?
+    private let schemaMismatchOutput: String
     private var migrateCalls = 0
     private var lastAllowedRemoteMigration: Bool?
     private var hasMigrated = false
@@ -366,13 +572,17 @@ private actor SchemaSkewTestCommands: BeadsCommanding {
         migrateError: Error? = nil,
         remoteLoadDelay: Duration? = nil,
         exportError: Error? = nil,
-        writesSnapshotOnExportAfterMigration: Bool = false
+        writesSnapshotOnExportAfterMigration: Bool = false,
+        contextError: Error? = nil,
+        schemaMismatchOutput: String = realSchemaMismatchOutput
     ) {
         self.remoteNames = remoteNames
         self.migrateError = migrateError
         self.remoteLoadDelay = remoteLoadDelay
         self.exportError = exportError
         self.writesSnapshotOnExportAfterMigration = writesSnapshotOnExportAfterMigration
+        self.contextError = contextError
+        self.schemaMismatchOutput = schemaMismatchOutput
     }
 
     func migrateCallCount() -> Int { migrateCalls }
@@ -381,7 +591,7 @@ private actor SchemaSkewTestCommands: BeadsCommanding {
     private var schemaMismatch: Error {
         BeadError.commandFailed(
             command: "bd --readonly statuses --json",
-            output: realSchemaMismatchOutput
+            output: schemaMismatchOutput
         )
     }
 
@@ -412,7 +622,8 @@ private actor SchemaSkewTestCommands: BeadsCommanding {
     }
 
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {
-        .testContext(projectURL: projectURL)
+        if let contextError { throw contextError }
+        return .testContext(projectURL: projectURL)
     }
 
     /// Mirrors `bd export`: it opens the database for writing, so once the tracker has

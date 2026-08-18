@@ -44,6 +44,20 @@ final class BeadsMetadataServiceTests: XCTestCase {
         XCTAssertEqual(incident.source, .custom)
     }
 
+    func testDecodeStatusesRejectsUnexpectedTopLevelShape() {
+        XCTAssertThrowsError(
+            try BeadsMetadataService.decodeStatuses(from: Data(#"{"message":"ok"}"#.utf8))
+        )
+    }
+
+    func testDecodeTypesRejectsMalformedDefinitionsInsteadOfSilentlyDroppingThem() {
+        XCTAssertThrowsError(
+            try BeadsMetadataService.decodeTypes(
+                from: Data(#"{"core_types":[{"description":"Missing name"}]}"#.utf8)
+            )
+        )
+    }
+
     func testLoadSemanticsUsesBuiltInCategoriesWithoutCLI() {
         let service = BeadsMetadataService()
         let semantics = service.loadSemantics(

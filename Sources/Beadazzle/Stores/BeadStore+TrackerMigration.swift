@@ -8,8 +8,9 @@ import Foundation
 /// tracker. The JSONL snapshot is a plain file and still loads, so the project stays
 /// browsable with stale data while the upgrade is offered.
 extension BeadStore {
-    /// Records a pending migration reported by a failing `bd` read and, when it is safe
-    /// to do so, starts it without asking.
+    /// Records a schema mismatch reported by a failing `bd` read. Only a database that is
+    /// provably behind the binary may enter the upward migration path. Forward and unknown
+    /// skew stay read-only and are routed to recovery or compatible-binary guidance.
     ///
     /// Safe means an embedded tracker with no Dolt remote: nobody else shares the
     /// database, so upgrading it cannot fork a schema out from under a teammate.
@@ -19,8 +20,21 @@ extension BeadStore {
         switch trackerMigration {
         case .migrating, .failed:
             return
-        case .notNeeded, .awaitingConfirmation, .ready:
+        case .notNeeded, .awaitingConfirmation, .ready,
+             .recoveryAvailable, .recoveryBlocked:
             break
+        }
+
+        guard skew.direction == .databaseBehind else {
+            if skew.supportsPinnedV65ToV53Recovery {
+                _trackerMigration = .recoveryAvailable(skew)
+            } else {
+                _trackerMigration = .recoveryBlocked(
+                    skew,
+                    guidance: BeadsTrackerRecoveryService.unsupportedSkewGuidance(for: skew)
+                )
+            }
+            return
         }
 
         if let reason = trackerMigrationConfirmationReason() {
@@ -97,6 +111,17 @@ extension BeadStore {
     func startTrackerMigration(confirmedByUser: Bool) {
         guard let projectURL else { return }
         guard !trackerMigration.isMigrating, _trackerMigrationTask == nil else { return }
+        let skew: BeadsSchemaSkew
+        switch trackerMigration {
+        case .ready(let pendingSkew):
+            skew = pendingSkew
+        case .awaitingConfirmation(let pendingSkew, _):
+            guard confirmedByUser else { return }
+            skew = pendingSkew
+        case .notNeeded, .migrating, .failed, .recoveryAvailable, .recoveryBlocked:
+            return
+        }
+        guard skew.direction == .databaseBehind else { return }
 
         let allowsRemoteMigration = confirmedByUser
             && trackerMigrationConfirmationReason() != nil
@@ -143,5 +168,163 @@ extension BeadStore {
         // The next failing `bd` read re-detects the skew; probing again here would add a
         // subprocess to a path that is about to run one anyway.
         refresh(reason: .manual, showsLoadingIndicator: true)
+    }
+
+    /// Runs the read-only recovery diagnosis shown in the full review sheet.
+    func prepareTrackerRecovery(competingWindowBlocker: String?) {
+        guard case .recoveryAvailable(let skew) = trackerMigration,
+              _trackerRecoveryTask == nil else { return }
+        let activity = trackerRecoveryActivity(competingWindowBlocker: competingWindowBlocker)
+        let projectURL = projectURL
+        guard let projectURL else { return }
+        _trackerRecovery = .diagnosing
+        let service = trackerRecoveryService
+        _trackerRecoveryTask = Task { @MainActor [weak self] in
+            defer { self?._trackerRecoveryTask = nil }
+            let assessment = await service.diagnose(
+                projectURL: projectURL,
+                skew: skew,
+                activity: activity
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  self.projectURL == projectURL,
+                  self.trackerMigration.skew == skew else { return }
+            self._trackerRecovery = .review(assessment)
+        }
+    }
+
+    /// Performs the exact reviewed v65-to-v53 repair. The app's normal write queue is
+    /// used directly because ordinary mutations are deliberately blocked while skewed.
+    func startTrackerRecovery(
+        acknowledgesOtherClones: Bool,
+        acknowledgesRemoteAuthority: Bool,
+        competingWindowBlocker: String?
+    ) {
+        guard acknowledgesOtherClones, acknowledgesRemoteAuthority else { return }
+        guard case .review(let assessment) = trackerRecovery,
+              assessment.canRecover,
+              let plan = assessment.plan,
+              let projectURL,
+              _trackerRecoveryTask == nil else { return }
+
+        let trackerIdentityPath = plan.beadsDirectoryURL
+            .standardizedFileURL
+            .path
+        let recoveryReservationOwner = appStateBroadcaster
+        if let blocker = recoveryReservationOwner?.reserveTrackerRecovery(
+            for: self,
+            trackerIdentityPath: trackerIdentityPath
+        ) {
+            _trackerRecovery = .failed(BeadsTrackerRecoveryFailure(
+                message: blocker,
+                backupURL: nil,
+                log: []
+            ))
+            return
+        }
+
+        let activity = trackerRecoveryActivity(competingWindowBlocker: competingWindowBlocker)
+        guard activity.blocker == nil else {
+            recoveryReservationOwner?.releaseTrackerRecovery(
+                for: self,
+                trackerIdentityPath: trackerIdentityPath
+            )
+            _trackerRecovery = .failed(BeadsTrackerRecoveryFailure(
+                message: activity.blocker ?? "Recovery is blocked by app activity.",
+                backupURL: nil,
+                log: []
+            ))
+            return
+        }
+
+        let service = trackerRecoveryService
+        let mutationGeneration = beginMutation()
+        pauseDataSourceMonitoringForTrackerRecovery()
+        _trackerRecovery = .running(BeadsTrackerRecoveryProgress(
+            phase: .checkingPrerequisites,
+            log: ["Starting guarded local recovery."]
+        ))
+        _trackerRecoveryTask = Task { @MainActor [weak self] in
+            defer {
+                if let self {
+                    recoveryReservationOwner?.releaseTrackerRecovery(
+                        for: self,
+                        trackerIdentityPath: trackerIdentityPath
+                    )
+                    self._trackerRecoveryTask = nil
+                    self.endMutation(generation: mutationGeneration)
+                    self.resumeDataSourceMonitoringAfterTrackerRecovery()
+                }
+            }
+            guard let self else { return }
+            let progress: @Sendable (BeadsTrackerRecoveryProgress) -> Void = { [weak self] update in
+                Task { @MainActor [weak self] in
+                    guard let self, self.projectURL == projectURL else { return }
+                    self._trackerRecovery = .running(update)
+                }
+            }
+            do {
+                let result = try await self.mutations.writeQueue.enqueueCancellable {
+                    try await service.recover(
+                        assessment: assessment,
+                        activity: activity,
+                        progress: progress
+                    )
+                }
+                guard self.projectURL == projectURL else { return }
+                self._trackerRecovery = .succeeded(result)
+                self._trackerMigration = .notNeeded
+                self.invalidateSemanticDefinitionsCache()
+                self.refresh(reason: .manual, showsLoadingIndicator: true)
+            } catch let failure as BeadsTrackerRecoveryFailure {
+                guard self.projectURL == projectURL else { return }
+                self._trackerRecovery = .failed(failure)
+            } catch {
+                guard self.projectURL == projectURL else { return }
+                self._trackerRecovery = .failed(BeadsTrackerRecoveryFailure(
+                    message: error.localizedDescription,
+                    backupURL: nil,
+                    log: []
+                ))
+            }
+        }
+    }
+
+    func cancelTrackerRecovery() {
+        guard trackerRecovery.isRunning else { return }
+        _trackerRecoveryTask?.cancel()
+        if case .diagnosing = trackerRecovery {
+            _trackerRecovery = .idle
+        }
+    }
+
+    func dismissTrackerRecoveryResult() {
+        guard !trackerRecovery.isRunning else { return }
+        _trackerRecovery = .idle
+    }
+
+    private func trackerRecoveryActivity(
+        competingWindowBlocker: String?
+    ) -> BeadsTrackerRecoveryActivity {
+        if let competingWindowBlocker {
+            return BeadsTrackerRecoveryActivity(blocker: competingWindowBlocker)
+        }
+        if activeMutationCount > 0 || mutations.writeQueue.hasPendingOperations {
+            return BeadsTrackerRecoveryActivity(
+                blocker: "Wait for the current Beadazzle mutation to finish before recovery."
+            )
+        }
+        if let projectHealthAction {
+            return BeadsTrackerRecoveryActivity(
+                blocker: "Wait for \(projectHealthAction.title.lowercased()) to finish before recovery."
+            )
+        }
+        if isLoading || isApplyingBeadsSetup {
+            return BeadsTrackerRecoveryActivity(
+                blocker: "Wait for the current project operation to finish before recovery."
+            )
+        }
+        return .idle
     }
 }

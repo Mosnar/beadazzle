@@ -46,7 +46,16 @@ final class IssueReferenceLinkingTests: XCTestCase {
             text: "See bd-1, not bd-2.",
             lookup: lookup
         )
-        let links = attributed.runs.compactMap(\.link)
+        let nativeAttributed = NSAttributedString(attributed)
+        var links: [URL] = []
+        nativeAttributed.enumerateAttribute(
+            .link,
+            in: NSRange(location: 0, length: nativeAttributed.length)
+        ) { value, _, _ in
+            if let url = value as? URL {
+                links.append(url)
+            }
+        }
 
         XCTAssertEqual(links.map(\.absoluteString), ["beads://bead/bd-1"])
         XCTAssertEqual(lookup.fingerprint() as? Int, 7)

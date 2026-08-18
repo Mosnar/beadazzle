@@ -79,6 +79,24 @@ final class BeadStoreDomainObservationTests: XCTestCase {
         XCTAssertTrue(store.doltRemoteFreshness.result.hasRemoteChanges)
     }
 
+    func testTrackerMigrationFacadeTracksProjectRegistrar() {
+        let store = BeadStore(userDefaults: makeUserDefaults())
+        let invalidation = expectation(description: "Tracker recovery invalidates its banner reader")
+
+        withObservationTracking {
+            _ = store.trackerMigration
+        } onChange: {
+            invalidation.fulfill()
+        }
+
+        store.noteTrackerSchemaSkew(
+            BeadsSchemaSkew(databaseVersion: 65, binaryVersion: 53)
+        )
+
+        wait(for: [invalidation], timeout: 0.1)
+        XCTAssertTrue(store.trackerMigration.canReviewRecovery)
+    }
+
     func testIndexReplacementInvalidatesIssueReferenceLookupObservation() async {
         let store = BeadStore(userDefaults: makeUserDefaults())
         let invalidation = expectation(description: "Issue-reference lookup invalidates")

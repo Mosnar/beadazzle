@@ -104,6 +104,7 @@ extension BeadStore {
             && !isApplyingBeadsSetup
             && activeMutationCount == 0
             && projectHealthAction == nil
+            && !trackerMigration.blocksWrites
     }
 
     /// Intended for tests; production UI observes the remote status as it arrives.
@@ -768,7 +769,9 @@ extension BeadStore {
     }
 
     private func beginProjectHealthAction(_ action: ProjectHealthAction) -> URL? {
-        guard let projectURL, projectHealthAction == nil else { return nil }
+        guard let projectURL,
+              projectHealthAction == nil,
+              !trackerMigration.blocksWrites else { return nil }
         _projectHealthAction = action
         project.projectHealthActionStartedAt = Date()
         _projectHealthActionError = nil

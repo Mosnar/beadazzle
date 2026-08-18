@@ -620,6 +620,40 @@ final class BeadsCommandServiceTests: XCTestCase {
         }
     }
 
+    func testReadOnlyMetadataCommandsRejectSchemaSkewErrorEnvelopeWithZeroExitStatus() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        printf '%s\n' '{"error":"schema version mismatch: database is at v65, binary knows up to v53 (12 migrations ahead)","hint":"BD_IGNORE_SCHEMA_SKEW=1 bd <command>","schema_skew":{"current_version":65,"delta":12,"required_version":53},"schema_version":1}'
+        exit 0
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        do {
+            _ = try await service.loadStatusDefinitions(projectURL: projectURL)
+            XCTFail("Expected the status metadata error envelope to fail.")
+        } catch let error as BeadError {
+            guard case .commandFailed(let command, let output) = error else {
+                return XCTFail("Expected command failure, got \(error)")
+            }
+            XCTAssertEqual(command, "bd --readonly statuses --json")
+            XCTAssertTrue(output.contains("database is at v65"))
+            XCTAssertEqual(error.schemaSkew?.databaseVersion, 65)
+            XCTAssertEqual(error.schemaSkew?.binaryVersion, 53)
+        }
+
+        do {
+            _ = try await service.loadTypeDefinitions(projectURL: projectURL)
+            XCTFail("Expected the type metadata error envelope to fail.")
+        } catch let error as BeadError {
+            guard case .commandFailed(let command, _) = error else {
+                return XCTFail("Expected command failure, got \(error)")
+            }
+            XCTAssertEqual(command, "bd --readonly types --json")
+            XCTAssertEqual(error.schemaSkew?.direction, .databaseAhead)
+        }
+    }
+
     func testProjectContextDecodesEmbeddedDoltAsCurrentStorage() throws {
         let context = try BeadsProjectContext.decode(from: """
         {

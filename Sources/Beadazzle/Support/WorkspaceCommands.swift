@@ -4,16 +4,17 @@ import SwiftUI
 /// scope these commands to the focused scene — a NotificationCenter broadcast
 /// reached every window, so ⌘N/⌘R fired while Settings or Project Settings was
 /// key still targeted the main window, and the menu items never disabled.
+@MainActor
 struct WorkspaceCommandActions {
-    var newBead: (() -> Void)?
-    var openProject: () -> Void
-    var openProjectInNewWindow: () -> Void
+    var newBead: (@MainActor () -> Void)?
+    var openProject: (@MainActor () -> Void)?
+    var openProjectInNewWindow: @MainActor () -> Void
     var projectSettingsURL: URL?
-    var refresh: (() -> Void)?
-    var find: (() -> Void)?
+    var refresh: (@MainActor () -> Void)?
+    var find: (@MainActor () -> Void)?
     var searchCoverageTitle: String?
-    var toggleSearchCoverage: (() -> Void)?
-    var saveCurrentViewAsBookmark: (() -> Void)?
+    var toggleSearchCoverage: (@MainActor () -> Void)?
+    var saveCurrentViewAsBookmark: (@MainActor () -> Void)?
 }
 
 /// A focused, reference-based target for project synchronization commands. Keeping the
@@ -85,10 +86,10 @@ struct WorkspaceCommands: Commands {
 
         CommandGroup(after: .importExport) {
             Button("Open Project…") {
-                actions?.openProject()
+                actions?.openProject?()
             }
             .keyboardShortcut("o")
-            .disabled(actions == nil)
+            .disabled(actions?.openProject == nil)
 
             Button("Open Project in New Window…") {
                 actions?.openProjectInNewWindow()

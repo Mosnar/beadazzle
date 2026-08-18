@@ -344,18 +344,19 @@ struct ProjectPreflightHealth: Equatable, Sendable {
             )
         }
         if let errorMessage = health?.context.errorMessage {
-            // A pending schema migration is not a broken `bd` install, and pointing the
-            // user at the executable picker sends them to fix something that is fine.
+            // A schema incompatibility is not necessarily a broken `bd` install, and
+            // pointing a known recovery incident at the executable picker would send the
+            // user to replace the healthy tested binary.
             if let skew = BeadsSchemaSkew.detect(in: errorMessage) {
                 return Check(
                     id: .bdCLI,
                     title: "bd CLI",
                     status: .blocked,
-                    summary: "This tracker needs a one-time upgrade",
+                    summary: skew.resolution.healthSummary,
                     detail: [skew.versionSummary, errorMessage]
                         .compactMap { $0 }
                         .joined(separator: " "),
-                    actionHint: "Upgrade the tracker to continue."
+                    actionHint: skew.resolution.actionHint
                 )
             }
             return Check(
@@ -795,7 +796,9 @@ struct ProjectHealthValue<Value: Equatable & Sendable>: Equatable, Sendable {
         ProjectHealthValue(value: nil, errorMessage: errorMessage)
     }
 
-    static func capture(_ operation: () async throws -> Value) async -> ProjectHealthValue<Value> {
+    static func capture(
+        _ operation: @Sendable () async throws -> Value
+    ) async -> ProjectHealthValue<Value> {
         do {
             return .available(try await operation())
         } catch {

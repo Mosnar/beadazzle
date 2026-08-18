@@ -32,7 +32,7 @@ extension XCTestCase {
 /// created; when the next run starts it deletes whatever landed after that — including
 /// anything a run that crashed never got to clean up. Residue is bounded at one run's worth
 /// instead of accumulating forever.
-final class IsolatedUserDefaultsSweeper: NSObject, XCTestObservation {
+final class IsolatedUserDefaultsSweeper: NSObject, XCTestObservation, @unchecked Sendable {
     static let shared = IsolatedUserDefaultsSweeper()
 
     /// Marks a suite as an isolated test suite. Every one carries it, so the sweeps never

@@ -293,6 +293,71 @@ final class BeadMutationWriteQueueTests: XCTestCase {
         let values = await recorder.values
         XCTAssertEqual(values, [1])
     }
+
+    func testCancellableWriteForwardsCancellationWithoutAbandoningQueueOrdering() async throws {
+        let queue = BeadMutationWriteQueue()
+        let gate = CancellableWriteGate()
+
+        let operation = Task {
+            try await queue.enqueueCancellable {
+                try await gate.pauseUntilCancelledOrReleased()
+            }
+        }
+        await gate.waitUntilPaused()
+        operation.cancel()
+
+        for _ in 0..<50 where !(await gate.wasCancelled()) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let forwardedCancellation = await gate.wasCancelled()
+        await gate.release()
+        do {
+            try await operation.value
+            XCTFail("Expected the serialized recovery operation to be cancelled")
+        } catch is CancellationError {
+            // Expected.
+        }
+        XCTAssertTrue(forwardedCancellation)
+
+        // A cancelled recovery operation still drains before the next queued write starts.
+        let recorder = WriteRecorder()
+        try await queue.enqueue { await recorder.append(2) }
+        let values = await recorder.values
+        XCTAssertEqual(values, [2])
+    }
+
+    func testCancellingCancellableWriteWhileQueuedPreventsItFromStarting() async throws {
+        let queue = BeadMutationWriteQueue()
+        let recorder = WriteRecorder()
+        let gate = WriteGate()
+
+        let first = Task {
+            try await queue.enqueue {
+                await gate.pause()
+                await recorder.append(1)
+            }
+        }
+        await gate.waitUntilPaused()
+
+        let queued = Task {
+            try await queue.enqueueCancellable {
+                await recorder.append(2)
+            }
+        }
+        await Task.yield()
+        queued.cancel()
+        await gate.release()
+
+        try await first.value
+        do {
+            try await queued.value
+            XCTFail("Expected the queued recovery operation to be cancelled")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let values = await recorder.values
+        XCTAssertEqual(values, [1])
+    }
 }
 
 private actor WriteRecorder {
@@ -321,6 +386,42 @@ private actor WriteGate {
     func release() {
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private actor CancellableWriteGate {
+    private var isPaused = false
+    private var cancellationObserved = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func pauseUntilCancelledOrReleased() async throws {
+        try await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                isPaused = true
+                self.continuation = continuation
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func waitUntilPaused() async {
+        while !isPaused {
+            await Task.yield()
+        }
+    }
+
+    func wasCancelled() -> Bool { cancellationObserved }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func cancel() {
+        cancellationObserved = true
+        release()
     }
 }
 

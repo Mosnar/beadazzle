@@ -1,4 +1,4 @@
-import AppKit
+@preconcurrency import AppKit
 import SwiftUI
 
 /// Lets a `BeadStore` tell its peers that it changed state they all share.
@@ -8,6 +8,10 @@ protocol BeadAppStateBroadcasting: AnyObject {
     func recentProjectsDidChange(from store: BeadStore)
     /// The store's `bd context` resolved, so its canonical tracker identity is now known.
     func projectTrackerDidResolve(from store: BeadStore)
+    /// Atomically reserves an effective tracker for low-level recovery across every
+    /// workspace store. Returns user-facing blocking guidance when it cannot be reserved.
+    func reserveTrackerRecovery(for store: BeadStore, trackerIdentityPath: String) -> String?
+    func releaseTrackerRecovery(for store: BeadStore, trackerIdentityPath: String)
 }
 
 /// Owns one `BeadStore` per workspace window and routes project opens between them.
@@ -54,6 +58,9 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     /// Identifies the newest deferred open for each window. Context resolution and drain
     /// waits are asynchronous; a later user choice must supersede an older completion.
     @ObservationIgnored private var deferredProjectOpenTokenByWindowID: [UUID: UUID] = [:]
+    /// Recovery bypasses normal `bd` writes, so the canonical tracker itself needs one
+    /// app-wide owner even when schema skew prevented a store's ordinary context load.
+    @ObservationIgnored private var trackerRecoveryOwnerByIdentityPath: [String: ObjectIdentifier] = [:]
     @ObservationIgnored private var detachedStore: BeadStore?
     @ObservationIgnored private let makeStore: @MainActor () -> BeadStore
     @ObservationIgnored private let projectOpenDestinationPrompter: any ProjectOpenDestinationPrompting
@@ -103,7 +110,7 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     /// tripping the isolation assertion instead of crashing.
     private func observeWindows(
         _ name: Notification.Name,
-        handler: @escaping @MainActor (BeadWorkspaceWindowRegistry, NSWindow) -> Void
+        handler: @escaping @MainActor @Sendable (BeadWorkspaceWindowRegistry, NSWindow) -> Void
     ) -> any NSObjectProtocol {
         NotificationCenter.default.addObserver(
             forName: name,
@@ -256,6 +263,7 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     func releaseWindow(_ windowID: UUID) {
         let hadWindow = storesByWindowID[windowID] != nil || windowsByWindowID[windowID] != nil
         if let store = storesByWindowID.removeValue(forKey: windowID) {
+            releaseTrackerRecoveryReservations(ownedBy: store)
             // The broadcaster reference stays: Settings can remain bound to this store for
             // a beat after the window closes, and an edit made in that gap must still
             // reach the surviving windows. Removal from the maps above already stops
@@ -518,6 +526,7 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
             // Reopening the window's own project runs the full reopen rather than treating
             // the request as satisfied: picking the same folder again is the user's retry
             // path when a load failed (missing snapshot, unavailable tracker).
+            guard !store.trackerRecovery.isMutatingTracker else { return false }
             let forcesSnapshotExport = forcingSnapshotExport || consumeSnapshotExportRequirement(
                 for: standardizedURL,
                 trackerIdentityPath: effectiveTrackerIdentityPath
@@ -585,6 +594,7 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         )
         guard resolvedDestination(destination, store: store) == .newWindow,
               let openNewWindow else {
+            guard !store.trackerRecovery.isMutatingTracker else { return false }
             store.openProject(standardizedURL, forcingSnapshotExport: forcesSnapshotExport)
             return true
         }
@@ -817,6 +827,38 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
         }
     }
 
+    /// Recovery is serialized inside one store, but a second live or draining window
+    /// that resolves to the same effective tracker would own a separate queue. Refuse the
+    /// low-level operation until that competing window releases the tracker.
+    func trackerRecoveryCompetingWindowBlocker(for store: BeadStore) -> String? {
+        _ = windowCompositionRevision
+        let projectPath = store.projectURL?.standardizedFileURL.path
+        let trackerIdentity = store.resolvedTrackerIdentityPath
+        let matches: (BeadStore) -> Bool = { peer in
+            guard peer !== store else { return false }
+            if let trackerIdentity,
+               peer.resolvedTrackerIdentityPath == trackerIdentity {
+                return true
+            }
+            guard let projectPath else { return false }
+            return peer.projectURL?.standardizedFileURL.path == projectPath
+        }
+        if storesByWindowID.values.contains(where: matches) {
+            return "Close the other Beadazzle window using this tracker before recovery."
+        }
+        if drainingStoresByWindowID.values.contains(where: matches) {
+            return "Wait for the recently closed project window to finish its pending database work before recovery."
+        }
+        if let trackerIdentity,
+           let owner = trackerRecoveryOwnerByIdentityPath[
+               Self.canonicalTrackerIdentityPath(trackerIdentity)
+           ],
+           owner != ObjectIdentifier(store) {
+            return "Wait for recovery in the other Beadazzle window to finish."
+        }
+        return nil
+    }
+
     func windowID(showing projectURL: URL) -> UUID? {
         let path = projectURL.standardizedFileURL.path
         return windowOrder.reversed().first { windowID in
@@ -848,6 +890,55 @@ final class BeadWorkspaceWindowRegistry: BeadAppStateBroadcasting {
     }
 
     // MARK: - BeadAppStateBroadcasting
+
+    func reserveTrackerRecovery(for store: BeadStore, trackerIdentityPath: String) -> String? {
+        let identity = Self.canonicalTrackerIdentityPath(trackerIdentityPath)
+        let owner = ObjectIdentifier(store)
+        if let existingOwner = trackerRecoveryOwnerByIdentityPath[identity] {
+            return existingOwner == owner
+                ? nil
+                : "Wait for recovery in the other Beadazzle window to finish."
+        }
+
+        let livePeers = storesByWindowID.values.filter { $0 !== store && $0.projectURL != nil }
+        if livePeers.contains(where: { peer in
+            guard let peerIdentity = peer.resolvedTrackerIdentityPath else { return true }
+            return Self.canonicalTrackerIdentityPath(peerIdentity) == identity
+        }) {
+            return "Close the other Beadazzle project window, or wait for its tracker context to finish resolving, before recovery."
+        }
+        if drainingStoresByWindowID.values.contains(where: { peer in
+            guard let peerIdentity = peer.resolvedTrackerIdentityPath else { return true }
+            return Self.canonicalTrackerIdentityPath(peerIdentity) == identity
+        }) {
+            return "Wait for the recently closed project window to finish its pending database work before recovery."
+        }
+
+        trackerRecoveryOwnerByIdentityPath[identity] = owner
+        return nil
+    }
+
+    func releaseTrackerRecovery(for store: BeadStore, trackerIdentityPath: String) {
+        let identity = Self.canonicalTrackerIdentityPath(trackerIdentityPath)
+        guard trackerRecoveryOwnerByIdentityPath[identity] == ObjectIdentifier(store) else {
+            return
+        }
+        trackerRecoveryOwnerByIdentityPath.removeValue(forKey: identity)
+    }
+
+    private func releaseTrackerRecoveryReservations(ownedBy store: BeadStore) {
+        let owner = ObjectIdentifier(store)
+        trackerRecoveryOwnerByIdentityPath = trackerRecoveryOwnerByIdentityPath.filter {
+            $0.value != owner
+        }
+    }
+
+    private static func canonicalTrackerIdentityPath(_ path: String) -> String {
+        URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
 
     /// Two project roots can resolve to one tracker (worktree redirects, configured
     /// Beads directories), which path-based routing cannot see until `bd context`

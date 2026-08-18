@@ -23,9 +23,9 @@ struct LoadedProject: Sendable {
     var snapshot: BeadsSnapshot
     var index: BeadProjectIndex
     var snapshotRefreshWarning: String?
-    /// Set when `bd` refused to read this tracker because its schema predates the
-    /// installed binary. The snapshot still loads (it is a plain file), so the project
-    /// opens with stale data while the migration is offered.
+    /// Set when `bd` refused to read this tracker because its schema is incompatible with
+    /// the installed binary. The snapshot still loads (it is a plain file), so the project
+    /// opens read-only while an upward migration or guarded recovery is offered.
     var schemaSkew: BeadsSchemaSkew?
     /// The definitions used to build `index.semantics`, so the caller can cache them and
     /// pass them back on subsequent reloads. `nil` when the `bd` read failed (built-in
@@ -220,12 +220,12 @@ struct BeadProjectLoader: Sendable {
             )
         } catch {
             // There is no snapshot to fall back on here, so this failure blocks the whole
-            // project. A pending schema migration is a common and fixable cause — `bd`
-            // refuses to migrate some databases in place, and a first-run migration on a
-            // large tracker can outlast the export timeout. Ask `bd` directly rather than
+            // project. A schema mismatch is a common and fixable cause — `bd` can refuse
+            // to open either older or newer schemas, and a first-run upward migration on
+            // a large tracker can outlast the export timeout. Ask `bd` directly rather than
             // guessing from the export failure, which reports a timeout, not the skew.
             if let skew = try await detectSchemaSkew(projectURL: projectURL, exportError: error) {
-                throw BeadError.trackerNeedsMigration(skew)
+                throw BeadError.trackerSchemaIncompatible(skew)
             }
             throw error
         }
@@ -241,9 +241,8 @@ struct BeadProjectLoader: Sendable {
         )
     }
 
-    /// Confirms whether a failed export was caused by a tracker whose schema predates the
-    /// installed `bd`. Runs only on the failure path, so the successful open still costs
-    /// no extra subprocess.
+    /// Confirms whether a failed export was caused by an incompatible tracker schema.
+    /// Runs only on the failure path, so the successful open still costs no extra subprocess.
     private func detectSchemaSkew(
         projectURL: URL,
         exportError: Error
@@ -306,7 +305,7 @@ struct BeadProjectLoader: Sendable {
 
     /// Reads status/type definitions from `bd`. Returns `nil` definitions if the read
     /// fails, so the caller falls back to built-in definitions without caching the
-    /// failure, and reports a pending schema migration when that is what caused it.
+    /// failure, and reports schema skew when that is what caused it.
     func loadDefinitions(projectURL: URL) async -> LoadedSemanticDefinitions {
         do {
             let statuses = try await commands.loadStatusDefinitions(projectURL: projectURL)
@@ -330,8 +329,15 @@ struct BeadProjectLoader: Sendable {
         if let cachedEnvironment {
             return cachedEnvironment
         }
-        let context = try await commands.loadProjectContext(projectURL: projectURL)
-        return try BeadsProjectEnvironment(context: context, projectURL: projectURL)
+        do {
+            let context = try await commands.loadProjectContext(projectURL: projectURL)
+            return try BeadsProjectEnvironment(context: context, projectURL: projectURL)
+        } catch {
+            if let skew = BeadsSchemaSkew.detect(in: error) {
+                throw BeadError.trackerSchemaIncompatible(skew)
+            }
+            throw error
+        }
     }
 
     private static func directoryExists(at url: URL) -> Bool {

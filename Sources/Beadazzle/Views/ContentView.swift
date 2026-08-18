@@ -10,24 +10,40 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsSidebar = true
     @State private var workspaceWidth: CGFloat = 0
-    @State private var pendingDeleteRequest: DeleteBeadsRequest?
-    @State private var hierarchySheetRequest: ContentHierarchySheetRequest?
-    @State private var deferredStatusRequest: DeferredStatusRequest?
+    @State private var presentedSheet: ContentSheet?
+    @State private var pendingSheetAfterDismiss: ContentSheet?
+    @State private var pendingAutomaticRecoveryRequest: TrackerRecoveryRequest?
     @State private var searchPresented = false
-    @State private var savedViewEditorRequest: SavedViewEditorRequest?
-    @State private var folderEditorRequest: FolderBookmarkEditorRequest?
-    @State private var bulkEditRequest: BulkEditRequest?
-    @State private var beadsSetupRequest: BeadsSetupRequest?
     @State private var doltRemoteFreshnessSceneID = UUID()
     @State private var isConfirmingTrackerUpgrade = false
 
     var body: some View {
         @Bindable var store = store
 
-        workspaceView(searchText: $store.searchText)
+        lifecycleWorkspace(searchText: $store.searchText)
+    }
+
+    private func decoratedWorkspace(searchText: Binding<String>) -> some View {
+        workspaceView(searchText: searchText)
         .overlay(alignment: .bottom) {
             FolderAutomationStatusOverlay()
             .padding(.bottom, 12)
+        }
+        .overlay {
+            if presentedSheet?.isTrackerRecovery == true {
+                // The AppKit-backed issue table and native source-list sidebar use
+                // different inactive materials under an attached sheet. Cover both
+                // with one stable semantic surface so table rows cannot bleed through
+                // the unified toolbar while recovery is being reviewed.
+                Rectangle()
+                    .fill(.ultraThickMaterial)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .onChange(of: store.trackerMigration, initial: true) { _, migrationState in
+            queueAutomaticTrackerRecovery(for: migrationState)
         }
         // Lives here rather than on the banner: a tracker that blocked the project from
         // opening offers the same upgrade from the unavailable view, which the banner
@@ -44,140 +60,92 @@ struct ContentView: View {
         } message: {
             Text(trackerUpgradeConfirmationMessage)
         }
-        .toolbar {
-            if store.showsBackNavigationButton || store.showsForwardNavigationButton {
-                ToolbarItemGroup(placement: .navigation) {
-                    if store.showsBackNavigationButton {
-                        Button(action: store.goBack) {
-                            Label("Back", systemImage: "chevron.backward")
-                        }
-                        .disabled(!workspace.canGoBack)
-                        .help("Back")
-                    }
+    }
 
-                    if store.showsForwardNavigationButton {
-                        Button(action: store.goForward) {
-                            Label("Forward", systemImage: "chevron.forward")
-                        }
-                        .disabled(!workspace.canGoForward)
-                        .help("Forward")
-                    }
-                }
-            }
-
-            ToolbarItemGroup(placement: .primaryAction) {
-                if store.hasConfiguredProjectDoltRemote
-                    || (store.projectEnvironment?.storageMode == .embedded
-                        && store.isLoadingProjectDoltRemotes) {
-                    ProjectDoltSyncMenu(
-                        isExternallyDisabled: store.isLoadingProjectDoltRemotes
-                    )
-                } else {
-                    Button {
-                        store.refresh()
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(!canRefresh)
-                }
-
-                Button {
-                    store.beginCreatingBead()
-                } label: {
-                    Label("New Bead", systemImage: "plus")
-                }
-                .disabled(!store.canCreateBead)
-                .help(newBeadHelp)
-
-                BulkActionsMenu(
-                    requestDeleteSelected: requestDeleteSelected,
-                    requestCloseSelected: requestCloseSelected,
-                    requestSetStatus: requestSetSelectedStatus,
-                    requestBulkEdit: requestBulkEditSelected
-                )
-                .disabled(!store.hasReadableProject)
-            }
-
-            if showsIssueListToolbarControls {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    FilterMenu()
-                        .disabled(store.isGlobalSearchActive)
-                    IssueListSortMenu()
-                    IssueListViewOptionsMenu()
-                }
-            }
-        }
-        .sheet(item: $pendingDeleteRequest) { request in
-            DeleteBeadsConfirmationSheet(request: request) { issueIDs in
-                await store.delete(issueIDs: issueIDs, expectedProjectURL: request.projectURL)
-            }
-        }
-        .sheet(item: $hierarchySheetRequest) { request in
-            hierarchySheet(for: request)
-        }
-        .sheet(item: $deferredStatusRequest) { request in
-            DeferredStatusDateSheet(request: request) { deferUntil in
-                await store.bulkSet(
-                    issueIDs: request.issueIDs,
-                    status: request.status,
-                    deferUntil: .set(deferUntil),
-                    reopeningAncestorIssueIDs: request.reopeningAncestorIssueIDs
-                )
-            }
-        }
-        .sheet(item: $savedViewEditorRequest) { request in
-            SaveBookmarkSheet(
-                existing: existingSavedView(for: request),
-                initialQuery: store.currentSavedViewQuery,
-                initialOrdering: store.currentSavedViewOrdering,
-                suggestedName: store.suggestedSavedViewName,
-                initialSymbolName: store.effectiveIssueListBookmark.systemImage
+    private func commandWorkspace(searchText: Binding<String>) -> some View {
+        decoratedWorkspace(searchText: searchText)
+        .toolbar { workspaceToolbar }
+        .sheet(item: $presentedSheet, onDismiss: presentNextSheetAfterDismiss) { sheet in
+            ContentSheetView(
+                sheet: sheet,
+                presentDeferredStatus: presentDeferredStatusAfterCurrentSheet
             )
-        }
-        .sheet(item: $folderEditorRequest) { request in
-            FolderBookmarkSheet(
-                initialIssueIDs: request.initialIssueIDs,
-                suggestedName: store.suggestedFolderName,
-                existing: request.folderID.flatMap { id in
-                    workspace.savedViews.first { $0.id == id && $0.isFolder }
-                }
-            )
-        }
-        .sheet(item: $bulkEditRequest) { request in
-            BulkEditSheet(request: request)
-        }
-        .sheet(item: $beadsSetupRequest) { request in
-            BeadsSetupWizard(request: request)
         }
         .mutationErrorDialog(store: store)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             store.flushPendingWorkspaceState()
         }
+    }
+
+    private func navigationFocusedWorkspace(searchText: Binding<String>) -> some View {
+        commandWorkspace(searchText: searchText)
         .focusedSceneValue(\.beadNavigationCommands, BeadNavigationCommandContext(store: store))
-        .focusedSceneValue(\.workspaceCommands, WorkspaceCommandActions(
-            newBead: store.canCreateBead ? { store.beginCreatingBead() } : nil,
-            openProject: { openProject(destination: .preferred) },
+    }
+
+    private func workspaceCommandsFocusedWorkspace(searchText: Binding<String>) -> some View {
+        navigationFocusedWorkspace(searchText: searchText)
+        .focusedSceneValue(\.workspaceCommands, workspaceCommandActions)
+    }
+
+    private var workspaceCommandActions: WorkspaceCommandActions {
+        let newBead: (@MainActor () -> Void)?
+        if store.canCreateBead {
+            newBead = { store.beginCreatingBead() }
+        } else {
+            newBead = nil
+        }
+        let refresh: (@MainActor () -> Void)?
+        if canRefresh {
+            refresh = { store.refresh() }
+        } else {
+            refresh = nil
+        }
+        let find: (@MainActor () -> Void)?
+        if store.hasReadableProject {
+            find = { searchPresented = true }
+        } else {
+            find = nil
+        }
+        let saveBookmark: (@MainActor () -> Void)?
+        if store.canSaveCurrentViewAsSmartBookmark {
+            saveBookmark = presentSaveBookmark
+        } else {
+            saveBookmark = nil
+        }
+        let openProjectAction: (@MainActor () -> Void)?
+        if store.trackerRecovery.isMutatingTracker {
+            openProjectAction = nil
+        } else {
+            openProjectAction = { openProject(destination: .preferred) }
+        }
+        return WorkspaceCommandActions(
+            newBead: newBead,
+            openProject: openProjectAction,
             openProjectInNewWindow: { openProject(destination: .newWindow) },
             projectSettingsURL: project.projectURL?.standardizedFileURL,
-            refresh: canRefresh ? { store.refresh() } : nil,
-            find: store.hasReadableProject ? { searchPresented = true } : nil,
+            refresh: refresh,
+            find: find,
             searchCoverageTitle: searchCoverageCommandTitle,
             toggleSearchCoverage: searchCoverageCommand,
-            saveCurrentViewAsBookmark: store.canSaveCurrentViewAsSmartBookmark ? presentSaveBookmark : nil
-        ))
+            saveCurrentViewAsBookmark: saveBookmark
+        )
+    }
+
+    private func focusedWorkspace(searchText: Binding<String>) -> some View {
+        workspaceCommandsFocusedWorkspace(searchText: searchText)
         .focusedSceneValue(\.projectSyncCommands, ProjectSyncCommandContext(
             store: store,
             canSynchronize: store.canSynchronizeProjectIssues
         ))
+    }
+
+    private func lifecycleWorkspace(searchText: Binding<String>) -> some View {
+        focusedWorkspace(searchText: searchText)
         .onChange(of: project.projectURL) {
             searchPresented = false
-            pendingDeleteRequest = nil
-            hierarchySheetRequest = nil
-            deferredStatusRequest = nil
-            savedViewEditorRequest = nil
-            folderEditorRequest = nil
-            bulkEditRequest = nil
-            beadsSetupRequest = nil
+            presentedSheet = nil
+            pendingSheetAfterDismiss = nil
+            pendingAutomaticRecoveryRequest = nil
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let isActive = phase == .active
@@ -196,13 +164,78 @@ struct ContentView: View {
         }
         .onChange(of: workspace.requestedSavedViewEditorID) { _, id in
             guard let id else { return }
-            savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
+            presentedSheet = .savedView(SavedViewEditorRequest(mode: .edit(id)))
             store.clearRequestedSavedViewEditor()
         }
         .onChange(of: workspace.requestedFolderIssueIDs) { _, issueIDs in
             guard let issueIDs else { return }
-            folderEditorRequest = FolderBookmarkEditorRequest(initialIssueIDs: issueIDs)
+            presentedSheet = .folder(FolderBookmarkEditorRequest(initialIssueIDs: issueIDs))
             store.clearRequestedFolder()
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var workspaceToolbar: some ToolbarContent {
+        if store.showsBackNavigationButton || store.showsForwardNavigationButton {
+            ToolbarItemGroup(placement: .navigation) {
+                if store.showsBackNavigationButton {
+                    Button(action: store.goBack) {
+                        Label("Back", systemImage: "chevron.backward")
+                    }
+                    .disabled(!workspace.canGoBack)
+                    .help("Back")
+                }
+
+                if store.showsForwardNavigationButton {
+                    Button(action: store.goForward) {
+                        Label("Forward", systemImage: "chevron.forward")
+                    }
+                    .disabled(!workspace.canGoForward)
+                    .help("Forward")
+                }
+            }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            if store.hasConfiguredProjectDoltRemote
+                || (store.projectEnvironment?.storageMode == .embedded
+                    && store.isLoadingProjectDoltRemotes) {
+                ProjectDoltSyncMenu(
+                    isExternallyDisabled: store.isLoadingProjectDoltRemotes
+                )
+            } else {
+                Button {
+                    store.refresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(!canRefresh)
+            }
+
+            Button {
+                store.beginCreatingBead()
+            } label: {
+                Label("New Bead", systemImage: "plus")
+            }
+            .disabled(!store.canCreateBead)
+            .help(newBeadHelp)
+
+            BulkActionsMenu(
+                requestDeleteSelected: requestDeleteSelected,
+                requestCloseSelected: requestCloseSelected,
+                requestSetStatus: requestSetSelectedStatus,
+                requestBulkEdit: requestBulkEditSelected
+            )
+            .disabled(!store.hasReadableProject)
+        }
+
+        if showsIssueListToolbarControls {
+            ToolbarItemGroup(placement: .primaryAction) {
+                FilterMenu()
+                    .disabled(store.isGlobalSearchActive)
+                IssueListSortMenu()
+                IssueListViewOptionsMenu()
+            }
         }
     }
 
@@ -220,9 +253,9 @@ struct ContentView: View {
                 onNewFolder: { store.requestNewFolder() },
                 onEditBookmark: { id in
                     if workspace.savedViews.first(where: { $0.id == id })?.isFolder == true {
-                        folderEditorRequest = FolderBookmarkEditorRequest(folderID: id)
+                        presentedSheet = .folder(FolderBookmarkEditorRequest(folderID: id))
                     } else {
-                        savedViewEditorRequest = SavedViewEditorRequest(mode: .edit(id))
+                        presentedSheet = .savedView(SavedViewEditorRequest(mode: .edit(id)))
                     }
                 }
             )
@@ -266,12 +299,7 @@ struct ContentView: View {
 
     private func presentSaveBookmark() {
         guard store.canSaveCurrentViewAsSmartBookmark else { return }
-        savedViewEditorRequest = SavedViewEditorRequest(mode: .create)
-    }
-
-    private func existingSavedView(for request: SavedViewEditorRequest) -> BeadSavedView? {
-        guard case .edit(let id) = request.mode else { return nil }
-        return workspace.savedViews.first { $0.id == id && !$0.isFolder }
+        presentedSheet = .savedView(SavedViewEditorRequest(mode: .create))
     }
 
     // Keep `IssueListView` in a single, stable structural slot (HSplitView[0]) across
@@ -293,7 +321,8 @@ struct ContentView: View {
                     state: store.trackerMigration,
                     upgrade: { store.startTrackerMigration(confirmedByUser: false) },
                     confirmUpgrade: { isConfirmingTrackerUpgrade = true },
-                    retry: store.retryTrackerMigrationAfterFailure
+                    retry: store.retryTrackerMigrationAfterFailure,
+                    reviewRecovery: presentTrackerRecovery
                 )
             }
 
@@ -350,7 +379,7 @@ struct ContentView: View {
                     projectURL: missingDataSourceURL,
                     isBusy: project.isApplyingBeadsSetup || project.isLoading,
                     onSetUp: {
-                        beadsSetupRequest = BeadsSetupRequest(projectURL: missingDataSourceURL)
+                        presentedSheet = .beadsSetup(BeadsSetupRequest(projectURL: missingDataSourceURL))
                     },
                     onOpenProject: openProject
                 )
@@ -376,7 +405,8 @@ struct ContentView: View {
                     trackerMigration: store.trackerMigration,
                     // The project never opened, so its remote list is unknown and the
                     // upgrade is always an explicit choice here.
-                    onUpgradeTracker: { isConfirmingTrackerUpgrade = true }
+                    onUpgradeTracker: { isConfirmingTrackerUpgrade = true },
+                    onReviewRecovery: presentTrackerRecovery
                 )
             }
         case .splitDetail, .fullPageDetail, .creation:
@@ -405,7 +435,7 @@ struct ContentView: View {
         )
     }
 
-    private var searchCoverageCommand: (() -> Void)? {
+    private var searchCoverageCommand: (@MainActor () -> Void)? {
         if store.canExpandCurrentSearchToAllBeads {
             return store.searchAllBeadsUsingCurrentSearchText
         }
@@ -433,7 +463,49 @@ struct ContentView: View {
     }
 
     private var canRefresh: Bool {
-        project.projectURL != nil && !project.isApplyingBeadsSetup && !project.isLoading
+        project.projectURL != nil
+            && !project.isApplyingBeadsSetup
+            && !project.isLoading
+            && !store.trackerMigration.blocksWrites
+    }
+
+    private func presentTrackerRecovery() {
+        guard let projectURL = project.projectURL,
+              store.trackerMigration.canReviewRecovery else { return }
+        pendingAutomaticRecoveryRequest = nil
+        presentedSheet = .trackerRecovery(TrackerRecoveryRequest(projectURL: projectURL))
+    }
+
+    private func presentAutomaticTrackerRecoveryIfNeeded() {
+        guard presentedSheet == nil, let request = pendingAutomaticRecoveryRequest else { return }
+        pendingAutomaticRecoveryRequest = nil
+        presentedSheet = .trackerRecovery(request)
+    }
+
+    private func presentNextSheetAfterDismiss() {
+        guard presentedSheet == nil else { return }
+        if let nextSheet = pendingSheetAfterDismiss {
+            pendingSheetAfterDismiss = nil
+            presentedSheet = nextSheet
+            return
+        }
+        presentAutomaticTrackerRecoveryIfNeeded()
+    }
+
+    private func queueAutomaticTrackerRecovery(for migrationState: BeadsTrackerMigrationState) {
+        guard let request = TrackerRecoveryRequest.automatic(
+            projectURL: project.projectURL,
+            migrationState: migrationState
+        ) else {
+            pendingAutomaticRecoveryRequest = nil
+            return
+        }
+        guard presentedSheet == nil else {
+            pendingAutomaticRecoveryRequest = request
+            return
+        }
+        pendingAutomaticRecoveryRequest = nil
+        presentedSheet = .trackerRecovery(request)
     }
 
     private func requestDeleteSelected() {
@@ -446,18 +518,21 @@ struct ContentView: View {
 
     private func requestBulkEdit(_ issueIDs: Set<String>, _ target: BulkEditTarget) {
         guard !issueIDs.isEmpty else { return }
-        bulkEditRequest = store.makeBulkEditRequest(issueIDs: issueIDs, target: target)
+        guard let request = store.makeBulkEditRequest(issueIDs: issueIDs, target: target) else {
+            return
+        }
+        presentedSheet = .bulkEdit(request)
     }
 
     private func requestDelete(_ issueIDs: Set<String>) {
         guard !issueIDs.isEmpty, let projectURL = project.projectURL else { return }
         let selectedIssues = issueIDs.sorted().compactMap { store.issue(with: $0) }
         guard !selectedIssues.isEmpty else { return }
-        pendingDeleteRequest = DeleteBeadsRequest(
+        presentedSheet = .delete(DeleteBeadsRequest(
             projectURL: projectURL,
             selectedIssues: selectedIssues,
             childIssues: store.childIssues(forDeleting: selectedIssues.map(\.id))
-        )
+        ))
     }
 
     private func openProject() {
@@ -465,20 +540,23 @@ struct ContentView: View {
     }
 
     private func openProject(destination: BeadProjectOpenDestination) {
+        guard destination == .newWindow || !store.trackerRecovery.isMutatingTracker else {
+            return
+        }
         guard let url = PanelService.chooseProjectFolder() else { return }
         // Only tear down this window's transient sheets when the project lands here;
         // routing it elsewhere leaves this window untouched.
         if registry.openProject(url, from: store, destination: destination) {
-            hierarchySheetRequest = nil
+            presentedSheet = nil
         }
     }
 
     private func presentBeadsSetup() {
         guard let projectURL = project.projectURL else { return }
-        beadsSetupRequest = BeadsSetupRequest(
+        presentedSheet = .beadsSetup(BeadsSetupRequest(
             projectURL: projectURL,
             initialIntent: store.beadsSetupIntent
-        )
+        ))
     }
 
     private func requestClose(_ issue: BeadIssue) {
@@ -486,7 +564,7 @@ struct ContentView: View {
             requestReopen(issues: [issue])
             return
         }
-        hierarchySheetRequest = .close(CloseBeadRequest(issue: issue))
+        presentedSheet = .hierarchy(.close(CloseBeadRequest(issue: issue)))
     }
 
     private func openDetail(issueID: String) {
@@ -505,7 +583,7 @@ struct ContentView: View {
         }
         let closeableIssues = selectedIssues.filter { !store.isDone($0) }
         guard !closeableIssues.isEmpty else { return }
-        hierarchySheetRequest = .close(CloseBeadRequest(issues: closeableIssues))
+        presentedSheet = .hierarchy(.close(CloseBeadRequest(issues: closeableIssues)))
     }
 
     private func requestSetSelectedStatus(_ status: String) {
@@ -520,23 +598,23 @@ struct ContentView: View {
 
         switch store.statusChangeConfirmation(forSetting: status, on: issues.map(\.id)) {
         case .closeChildren(let childIssues):
-            hierarchySheetRequest = .closeChildrenForStatus(
+            presentedSheet = .hierarchy(.closeChildrenForStatus(
                 CloseChildBeadsStatusRequest(
                     issues: issues,
                     status: status,
                     childIssues: childIssues
                 )
-            )
+            ))
         case .reopenAncestors(let ancestorIssues):
-            hierarchySheetRequest = .reopenAncestorsForStatus(
+            presentedSheet = .hierarchy(.reopenAncestorsForStatus(
                 ReopenAncestorBeadsStatusRequest(
                     issues: issues,
                     status: status,
                     ancestorIssues: ancestorIssues
                 )
-            )
+            ))
         case .deferDate:
-            deferredStatusRequest = DeferredStatusRequest(issues: issues, status: status)
+            presentedSheet = .deferredStatus(DeferredStatusRequest(issues: issues, status: status))
         case .proceed:
             Task {
                 await store.bulkSet(issueIDs: issues.map(\.id), status: status)
@@ -550,17 +628,85 @@ struct ContentView: View {
         case .missingReopenStatus:
             store.lastError = "No active status is configured for reopened beads."
         case .reopenAncestors(let ancestorIssues, let reopenStatus):
-            hierarchySheetRequest = .reopenAncestorsForStatus(
+            presentedSheet = .hierarchy(.reopenAncestorsForStatus(
                 ReopenAncestorBeadsStatusRequest(
                     issues: issues,
                     status: reopenStatus,
                     ancestorIssues: ancestorIssues
                 )
-            )
+            ))
         case .proceed:
             Task {
                 await store.reopen(issueIDs: issueIDs)
             }
+        }
+    }
+
+    private func presentDeferredStatusAfterCurrentSheet(_ request: DeferredStatusRequest) {
+        pendingSheetAfterDismiss = .deferredStatus(request)
+        presentedSheet = nil
+    }
+
+    private func updateColumnVisibility(showsSidebar nextShowsSidebar: Bool) {
+        guard showsSidebar != nextShowsSidebar else { return }
+        showsSidebar = nextShowsSidebar
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            columnVisibility = nextShowsSidebar ? .all : .detailOnly
+        }
+    }
+
+}
+
+private struct ContentSheetView: View {
+    @Environment(BeadStore.self) private var store
+    private var workspace: BeadWorkspaceStore { store.workspace }
+
+    let sheet: ContentSheet
+    let presentDeferredStatus: @MainActor (DeferredStatusRequest) -> Void
+
+    @ViewBuilder
+    var body: some View {
+        switch sheet {
+        case .delete(let request):
+            DeleteBeadsConfirmationSheet(request: request) { issueIDs in
+                await store.delete(issueIDs: issueIDs, expectedProjectURL: request.projectURL)
+            }
+        case .hierarchy(let request):
+            hierarchySheet(for: request)
+        case .deferredStatus(let request):
+            DeferredStatusDateSheet(request: request) { deferUntil in
+                await store.bulkSet(
+                    issueIDs: request.issueIDs,
+                    status: request.status,
+                    deferUntil: .set(deferUntil),
+                    reopeningAncestorIssueIDs: request.reopeningAncestorIssueIDs
+                )
+            }
+        case .savedView(let request):
+            SaveBookmarkSheet(
+                existing: existingSavedView(for: request),
+                initialQuery: store.currentSavedViewQuery,
+                initialOrdering: store.currentSavedViewOrdering,
+                suggestedName: store.suggestedSavedViewName,
+                initialSymbolName: store.effectiveIssueListBookmark.systemImage
+            )
+        case .folder(let request):
+            FolderBookmarkSheet(
+                initialIssueIDs: request.initialIssueIDs,
+                suggestedName: store.suggestedFolderName,
+                existing: request.folderID.flatMap { id in
+                    workspace.savedViews.first { $0.id == id && $0.isFolder }
+                }
+            )
+        case .bulkEdit(let request):
+            BulkEditSheet(request: request)
+        case .beadsSetup(let request):
+            BeadsSetupWizard(request: request)
+        case .trackerRecovery(let request):
+            TrackerRecoverySheet(request: request)
         }
     }
 
@@ -586,14 +732,12 @@ struct ContentView: View {
                 relatedIssues: request.ancestorIssues
             ) {
                 if store.isDeferredStatus(request.status) {
-                    presentDeferredStatusAfterCurrentSheet(
-                        DeferredStatusRequest(
-                            issueIDs: request.issueIDs,
-                            title: request.title,
-                            status: request.status,
-                            reopeningAncestorIssueIDs: request.ancestorIssueIDs
-                        )
-                    )
+                    presentDeferredStatus(DeferredStatusRequest(
+                        issueIDs: request.issueIDs,
+                        title: request.title,
+                        status: request.status,
+                        reopeningAncestorIssueIDs: request.ancestorIssueIDs
+                    ))
                     return true
                 }
                 return await store.bulkSet(
@@ -605,24 +749,39 @@ struct ContentView: View {
         }
     }
 
-    private func presentDeferredStatusAfterCurrentSheet(_ request: DeferredStatusRequest) {
-        Task { @MainActor in
-            await Task.yield()
-            deferredStatusRequest = request
+    private func existingSavedView(for request: SavedViewEditorRequest) -> BeadSavedView? {
+        guard case .edit(let id) = request.mode else { return nil }
+        return workspace.savedViews.first { $0.id == id && !$0.isFolder }
+    }
+}
+
+private enum ContentSheet: Identifiable {
+    case delete(DeleteBeadsRequest)
+    case hierarchy(ContentHierarchySheetRequest)
+    case deferredStatus(DeferredStatusRequest)
+    case savedView(SavedViewEditorRequest)
+    case folder(FolderBookmarkEditorRequest)
+    case bulkEdit(BulkEditRequest)
+    case beadsSetup(BeadsSetupRequest)
+    case trackerRecovery(TrackerRecoveryRequest)
+
+    var id: String {
+        switch self {
+        case .delete(let request): "delete|\(request.id)"
+        case .hierarchy(let request): "hierarchy|\(request.id)"
+        case .deferredStatus(let request): "deferred-status|\(request.id)"
+        case .savedView(let request): "saved-view|\(request.id)"
+        case .folder(let request): "folder|\(request.id)"
+        case .bulkEdit(let request): "bulk-edit|\(request.id)"
+        case .beadsSetup(let request): "beads-setup|\(request.id)"
+        case .trackerRecovery(let request): "tracker-recovery|\(request.id)"
         }
     }
 
-    private func updateColumnVisibility(showsSidebar nextShowsSidebar: Bool) {
-        guard showsSidebar != nextShowsSidebar else { return }
-        showsSidebar = nextShowsSidebar
-
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            columnVisibility = nextShowsSidebar ? .all : .detailOnly
-        }
+    var isTrackerRecovery: Bool {
+        if case .trackerRecovery = self { return true }
+        return false
     }
-
 }
 
 private struct FolderAutomationStatusOverlay: View {

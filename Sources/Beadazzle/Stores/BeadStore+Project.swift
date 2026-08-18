@@ -35,6 +35,10 @@ extension BeadStore {
     }
 
     func openProject(_ url: URL, forcingSnapshotExport: Bool = false) {
+        // A low-level Dolt statement is intentionally allowed to finish after Stop is
+        // requested. Rebinding this store while that statement still owns its tracker
+        // would let its completion mutate lifecycle state for the next project.
+        guard !trackerRecovery.isMutatingTracker else { return }
         let url = url.standardizedFileURL
         let outgoingProjectURL = projectURL
         let outgoingBeadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
@@ -180,6 +184,7 @@ extension BeadStore {
     /// `openProject` without an incoming project.
     internal func closeProject() {
         guard let outgoingProjectURL = projectURL else { return }
+        guard !trackerRecovery.isMutatingTracker else { return }
         let outgoingBeadsDirectoryURL = projectEnvironment?.beadsDirectoryURL
         flushPendingWorkspaceState()
         project.cancelLifecycleWork()
@@ -292,11 +297,11 @@ extension BeadStore {
         resetWorkspaceHistory()
     }
 
-    /// The project could not be opened at all because its tracker predates the installed
-    /// `bd`. Unlike the pending-upgrade banner, there is no snapshot to keep showing, so
-    /// this reports the blocked state while still offering the upgrade that fixes it.
+    /// The project could not be opened at all because its tracker schema is incompatible
+    /// with the installed `bd`. Unlike the in-workspace banner, there is no snapshot to
+    /// keep showing, so this reports the blocked state with the safe direction-aware action.
     internal func setTrackerMigrationRequired(_ url: URL, skew: BeadsSchemaSkew?) {
-        setProjectUnavailable(url, detail: BeadError.trackerNeedsMigration(skew).localizedDescription)
+        setProjectUnavailable(url, detail: BeadError.trackerSchemaIncompatible(skew).localizedDescription)
         // Order matters: `setProjectUnavailable` resets loaded project state, so the
         // migration state is recorded after it rather than being cleared by it.
         noteTrackerSchemaSkew(skew ?? BeadsSchemaSkew())
@@ -343,6 +348,7 @@ extension BeadStore {
         _doltRemoteFreshness = .unknown
         _ownerIdentity = .unavailable
         _snapshotFreshness = .unknown
+        _trackerRecovery = .idle
         cachedDefinitions = nil
         cachedDefinitionsTrackerDirectoryURL = nil
         cachedDefinitionsLastCheckedAt = nil
@@ -631,7 +637,7 @@ extension BeadStore {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setUnsupportedProject(unsupportedURL, detail: detail)
                     return false
-                } catch BeadError.trackerNeedsMigration(let skew) {
+                } catch BeadError.trackerSchemaIncompatible(let skew) {
                     guard !Task.isCancelled, self.projectURL == projectURL else { return false }
                     self.setTrackerMigrationRequired(projectURL, skew: skew)
                     return false
@@ -649,7 +655,7 @@ extension BeadStore {
                     refreshGeneration: refreshGeneration
                 )
                 return false
-            } catch BeadError.trackerNeedsMigration(let skew) {
+            } catch BeadError.trackerSchemaIncompatible(let skew) {
                 guard !Task.isCancelled, let self, self.projectURL == projectURL else { return false }
                 self.setTrackerMigrationRequired(projectURL, skew: skew)
                 self.finishReconcileAfterRefreshTermination(
@@ -1131,6 +1137,21 @@ extension BeadStore {
         dataSourceMonitor?.stop()
         dataSourceMonitor = nil
         monitoredSourceFingerprint = nil
+    }
+
+    internal func pauseDataSourceMonitoringForTrackerRecovery() {
+        stopDataSourceMonitor()
+    }
+
+    internal func resumeDataSourceMonitoringAfterTrackerRecovery() {
+        guard let projectURL,
+              let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL,
+              let currentDataSource else { return }
+        synchronizeDataSourceMonitor(
+            projectURL: projectURL,
+            beadsDirectoryURL: beadsDirectoryURL,
+            source: currentDataSource
+        )
     }
 
     private func handleDataSourceMonitorEvent(_ event: BeadsDataSourceMonitor.Event, projectURL: URL) {

@@ -50,6 +50,8 @@ final class BeadProjectStore {
     fileprivate(set) var snapshotFreshness = ProjectSnapshotFreshness.unknown
     fileprivate(set) var trackerMigration = BeadsTrackerMigrationState.notNeeded
     @ObservationIgnored fileprivate(set) var trackerMigrationTask: Task<Void, Never>?
+    fileprivate(set) var trackerRecovery = BeadsTrackerRecoveryState.idle
+    @ObservationIgnored fileprivate(set) var trackerRecoveryTask: Task<Void, Never>?
     fileprivate(set) var projectHealthSnapshot: ProjectHealthSnapshot?
     fileprivate(set) var isLoadingProjectHealth = false
     fileprivate(set) var projectHealthAction: ProjectHealthAction?
@@ -169,6 +171,8 @@ final class BeadProjectStore {
         projectionMaterializationTask = nil
         semanticDefinitionsRefreshTask?.cancel()
         semanticDefinitionsRefreshTask = nil
+        trackerRecoveryTask?.cancel()
+        trackerRecoveryTask = nil
     }
 
     func cancelReconciliationWork() {
@@ -626,6 +630,15 @@ final class BeadStore {
     internal var _trackerMigrationTask: Task<Void, Never>? {
         get { project.trackerMigrationTask }
         set { project.trackerMigrationTask = newValue }
+    }
+    var trackerRecovery: BeadsTrackerRecoveryState { project.trackerRecovery }
+    internal var _trackerRecovery: BeadsTrackerRecoveryState {
+        get { project.trackerRecovery }
+        set { project.trackerRecovery = newValue }
+    }
+    internal var _trackerRecoveryTask: Task<Void, Never>? {
+        get { project.trackerRecoveryTask }
+        set { project.trackerRecoveryTask = newValue }
     }
     var projectHealthSnapshot: ProjectHealthSnapshot? { project.projectHealthSnapshot }
     internal var _projectHealthSnapshot: ProjectHealthSnapshot? { get { project.projectHealthSnapshot } set { project.projectHealthSnapshot = newValue } }
@@ -1089,6 +1102,7 @@ final class BeadStore {
 
     @ObservationIgnored internal let commands: any BeadsCommanding
     @ObservationIgnored internal let beadsSetupService: any BeadsSetupServicing
+    @ObservationIgnored internal let trackerRecoveryService: any BeadsTrackerRecovering
     @ObservationIgnored internal var activeDoltRemoteFreshnessSceneIDs: Set<UUID> = []
     internal var isDoltRemoteFreshnessSceneActive: Bool {
         !activeDoltRemoteFreshnessSceneIDs.isEmpty
@@ -1229,6 +1243,7 @@ final class BeadStore {
         userDefaults: UserDefaults = .standard,
         commands: any BeadsCommanding = BeadsCommandService(),
         beadsSetupService: (any BeadsSetupServicing)? = nil,
+        trackerRecoveryService: any BeadsTrackerRecovering = BeadsTrackerRecoveryService(),
         activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository(),
         ownerIdentityResolver: any BeadOwnerIdentityResolving = BeadOwnerIdentityResolver(),
         doltRemoteFreshnessCheckInterval: TimeInterval = 5 * 60
@@ -1236,6 +1251,7 @@ final class BeadStore {
         self.userDefaults = userDefaults
         self.commands = commands
         self.beadsSetupService = beadsSetupService ?? commands
+        self.trackerRecoveryService = trackerRecoveryService
         self.projectLoader = BeadProjectLoader(commands: commands)
         self.activityHistoryRepository = activityHistoryRepository
         self.ownerIdentityResolver = ownerIdentityResolver
@@ -1273,6 +1289,7 @@ final class BeadStore {
     var canCreateBead: Bool {
         hasReadableProject
             && selectedBookmark != .gates
+            && !trackerMigration.blocksWrites
     }
 
     var missingDataSourceURL: URL? {

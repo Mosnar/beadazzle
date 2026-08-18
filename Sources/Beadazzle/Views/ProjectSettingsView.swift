@@ -282,8 +282,8 @@ private struct ProjectDefinitionRow: View {
     let systemImage: String
     let isVisible: Bool
     let canDelete: Bool
-    let setVisibility: (Bool) -> Void
-    let delete: () -> Void
+    let setVisibility: @MainActor @Sendable (Bool) -> Void
+    let delete: @MainActor @Sendable () -> Void
 
     var body: some View {
         HStack(spacing: 10) {

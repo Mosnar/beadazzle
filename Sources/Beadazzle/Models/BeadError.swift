@@ -5,10 +5,9 @@ enum BeadError: LocalizedError {
     case unsupportedProjectMode(URL, String)
     case invalidSnapshot(path: String, line: Int, message: String)
     case commandFailed(command: String, output: String)
-    /// The tracker's schema predates the installed `bd`, so it cannot be read or written
-    /// until the one-time migration runs. Attempting either anyway would fail per-command
-    /// with `bd`'s raw schema-mismatch text.
-    case trackerNeedsMigration(BeadsSchemaSkew?)
+    /// The tracker and installed `bd` disagree about schema compatibility. Direction is
+    /// carried in `BeadsSchemaSkew`; only database-behind skew is a migration.
+    case trackerSchemaIncompatible(BeadsSchemaSkew?)
     /// The create subprocess exited successfully, but Beadazzle could not recover the
     /// server-authored ID. The write may already be durable, so repeating it is unsafe.
     case createOutcomeUncertain(command: String, output: String)
@@ -23,8 +22,9 @@ enum BeadError: LocalizedError {
             return "Could not read Beads snapshot \(path) at line \(line): \(message)"
         case .commandFailed(let command, let output):
             return "`\(command)` failed: \(output)"
-        case .trackerNeedsMigration(let skew):
-            let base = "This tracker needs a one-time upgrade for the installed version of `bd`."
+        case .trackerSchemaIncompatible(let skew):
+            let base = skew?.resolution.errorDescription
+                ?? BeadsSchemaSkewResolution.manualRecovery.errorDescription
             guard let summary = skew?.versionSummary else { return base }
             return "\(base) \(summary)"
         case .createOutcomeUncertain(let command, let output):
@@ -32,7 +32,7 @@ enum BeadError: LocalizedError {
         }
     }
 
-    /// The pending `bd` schema migration this failure was caused by, if any.
+    /// The `bd` schema incompatibility this failure was caused by, if any.
     ///
     /// `bd` reports the mismatch in the failing command's output rather than through a
     /// distinct exit code, so the text is the only thing there is to classify.
@@ -42,7 +42,7 @@ enum BeadError: LocalizedError {
             return BeadsSchemaSkew.detect(in: output)
         case .invalidSnapshot(_, _, let message):
             return BeadsSchemaSkew.detect(in: message)
-        case .trackerNeedsMigration(let skew):
+        case .trackerSchemaIncompatible(let skew):
             return skew
         case .projectMissingDataSource, .unsupportedProjectMode:
             return nil
