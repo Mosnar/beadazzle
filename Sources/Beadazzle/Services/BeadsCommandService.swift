@@ -1383,6 +1383,10 @@ struct BeadsCommandService {
         )
     }
 
+    /// Every `bd --json` read lands here, so bd's JSON envelope is stripped once at the
+    /// boundary instead of in each decoder. Output that carries no envelope — a created
+    /// bead's id, a config scalar, JSONL — is returned verbatim.
+    ///
     /// - Parameter cancellationBehavior: controls whether cancellation leaves the
     ///   subprocess running, terminates it and returns immediately, or waits for it
     ///   to exit. Termination is only safe for read-only commands. Commands with stdin
@@ -1394,6 +1398,22 @@ struct BeadsCommandService {
         standardInput: String? = nil,
         cancellationBehavior: BeadsCommandCancellationBehavior = .keepRunning,
         timeout: Duration? = nil
+    ) async throws -> String {
+        BeadsJSONCommandOutput.payload(from: try await rawOutput(
+            projectURL: projectURL,
+            arguments: arguments,
+            standardInput: standardInput,
+            cancellationBehavior: cancellationBehavior,
+            timeout: timeout
+        ))
+    }
+
+    private func rawOutput(
+        projectURL: URL,
+        arguments: [String],
+        standardInput: String?,
+        cancellationBehavior: BeadsCommandCancellationBehavior,
+        timeout: Duration?
     ) async throws -> String {
         let executable = executable()
         if let cancellationMode = cancellationBehavior.processCancellationMode,

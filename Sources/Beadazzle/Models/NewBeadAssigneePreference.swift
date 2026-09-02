@@ -75,16 +75,20 @@ enum NewBeadAssigneePreference: Equatable, Sendable {
     }
 }
 
+/// The step of bd's actor chain that supplied the owner, in bd's own precedence order.
 enum BeadOwnerIdentitySource: Equatable, Sendable {
-    case environment
+    case beadsActor
     case gitConfiguration
+    case processUser
 
     var displayName: String {
         switch self {
-        case .environment:
-            "GIT_AUTHOR_EMAIL"
+        case .beadsActor:
+            "BEADS_ACTOR"
         case .gitConfiguration:
-            "Git configuration"
+            "git user.name"
+        case .processUser:
+            "$USER"
         }
     }
 }

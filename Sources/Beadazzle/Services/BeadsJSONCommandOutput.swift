@@ -13,7 +13,7 @@ enum BeadsJSONCommandOutput {
     static func requireArray(in output: String, command: String) throws {
         try throwIfErrorEnvelope(output, command: command)
         let data = try extractedData(
-            from: output,
+            from: payload(from: output),
             opening: "[",
             closing: "]",
             command: command
@@ -23,22 +23,56 @@ enum BeadsJSONCommandOutput {
         }
     }
 
+    /// Strips bd's JSON envelope — `{"schema_version": <n>, "data": <payload>}` — which
+    /// `BD_JSON_ENVELOPE=1` turns on today and which bd announced as the default from 2.0.
+    /// Output that carries no envelope is returned untouched, so both wire formats decode
+    /// the same way. Every parse of `bd --json` output has to go through this first: the
+    /// fields Beadazzle decodes live inside `data`, and so does an enveloped `error`.
+    static func payload(from output: String) -> String {
+        guard let envelope = envelopeObject(in: output),
+              let payload = envelope["data"],
+              let data = try? JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.fragmentsAllowed]
+              ),
+              let text = String(data: data, encoding: .utf8) else {
+            return output
+        }
+        return text
+    }
+
     static func throwIfErrorEnvelope(_ output: String, command: String) throws {
-        let candidates = [Data(output.utf8), extractedObjectData(from: output)].compactMap { $0 }
+        guard reportsError(in: output) || reportsError(in: payload(from: output)) else { return }
+        throw BeadError.commandFailed(command: command, output: output)
+    }
+
+    private static func reportsError(in text: String) -> Bool {
+        let candidates = [Data(text.utf8), extractedObjectData(from: text)].compactMap { $0 }
         for data in candidates {
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let message = object["error"] as? String,
                   message.nilIfBlank != nil else {
                 continue
             }
-            throw BeadError.commandFailed(command: command, output: output)
+            return true
         }
+        return false
+    }
+
+    private static func envelopeObject(in output: String) -> [String: Any]? {
+        guard let data = extractedObjectData(from: output),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["schema_version"] != nil,
+              object.keys.contains("data") else {
+            return nil
+        }
+        return object
     }
 
     private static func objectData(from output: String, command: String) throws -> Data {
         try throwIfErrorEnvelope(output, command: command)
         let data = try extractedData(
-            from: output,
+            from: payload(from: output),
             opening: "{",
             closing: "}",
             command: command

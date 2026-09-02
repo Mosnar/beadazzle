@@ -165,6 +165,32 @@ final class BeadsCommandServiceTests: XCTestCase {
         XCTAssertEqual(context.database, "database-name")
     }
 
+    func testProjectContextReadsBdJSONEnvelopeOutput() async throws {
+        let projectURL = try makeProjectWithBeadsDirectory()
+        let stubURL = try makeExecutableScript(in: projectURL, contents: """
+        #!/bin/sh
+        case "$*" in
+          "--readonly context --json")
+            printf '%s\n' '{"schema_version":1,"data":{"backend":"dolt","database":"database-name","dolt_mode":"embedded"}}'
+            ;;
+          "--readonly where --json")
+            printf '%s\n' '{"schema_version":1,"data":{"prefix":"actual-prefix"}}'
+            ;;
+          *)
+            exit 2
+            ;;
+        esac
+        """)
+        let service = BeadsCommandService(executable: { (stubURL, []) })
+
+        let context = try await service.loadProjectContext(projectURL: projectURL)
+
+        XCTAssertEqual(context.backend, "dolt")
+        XCTAssertEqual(context.database, "database-name")
+        XCTAssertEqual(context.issuePrefix, "actual-prefix")
+        XCTAssertTrue(context.usesCurrentEmbeddedDolt)
+    }
+
     func testDecodeCommentsHandlesCurrentAndLegacyFieldNames() throws {
         let data = Data(
             #"[{"id":12,"issue_id":"bd-1","author":"Riley","text":"First","created_at":"2026-07-03T20:58:35Z"},{"issueId":"bd-1","body":"Second","createdAt":"2026-07-03T21:58:35.123Z"}]"#.utf8

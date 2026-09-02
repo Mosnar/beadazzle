@@ -13,6 +13,14 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Changed
+
+- The owner used for new beads now resolves the same identity `bd` itself records as the actor — `$BEADS_ACTOR`, then `git user.name`, then `$USER` — so beads created in Beadazzle are attributed and assigned exactly like beads created from the command line or by an agent. Previously Beadazzle used your Git email, which never matched what `bd` writes.
+
+### Fixed
+
+- Projects keep opening when `bd` wraps its `--json` output in the `schema_version`/`data` envelope, the format bd enables with `BD_JSON_ENVELOPE=1` and has announced as the default in bd 2.0. Enveloped `bd` errors are also reported as errors again instead of being read as empty results.
+
 ## [1.6.1] - 2026-08-18
 
 ### Added
