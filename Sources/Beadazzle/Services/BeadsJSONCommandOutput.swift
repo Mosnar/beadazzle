@@ -11,9 +11,10 @@ enum BeadsJSONCommandOutput {
     }
 
     static func requireArray(in output: String, command: String) throws {
-        try throwIfErrorEnvelope(output, command: command)
+        let envelopePayload = envelopePayload(from: output)
+        try throwIfErrorEnvelope(output, envelopePayload: envelopePayload, command: command)
         let data = try extractedData(
-            from: payload(from: output),
+            from: envelopePayload ?? output,
             opening: "[",
             closing: "]",
             command: command
@@ -29,6 +30,34 @@ enum BeadsJSONCommandOutput {
     /// the same way. Every parse of `bd --json` output has to go through this first: the
     /// fields Beadazzle decodes live inside `data`, and so does an enveloped `error`.
     static func payload(from output: String) -> String {
+        envelopePayload(from: output) ?? output
+    }
+
+    static func throwIfErrorEnvelope(_ output: String, command: String) throws {
+        try throwIfErrorEnvelope(
+            output,
+            envelopePayload: envelopePayload(from: output),
+            command: command
+        )
+    }
+
+    /// Callers that already unwrapped the envelope pass it along so unenveloped output is
+    /// parsed once, not once per step.
+    private static func throwIfErrorEnvelope(
+        _ output: String,
+        envelopePayload: String?,
+        command: String
+    ) throws {
+        if reportsError(in: output) {
+            throw BeadError.commandFailed(command: command, output: output)
+        }
+        if let envelopePayload, reportsError(in: envelopePayload) {
+            throw BeadError.commandFailed(command: command, output: output)
+        }
+    }
+
+    /// The serialized `data` member of an enveloped output; nil when the output is not enveloped.
+    private static func envelopePayload(from output: String) -> String? {
         guard let envelope = envelopeObject(in: output),
               let payload = envelope["data"],
               let data = try? JSONSerialization.data(
@@ -36,14 +65,9 @@ enum BeadsJSONCommandOutput {
                 options: [.fragmentsAllowed]
               ),
               let text = String(data: data, encoding: .utf8) else {
-            return output
+            return nil
         }
         return text
-    }
-
-    static func throwIfErrorEnvelope(_ output: String, command: String) throws {
-        guard reportsError(in: output) || reportsError(in: payload(from: output)) else { return }
-        throw BeadError.commandFailed(command: command, output: output)
     }
 
     private static func reportsError(in text: String) -> Bool {
@@ -70,9 +94,10 @@ enum BeadsJSONCommandOutput {
     }
 
     private static func objectData(from output: String, command: String) throws -> Data {
-        try throwIfErrorEnvelope(output, command: command)
+        let envelopePayload = envelopePayload(from: output)
+        try throwIfErrorEnvelope(output, envelopePayload: envelopePayload, command: command)
         let data = try extractedData(
-            from: payload(from: output),
+            from: envelopePayload ?? output,
             opening: "{",
             closing: "}",
             command: command
