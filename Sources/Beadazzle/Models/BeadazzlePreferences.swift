@@ -401,7 +401,7 @@ enum BeadazzleOptionInventory {
             scope: .appPreference,
             persistence: BeadazzleAppBoolPreferences.showsAllChildrenInOutline.key,
             defaultValue: BeadazzleAppBoolPreferences.showsAllChildrenInOutline.defaultValueDescription,
-            uiLocation: "Settings > Display",
+            uiLocation: "Settings > Display; Issue List > View Options",
             behavior: "Shows expanded child beads as context even when they do not match the current filter."
         ),
         BeadazzleOptionInventoryEntry(

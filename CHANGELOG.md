@@ -13,6 +13,10 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Added
+
+- The bead list's View menu now has a **Show all children** toggle, the same option as Settings > Display, so you can hide child beads that don't match the current filters — closed beads under an open epic, mostly — without leaving the list. With it off, an epic whose children are all filtered out keeps its progress count but loses its expand arrow until you turn it back on.
+
 ### Changed
 
 - The owner used for new beads now resolves the same identity `bd` itself records as the actor — `$BEADS_ACTOR`, then `git user.name`, then `$USER` — so beads created in Beadazzle are attributed and assigned exactly like beads created from the command line or by an agent. Previously Beadazzle used your Git email, which never matched what `bd` writes.

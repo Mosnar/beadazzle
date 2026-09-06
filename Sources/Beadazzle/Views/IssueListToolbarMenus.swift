@@ -94,6 +94,15 @@ struct IssueListViewOptionsMenu: View {
                 Toggle("Show due date", isOn: $store.showsDueDateInBeadList)
                 Toggle("Show comments", isOn: $store.showsCommentsInBeadList)
             }
+
+            // Mirrors the Settings > Display preference so hiding filtered-out
+            // children — closed beads under an open epic, chiefly — is one click
+            // away from the list it affects. Stays enabled in Flat mode: menus
+            // give no room to explain a disabled item, and the Outline/Flat
+            // picker in the list header already shows when it applies.
+            Section("Outline") {
+                Toggle("Show all children", isOn: $store.showsAllChildrenInOutline)
+            }
         } label: {
             Label("View", systemImage: "eye")
                 .labelStyle(.iconOnly)
