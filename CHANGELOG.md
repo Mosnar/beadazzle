@@ -19,7 +19,7 @@ for users, not for the commit log.
 
 ### Changed
 
-- The owner used for new beads now resolves the same identity `bd` itself records as the actor — `$BEADS_ACTOR`, then `git user.name`, then `$USER` — so beads created in Beadazzle are attributed and assigned exactly like beads created from the command line or by an agent. Previously Beadazzle used your Git email, which never matched what `bd` writes.
+- The default-assignee option formerly labeled **Owner** is now **Me**, and it assigns new beads to the identity `bd` records as the actor — `$BEADS_ACTOR`, the tracker's `config.yaml` `actor`, `git user.name`, then `$USER`. That is the name already shown as `created_by` and on comments in a bead's history, and the one agents identify themselves with, so beads assigned to you match the rest of the record. Previously Beadazzle used your Git email, which is what `bd` stores in its separate `owner` attribution field rather than the name that appears in history. Project Settings > Storage shows which step supplied your identity.
 
 ### Fixed
 

@@ -53,7 +53,7 @@ struct ProjectNewBeadAssigneePreferenceControl: View {
             Text("Use App Default (\(appDefault.normalized.displayName))")
                 .tag(ProjectOverrideMode.inherit)
             Text("Unassigned").tag(ProjectOverrideMode.unassigned)
-            Text("Owner").tag(ProjectOverrideMode.owner)
+            Text("Me").tag(ProjectOverrideMode.owner)
             Text("Specific Assignee").tag(ProjectOverrideMode.specific)
         }
 

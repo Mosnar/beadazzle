@@ -13,7 +13,7 @@ enum NewBeadAssigneePreference: Equatable, Sendable {
             case .unassigned:
                 "Unassigned"
             case .owner:
-                "Owner"
+                "Me"
             case .specific:
                 "Specific Assignee"
             }
@@ -57,7 +57,7 @@ enum NewBeadAssigneePreference: Equatable, Sendable {
         case .unassigned:
             "Unassigned"
         case .owner:
-            "Owner"
+            "Me"
         case .specific(let value):
             value
         }
@@ -75,16 +75,22 @@ enum NewBeadAssigneePreference: Equatable, Sendable {
     }
 }
 
-/// The step of bd's actor chain that supplied the owner, in bd's own precedence order.
+/// The step of bd's actor chain that supplied the identity, in bd's own precedence order.
 enum BeadOwnerIdentitySource: Equatable, Sendable {
     case beadsActor
+    case legacyBeadsActor
+    case configuredActor
     case gitConfiguration
     case processUser
 
     var displayName: String {
         switch self {
         case .beadsActor:
-            "BEADS_ACTOR"
+            "$BEADS_ACTOR"
+        case .legacyBeadsActor:
+            "$BD_ACTOR"
+        case .configuredActor:
+            "config.yaml actor"
         case .gitConfiguration:
             "git user.name"
         case .processUser:

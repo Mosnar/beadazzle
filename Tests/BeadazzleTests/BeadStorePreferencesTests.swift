@@ -6,7 +6,7 @@ final class BeadStorePreferencesTests: XCTestCase {
     func testNewBeadAssigneePreferenceNormalizesSpecificValues() {
         XCTAssertEqual(NewBeadAssigneePreference.specific("  alex@example.com  ").normalized, .specific("alex@example.com"))
         XCTAssertEqual(NewBeadAssigneePreference.specific(" \n ").normalized, .unassigned)
-        XCTAssertEqual(NewBeadAssigneePreference.owner.displayName, "Owner")
+        XCTAssertEqual(NewBeadAssigneePreference.owner.displayName, "Me")
     }
 
     func testPreferenceDefaultsMatchCompactMetadataAndStaleCutoff() {

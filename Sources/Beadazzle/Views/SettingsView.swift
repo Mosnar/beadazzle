@@ -156,7 +156,7 @@ private struct GeneralSettingsPane: View {
                    store.defaultNewBeadAssignee.normalized == .unassigned {
                     Text("Enter a name or email. Until then, new drafts start unassigned; projects can still override this default.")
                 } else {
-                    Text("Seeds new drafts only. Owner uses the Git identity resolved by bd; projects can override this default.")
+                    Text("Seeds new drafts only. “Me” is the identity bd records as the actor; projects can override this default.")
                 }
             }
 

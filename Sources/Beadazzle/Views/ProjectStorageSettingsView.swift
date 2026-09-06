@@ -107,7 +107,7 @@ private struct ProjectOwnerIdentitySection: View {
 
     var body: some View {
         Section {
-            LabeledContent("Owner for new beads") {
+            LabeledContent("Your identity") {
                 switch store.ownerIdentity {
                 case .resolving:
                     HStack(spacing: 6) {
@@ -132,7 +132,7 @@ private struct ProjectOwnerIdentitySection: View {
         } header: {
             Text("Identity")
         } footer: {
-            Text("bd records owner as creation-time provenance from GIT_AUTHOR_EMAIL or git config user.email. Beadazzle does not override it.")
+            Text("The name bd records as the actor on beads, comments, and history: $BEADS_ACTOR, the tracker’s config.yaml actor, git user.name, then $USER. When the default assignee is Me, new beads are assigned to this name.")
         }
     }
 }

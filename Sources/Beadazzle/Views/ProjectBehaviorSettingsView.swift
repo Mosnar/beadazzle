@@ -46,10 +46,10 @@ struct ProjectBehaviorSettingsPane: View {
                     Text("Enter a name or email. Until then, new drafts in this project start unassigned.")
                 } else if store.effectiveNewBeadAssignee == .owner,
                    store.ownerIdentity == .resolving {
-                    Text("Checking the identity that bd will use as owner.")
+                    Text("Checking the identity bd records as the actor.")
                 } else if store.effectiveNewBeadAssignee == .owner,
                           store.ownerIdentity.value == nil {
-                    Text("Owner is not configured for this project, so new drafts currently start unassigned.")
+                    Text("Your identity could not be resolved for this project, so new drafts currently start unassigned.")
                 } else {
                     Text("Applies only when starting a new draft in this project.")
                 }
