@@ -13,6 +13,10 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Fixed
+
+- The bead detail page no longer freezes or stutters while scrolling a bead with many comments or sub-issues; the activity feed and sub-issue list were re-measuring every row on each scroll tick.
+
 ## [1.6.1] - 2026-08-18
 
 ### Added
