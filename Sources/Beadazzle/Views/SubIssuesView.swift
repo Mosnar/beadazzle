@@ -52,7 +52,7 @@ struct SubIssuesView: View {
                 Text("No sub-issues.")
                     .foregroundStyle(.secondary)
             } else {
-                LazyVStack(spacing: 0) {
+                VStack(spacing: 0) {
                     ForEach(items) { item in
                         SubIssueRow(issue: item.issue, row: item.row)
                         Divider()

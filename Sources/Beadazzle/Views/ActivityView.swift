@@ -187,7 +187,8 @@ private struct ActivityFeed: View, @MainActor Equatable {
             locale: locale
         )
 
-        LazyVStack(alignment: .leading, spacing: 0) {
+        // Not lazy: nested in the page's VStack it cannot skip rows, only re-measure them.
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(elements) { element in
                 ActivityFeedElementRow(
                     element: element,
