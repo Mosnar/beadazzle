@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-16
+
 ### Added
 
 - The bead list's View menu now has a **Show all children** toggle, the same option as Settings > Display, so you can hide child beads that don't match the current filters — closed beads under an open epic, mostly — without leaving the list. With it off, an epic whose children are all filtered out keeps its progress count but loses its expand arrow until you turn it back on.
@@ -343,7 +345,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/Mosnar/beadazzle/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/Mosnar/beadazzle/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/Mosnar/beadazzle/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/Mosnar/beadazzle/compare/v1.4.0...v1.5.0
