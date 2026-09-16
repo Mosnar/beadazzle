@@ -23,6 +23,8 @@ for users, not for the commit log.
 
 ### Fixed
 
+- Fixed a blank sidebar on macOS 27. The sidebar, bead list, and detail view now stay within the window height.
+
 - Projects keep opening when `bd` wraps its `--json` output in the `schema_version`/`data` envelope, the format bd enables with `BD_JSON_ENVELOPE=1` and has announced as the default in bd 2.0. Enveloped `bd` errors are also reported as errors again instead of being read as empty results.
 
 ## [1.6.1] - 2026-08-18

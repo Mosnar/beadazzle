@@ -265,7 +265,13 @@ struct ContentView: View {
                     max: ContentLayout.sidebarMaxWidth
                 )
         } detail: {
-            workspaceContent
+            // Bound the nested split view to the visible column. On macOS 27,
+            // its content height can otherwise expand the outer split view and
+            // place the sidebar rows above the window.
+            GeometryReader { geometry in
+                workspaceContent
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+            }
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
