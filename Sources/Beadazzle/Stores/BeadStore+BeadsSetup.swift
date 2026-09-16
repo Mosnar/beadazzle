@@ -13,7 +13,8 @@ private struct PreparedBeadsSetupReload: Sendable {
 
 extension BeadStore {
     var showsBeadsSetupAdvisory: Bool {
-        guard projectURL != nil,
+        guard !isTrackerMigrationPending,
+              projectURL != nil,
               beadsSetupIntent != nil,
               let fingerprint = beadsSetupFindingsFingerprint else {
             return false
@@ -33,8 +34,18 @@ extension BeadStore {
         )
     }
 
+    /// Discard checks made while the tracker could not be read.
+    internal func invalidateBeadsSetupAuditForMigration() {
+        beadsSetupInspectionGeneration &+= 1
+        beadsSetupInspectionTask?.cancel()
+        beadsSetupInspectionTask = nil
+        _isInspectingBeadsSetup = false
+        _beadsSetupAssessment = nil
+        _beadsSetupFindings = []
+    }
+
     func refreshBeadsSetupAudit() {
-        guard let projectURL, beadsSetupIntent != nil else { return }
+        guard !isTrackerMigrationPending, let projectURL, beadsSetupIntent != nil else { return }
         beadsSetupInspectionGeneration &+= 1
         let generation = beadsSetupInspectionGeneration
         beadsSetupInspectionTask?.cancel()
@@ -59,6 +70,7 @@ extension BeadStore {
                 guard !Task.isCancelled,
                       let self,
                       self.projectURL == projectURL,
+                      !self.isTrackerMigrationPending,
                       self.beadsSetupInspectionGeneration == generation else { return }
                 self._beadsSetupAssessment = assessment
                 self.project.cacheProjectConfigurationInspection(assessment.configurationInspection)
@@ -84,6 +96,7 @@ extension BeadStore {
                 guard !Task.isCancelled,
                       let self,
                       self.projectURL == projectURL,
+                      !self.isTrackerMigrationPending,
                       self.beadsSetupInspectionGeneration == generation else { return }
                 self._beadsSetupFindings = [BeadsSetupFinding(
                     id: "audit-failed",

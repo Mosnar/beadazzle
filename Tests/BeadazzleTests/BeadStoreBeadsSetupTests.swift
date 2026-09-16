@@ -199,6 +199,58 @@ final class BeadStoreBeadsSetupTests: XCTestCase {
         XCTAssertEqual(Array(recordedEvents.suffix(3)), [.reloadingProject, .savingIntent, .finished])
     }
 
+    func testMigrationClearsSetupWarningsAndChecksAgainAfterReload() async throws {
+        let projectURL = try makeProject(named: "migration-audit")
+        let service = BeadsSetupServiceStub(
+            assessment: assessment(projectURL: projectURL, autoPush: false),
+            postApplyInspectDelay: .milliseconds(100)
+        )
+        let store = BeadStore(
+            userDefaults: makeUserDefaults(),
+            commands: CurrentDoltTestCommands(),
+            beadsSetupService: service
+        )
+        store.openProject(projectURL)
+        try await waitUntil { !store.isLoading }
+        store._beadsSetupIntent = BeadsSetupIntent(
+            profile: .team,
+            remoteName: nil,
+            remoteURLFingerprint: nil,
+            installsHooks: false,
+            allowsAutomaticPush: false,
+            backupDestinationFingerprint: nil,
+            recordedAt: Date()
+        )
+        store.refreshBeadsSetupAudit()
+        try await waitUntil { store.beadsSetupAssessment != nil }
+        store._beadsSetupFindings = [BeadsSetupFinding(
+            id: "old-warning", severity: .warning,
+            title: "Inspection was incomplete", detail: "The schema is behind."
+        )]
+        XCTAssertTrue(store.showsBeadsSetupAdvisory)
+
+        store.refreshBeadsSetupAudit()
+        try await waitUntil { await service.inspectCallCount == 2 }
+        store.noteTrackerSchemaSkew(BeadsSchemaSkew(databaseVersion: 53, binaryVersion: 66))
+
+        XCTAssertTrue(store.isTrackerMigrationPending)
+        XCTAssertFalse(store.showsBeadsSetupAdvisory)
+        XCTAssertNil(store.beadsSetupAssessment)
+        XCTAssertTrue(store.beadsSetupFindings.isEmpty)
+        store.refreshBeadsSetupAudit()
+        let pendingCount = await service.inspectCallCount
+        XCTAssertEqual(pendingCount, 2)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(store.beadsSetupAssessment)
+        XCTAssertTrue(store.beadsSetupFindings.isEmpty)
+
+        // A successful read also covers an upgrade done outside the app.
+        store.refresh()
+        try await waitUntil { await service.inspectCallCount == 3 && !store.isInspectingBeadsSetup }
+        XCTAssertNotNil(store.beadsSetupAssessment)
+        XCTAssertFalse(store.showsBeadsSetupAdvisory)
+    }
+
     private func assessment(
         projectURL: URL,
         autoPush: Bool?,

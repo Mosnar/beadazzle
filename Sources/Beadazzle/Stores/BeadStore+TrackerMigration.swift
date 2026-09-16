@@ -25,6 +25,8 @@ extension BeadStore {
             break
         }
 
+        invalidateBeadsSetupAuditForMigration()
+
         guard skew.direction == .databaseBehind else {
             if skew.supportsPinnedV65ToV53Recovery {
                 _trackerMigration = .recoveryAvailable(skew)
@@ -125,6 +127,7 @@ extension BeadStore {
 
         let allowsRemoteMigration = confirmedByUser
             && trackerMigrationConfirmationReason() != nil
+        invalidateBeadsSetupAuditForMigration()
         _trackerMigration = .migrating
         let commands = commands
         _trackerMigrationTask = Task { @MainActor [weak self] in

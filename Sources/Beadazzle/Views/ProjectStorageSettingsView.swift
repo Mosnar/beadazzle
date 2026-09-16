@@ -71,7 +71,11 @@ private struct ProjectOverviewBeadsSetupSection: View {
                 }
                 Spacer()
                 Button("Check Again") { store.refreshBeadsSetupAudit() }
-                    .disabled(store.beadsSetupIntent == nil || store.isInspectingBeadsSetup)
+                    .disabled(
+                        store.beadsSetupIntent == nil
+                            || store.isInspectingBeadsSetup
+                            || store.isTrackerMigrationPending
+                    )
             }
         } header: {
             Text("Beads Setup")

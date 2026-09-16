@@ -755,17 +755,6 @@ extension BeadStore {
         // route to one tracker. The registry defers its duplicate repair to a fresh turn,
         // so this cannot reenter the store mid-apply.
         appStateBroadcaster?.projectTrackerDidResolve(from: self)
-        if isApplyingBeadsSetup {
-            // Setup schedules one audit after the applied project is installed. Avoid
-            // racing it with a duplicate remote inspection during this intermediate load.
-        } else if beadsSetupIntent != nil,
-           beadsSetupAssessment == nil,
-           !isInspectingBeadsSetup,
-           !isApplyingBeadsSetup {
-            refreshBeadsSetupAudit()
-        } else {
-            loadProjectDoltRemotesIfNeeded()
-        }
         _currentDataSource = loadedProject.source
         markSnapshotFreshnessLoaded(
             projectURL: projectURL,
@@ -782,6 +771,18 @@ extension BeadStore {
             noteTrackerSchemaSkew(schemaSkew)
         } else if loadedProject.definitionsLoadedFromCommands {
             clearTrackerMigrationStateAfterSuccessfulRead()
+        }
+        if isApplyingBeadsSetup {
+            // Setup schedules one audit after the applied project is installed. Avoid
+            // racing it with a duplicate remote inspection during this intermediate load.
+        } else if !isTrackerMigrationPending,
+           beadsSetupIntent != nil,
+           beadsSetupAssessment == nil,
+           !isInspectingBeadsSetup,
+           !isApplyingBeadsSetup {
+            refreshBeadsSetupAudit()
+        } else {
+            loadProjectDoltRemotesIfNeeded()
         }
         _selectedIDs = selectedIDs.filter(index.isUserFacingIssueID)
         pruneExpandedIssueIDs()
