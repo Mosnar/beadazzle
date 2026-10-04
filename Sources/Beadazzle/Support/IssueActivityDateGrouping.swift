@@ -9,7 +9,7 @@ struct IssueActivityDateBoundary: Identifiable, Hashable, Sendable {
     let isToday: Bool
 }
 
-/// The flattened presentation sequence consumed by Activity's lazy stack.
+/// The flattened presentation sequence consumed by Activity's stack.
 /// Keeping boundaries and activity items at the same level preserves per-row
 /// laziness even when one relative-time bucket contains many events.
 enum IssueActivityFeedElement: Identifiable, Hashable, Sendable {

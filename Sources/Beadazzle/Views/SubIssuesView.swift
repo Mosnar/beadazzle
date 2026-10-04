@@ -52,12 +52,13 @@ struct SubIssuesView: View {
                 Text("No sub-issues.")
                     .foregroundStyle(.secondary)
             } else {
-                LazyVStack(spacing: 0) {
+                DetailSectionStack(layout: .subIssues(count: items.count)) {
                     ForEach(items) { item in
                         SubIssueRow(issue: item.issue, row: item.row)
                         Divider()
                     }
                 }
+                .id(issue.id)
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
             }
         }

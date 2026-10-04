@@ -16,6 +16,7 @@ for users, not for the commit log.
 ### Fixed
 
 - Opening Gates no longer crashes when two gates block the same bead. The bead remains visible under each gate, with selection and keyboard navigation kept on the selected row. Closes [#8](https://github.com/Mosnar/beadazzle/issues/8). Thanks to [@mrschober](https://github.com/mrschober) for the report and diagnosis.
+- Small activity feeds and sub-issue lists use a regular layout to avoid the reported detail-page scroll freeze. Large sections still load rows as needed to keep opening times short. Based on [PR #6](https://github.com/Mosnar/beadazzle/pull/6) by [@devployment](https://github.com/devployment).
 
 ## [1.7.0] - 2026-09-16
 

@@ -63,7 +63,7 @@ struct ActivityView: View {
                 Text("No activity.")
                     .foregroundStyle(.secondary)
             } else {
-                ActivityFeed(items: items, issueReferenceLookup: issueReferenceLookup)
+                ActivityFeed(issueID: issue.id, items: items, issueReferenceLookup: issueReferenceLookup)
                     .equatable()
             }
 
@@ -171,11 +171,13 @@ private struct ActivityFeed: View, @MainActor Equatable {
     @Environment(\.locale) private var locale
     @State private var referenceDate = Date.now
 
+    let issueID: String
     let items: [IssueActivityItem]
     let issueReferenceLookup: IssueReferenceLookup
 
     static func == (lhs: ActivityFeed, rhs: ActivityFeed) -> Bool {
-        lhs.items == rhs.items
+        lhs.issueID == rhs.issueID
+            && lhs.items == rhs.items
             && lhs.issueReferenceLookup.revision == rhs.issueReferenceLookup.revision
     }
 
@@ -187,7 +189,7 @@ private struct ActivityFeed: View, @MainActor Equatable {
             locale: locale
         )
 
-        LazyVStack(alignment: .leading, spacing: 0) {
+        DetailSectionStack(layout: .activity(items)) {
             ForEach(elements) { element in
                 ActivityFeedElementRow(
                     element: element,
@@ -195,6 +197,7 @@ private struct ActivityFeed: View, @MainActor Equatable {
                 )
             }
         }
+        .id(issueID)
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             referenceDate = .now
         }
