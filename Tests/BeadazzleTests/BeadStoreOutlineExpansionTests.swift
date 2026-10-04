@@ -81,40 +81,6 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertFalse(store.expandSelectedIssueChildren())
     }
 
-    func testRightArrowNavigationExpandsParentThenSelectsFirstChild() async throws {
-        let store = try await makeLoadedStore()
-
-        store.select(["bd-parent"])
-        XCTAssertTrue(store.navigateIssueOutlineRight())
-        await store.waitForPendingQueryRecompute()
-        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent", "bd-child"])
-        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
-
-        XCTAssertTrue(store.navigateIssueOutlineRight())
-        XCTAssertEqual(store.selectedIDs, Set(["bd-child"]))
-        XCTAssertFalse(store.navigateIssueOutlineRight())
-    }
-
-    func testLeftArrowNavigationSelectsParentThenCollapsesExpandedParent() async throws {
-        let store = try await makeLoadedStore()
-
-        store.select(["bd-parent"])
-        XCTAssertTrue(store.navigateIssueOutlineRight())
-        await store.waitForPendingQueryRecompute()
-        XCTAssertTrue(store.navigateIssueOutlineRight())
-        XCTAssertEqual(store.selectedIDs, Set(["bd-child"]))
-
-        XCTAssertTrue(store.navigateIssueOutlineLeft())
-        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
-        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent", "bd-child"])
-
-        XCTAssertTrue(store.navigateIssueOutlineLeft())
-        await store.waitForPendingQueryRecompute()
-        XCTAssertEqual(store.selectedIDs, Set(["bd-parent"]))
-        XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent"])
-        XCTAssertFalse(store.navigateIssueOutlineLeft())
-    }
-
     func testSelectedIssueExpansionCommandsIgnoreUnsupportedSelectionsAndModes() async throws {
         let store = try await makeLoadedStore()
 
@@ -122,8 +88,6 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertFalse(store.canExpandSelectedIssueChildren)
         XCTAssertFalse(store.canCollapseSelectedIssueChildren)
         XCTAssertFalse(store.expandSelectedIssueChildren())
-        XCTAssertFalse(store.navigateIssueOutlineRight())
-        XCTAssertFalse(store.navigateIssueOutlineLeft())
         XCTAssertEqual(store.issueListRows.map(\.issueID), ["bd-parent"])
 
         store.select(["bd-child"])
@@ -133,7 +97,6 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertFalse(store.canCollapseSelectedIssueChildren)
         XCTAssertFalse(store.expandSelectedIssueChildren())
         XCTAssertFalse(store.collapseSelectedIssueChildren())
-        XCTAssertFalse(store.navigateIssueOutlineRight())
 
         store.select(["bd-parent"])
         store.issueListMode = .flat
@@ -141,8 +104,6 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
         XCTAssertFalse(store.canCollapseSelectedIssueChildren)
         XCTAssertFalse(store.expandSelectedIssueChildren())
         XCTAssertFalse(store.collapseSelectedIssueChildren())
-        XCTAssertFalse(store.navigateIssueOutlineRight())
-        XCTAssertFalse(store.navigateIssueOutlineLeft())
     }
 
     func testSelectingVisibleStaleChildDoesNotRevealFreshSiblings() async throws {
@@ -221,50 +182,6 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
     }
 
     private func makeLoadedStore(issuesJSONL: String) async throws -> BeadStore {
-        let projectURL = try makeProject(issuesJSONL: issuesJSONL)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: projectURL)
-        }
-
-        let store = BeadStore(
-            userDefaults: makeUserDefaults(),
-            commands: CurrentDoltTestCommands()
-        )
-        store.openProject(projectURL)
-        try await waitForStoreToLoad(store)
-        return store
-    }
-
-    private func waitForStoreToLoad(
-        _ store: BeadStore,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = Date().addingTimeInterval(2)
-        while store.isLoading || store.issueListRows.isEmpty {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for BeadStore to load test project", file: file, line: line)
-                return
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertNil(store.lastError, file: file, line: line)
-    }
-
-    private func makeProject(issuesJSONL: String) throws -> URL {
-        let projectURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeadazzleTests-\(UUID().uuidString)", isDirectory: true)
-        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
-        try FileManager.default.createDirectory(at: beadsURL, withIntermediateDirectories: true)
-        try issuesJSONL.write(
-            to: beadsURL.appendingPathComponent("issues.jsonl"),
-            atomically: true,
-            encoding: .utf8
-        )
-        return projectURL
-    }
-
-    private func makeUserDefaults() -> UserDefaults {
-        makeIsolatedUserDefaults()
+        try await makeLoadedBeadStore(issuesJSONL: issuesJSONL)
     }
 }

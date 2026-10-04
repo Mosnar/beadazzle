@@ -228,7 +228,13 @@ enum IssueListMode: String, CaseIterable, Codable, Hashable, Identifiable, Senda
 }
 
 struct IssueListRow: Identifiable, Hashable, Sendable {
-    var id: String { issueID }
+    /// One visible occurrence of a bead, including its gate context when repeated.
+    struct ID: Hashable, Sendable {
+        let issueID: String
+        let parentGateID: String?
+    }
+
+    var id: ID { ID(issueID: issueID, parentGateID: parentGateID) }
     var issueID: String
     var depth: Int
     var hasChildren: Bool
@@ -236,6 +242,7 @@ struct IssueListRow: Identifiable, Hashable, Sendable {
     var isExpanded: Bool
     var isContext: Bool
     var presentation: IssueListRowPresentation? = nil
+    var parentGateID: String? = nil
 }
 
 struct IssueChildProgress: Hashable, Sendable {

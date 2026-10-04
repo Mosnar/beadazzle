@@ -174,6 +174,11 @@ extension BeadStore {
         select([])
     }
 
+    func selectIssueListRows(_ rowIDs: Set<IssueListRow.ID>) {
+        select(Set(rowIDs.map(\.issueID)))
+        selectedIssueListRowIDs = rowIDs.filter { selectedIDs.contains($0.issueID) }
+    }
+
     func openIssueFromDetail(issueID: String) {
         guard index.isUserFacingIssueID(issueID) else { return }
         if fullPageDetailIssueID != nil {
@@ -212,43 +217,6 @@ extension BeadStore {
     @discardableResult
     func collapseSelectedIssueChildren() -> Bool {
         setSelectedIssueChildrenExpanded(false)
-    }
-
-    @discardableResult
-    func navigateIssueOutlineRight() -> Bool {
-        guard let selectedRow = selectedOutlineRow,
-              selectedRow.hasChildren else {
-            return false
-        }
-
-        if !selectedRow.isExpanded {
-            setIssueExpansion(issueID: selectedRow.issueID, isExpanded: true)
-            return true
-        }
-
-        guard let firstChildID = firstVisibleChildID(of: selectedRow) else {
-            return false
-        }
-        select([firstChildID])
-        return true
-    }
-
-    @discardableResult
-    func navigateIssueOutlineLeft() -> Bool {
-        guard let selectedRow = selectedOutlineRow else {
-            return false
-        }
-
-        if selectedRow.hasChildren, selectedRow.isExpanded {
-            setIssueExpansion(issueID: selectedRow.issueID, isExpanded: false)
-            return true
-        }
-
-        guard let parentID = visibleParentID(of: selectedRow) else {
-            return false
-        }
-        select([parentID])
-        return true
     }
 
     func expandAncestorsForSelection() {

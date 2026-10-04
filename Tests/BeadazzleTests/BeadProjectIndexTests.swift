@@ -1358,6 +1358,40 @@ final class BeadProjectIndexTests: XCTestCase {
         XCTAssertTrue(flat[0].hasChildren)
     }
 
+    func testGatesKeepSharedBeadsAndGateChildrenAsDistinctRows() {
+        let index = BeadProjectIndex(
+            issues: [
+                issue("gate-a", status: "open", type: "gate"),
+                issue("gate-b", status: "open", type: "gate"),
+                issue("shared", status: "open", type: "task")
+            ],
+            dependencies: [
+                BeadDependency(issueID: "shared", dependsOnID: "gate-a", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "shared", dependsOnID: "gate-b", type: "blocks", createdAt: nil),
+                BeadDependency(issueID: "gate-b", dependsOnID: "gate-a", type: "blocks", createdAt: nil)
+            ],
+            semantics: semantics()
+        )
+        let sortOrder = BeadIssueSortOrder(sort: .title, direction: .ascending)
+
+        for mode in [IssueListMode.outline, .flat] {
+            let rows = index.issueListRows(
+                for: ["gate-a", "gate-b"], mode: mode, expandedIssueIDs: [],
+                sortOrder: sortOrder, bookmark: .gates
+            )
+            XCTAssertEqual(rows.filter { $0.issueID == "shared" }.count, 2)
+            XCTAssertEqual(rows.filter { $0.issueID == "gate-b" }.count, 2)
+            XCTAssertEqual(Set(rows.map(\.id)).count, rows.count)
+
+            let collapsed = index.issueListRows(
+                for: ["gate-a", "gate-b"], mode: mode, expandedIssueIDs: [],
+                collapsedIssueIDs: ["gate-a"], sortOrder: sortOrder, bookmark: .gates
+            )
+            XCTAssertEqual(collapsed.map(\.issueID), ["gate-a", "gate-b", "shared"])
+            XCTAssertEqual(collapsed.last?.id, rows.last?.id)
+        }
+    }
+
     func testGatesSortReadyFirstThenBestBlockedPriorityAndChildrenByPriority() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let oneHour: Int64 = 3_600_000_000_000

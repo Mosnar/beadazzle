@@ -92,41 +92,6 @@ final class BeadStoreBookmarkTests: XCTestCase {
     // MARK: - Harness
 
     private func makeLoadedStore(issuesJSONL: String) async throws -> BeadStore {
-        let projectURL = try makeProject(issuesJSONL: issuesJSONL)
-        addTeardownBlock { try? FileManager.default.removeItem(at: projectURL) }
-
-        let store = BeadStore(
-            userDefaults: makeUserDefaults(),
-            commands: CurrentDoltTestCommands()
-        )
-        store.openProject(projectURL)
-
-        let deadline = Date().addingTimeInterval(2)
-        while store.isLoading || store.issueListRows.isEmpty {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for BeadStore to load test project")
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertNil(store.lastError)
-        return store
-    }
-
-    private func makeProject(issuesJSONL: String) throws -> URL {
-        let projectURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeadazzleTests-\(UUID().uuidString)", isDirectory: true)
-        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
-        try FileManager.default.createDirectory(at: beadsURL, withIntermediateDirectories: true)
-        try issuesJSONL.write(
-            to: beadsURL.appendingPathComponent("issues.jsonl"),
-            atomically: true,
-            encoding: .utf8
-        )
-        return projectURL
-    }
-
-    private func makeUserDefaults() -> UserDefaults {
-        makeIsolatedUserDefaults()
+        try await makeLoadedBeadStore(issuesJSONL: issuesJSONL)
     }
 }

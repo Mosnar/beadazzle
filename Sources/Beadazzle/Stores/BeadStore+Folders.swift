@@ -26,7 +26,8 @@ extension BeadStore {
     var effectiveIssueListMode: IssueListMode {
         // Search results stay flat so a collapsed ancestor can never hide a matching bead.
         // The user's underlying outline mode remains untouched for when search is dismissed.
-        isGlobalSearchActive || isShowingFolderInIssueList ? .flat : issueListMode
+        if isGlobalSearchActive || isShowingFolderInIssueList { return .flat }
+        return effectiveIssueListBookmark == .gates ? .outline : issueListMode
     }
 
     var canSaveCurrentViewAsSmartBookmark: Bool {

@@ -774,7 +774,8 @@ struct BeadProjectIndex: Sendable {
                         hasChildren: false,
                         childProgress: nil,
                         isExpanded: false,
-                        isContext: true
+                        isContext: true,
+                        parentGateID: gateID
                     )
                 )
             }

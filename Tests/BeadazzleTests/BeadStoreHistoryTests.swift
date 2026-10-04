@@ -408,56 +408,12 @@ final class BeadStoreHistoryTests: XCTestCase {
     }
 
     private func makeLoadedStore() async throws -> BeadStore {
-        let projectURL = try makeProject(
+        try await makeLoadedBeadStore(
             issuesJSONL: """
             {"_type":"issue","id":"bd-parent","title":"Parent","status":"open","priority":1,"issue_type":"epic"}
             {"_type":"issue","id":"bd-child","title":"Child","status":"open","priority":2,"issue_type":"task","parent_id":"bd-parent","labels":["phase:implementation"]}
             {"_type":"issue","id":"bd-sibling","title":"Sibling","status":"open","priority":3,"issue_type":"task"}
             """
         )
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: projectURL)
-        }
-
-        let store = BeadStore(
-            userDefaults: makeUserDefaults(),
-            commands: CurrentDoltTestCommands()
-        )
-        store.openProject(projectURL)
-        try await waitForStoreToLoad(store)
-        return store
-    }
-
-    private func waitForStoreToLoad(
-        _ store: BeadStore,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = Date().addingTimeInterval(2)
-        while store.isLoading || store.issueListRows.isEmpty {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for BeadStore to load test project", file: file, line: line)
-                return
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertNil(store.lastError, file: file, line: line)
-    }
-
-    private func makeProject(issuesJSONL: String) throws -> URL {
-        let projectURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeadazzleTests-\(UUID().uuidString)", isDirectory: true)
-        let beadsURL = projectURL.appendingPathComponent(".beads", isDirectory: true)
-        try FileManager.default.createDirectory(at: beadsURL, withIntermediateDirectories: true)
-        try issuesJSONL.write(
-            to: beadsURL.appendingPathComponent("issues.jsonl"),
-            atomically: true,
-            encoding: .utf8
-        )
-        return projectURL
-    }
-
-    private func makeUserDefaults() -> UserDefaults {
-        makeIsolatedUserDefaults()
     }
 }

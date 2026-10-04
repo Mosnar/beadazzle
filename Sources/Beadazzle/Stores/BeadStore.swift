@@ -374,6 +374,8 @@ final class BeadWorkspaceStore {
     /// this to distinguish a selection-only SwiftUI update from a list reconciliation.
     @ObservationIgnored fileprivate(set) var issueListRowsRevision = 0
     fileprivate(set) var selectedIDs: Set<String> = []
+    /// Native row selection is transient; workspace history continues to store bead IDs.
+    fileprivate(set) var selectedIssueListRowIDs: Set<IssueListRow.ID> = []
     fileprivate(set) var fullPageDetailIssueID: String?
     fileprivate(set) var selectedBookmark: BeadBookmark = .ready
     fileprivate(set) var searchCoverage: BeadSearchCoverage = .currentView
@@ -407,6 +409,17 @@ final class BeadWorkspaceStore {
     @ObservationIgnored fileprivate(set) var suppressesHistoryRecording = false
     @ObservationIgnored fileprivate(set) var suppressesFilterUpdates = false
     @ObservationIgnored fileprivate(set) var searchCoverageSourceSort: BeadSavedViewSort?
+
+    fileprivate func reconcileIssueListRowSelection() {
+        let matchingRows = issueListRows.filter { selectedIDs.contains($0.issueID) }
+        var rowIDs = selectedIssueListRowIDs.intersection(matchingRows.map(\.id))
+        var remainingIssueIDs = selectedIDs.subtracting(rowIDs.map(\.issueID))
+        for row in matchingRows where remainingIssueIDs.remove(row.issueID) != nil {
+            rowIDs.insert(row.id)
+        }
+        // Keep the bead's detail open even when none of its rows are visible.
+        selectedIssueListRowIDs = rowIDs
+    }
 
     func cancelQueryWork() {
         filterTask?.cancel()
@@ -506,6 +519,7 @@ final class BeadStore {
             guard workspace.issueListRows != newValue else { return }
             workspace.issueListRowsRevision &+= 1
             workspace.issueListRows = newValue
+            workspace.reconcileIssueListRowSelection()
         }
     }
     var dependencies: [BeadDependency] { detail.dependencies }
@@ -539,7 +553,18 @@ final class BeadStore {
         set { detail.commentDrafts = newValue }
     }
     var selectedIDs: Set<String> { workspace.selectedIDs }
-    internal var _selectedIDs: Set<String> { get { workspace.selectedIDs } set { workspace.selectedIDs = newValue } }
+    internal var _selectedIDs: Set<String> {
+        get { workspace.selectedIDs }
+        set {
+            guard workspace.selectedIDs != newValue else { return }
+            workspace.selectedIDs = newValue
+            workspace.reconcileIssueListRowSelection()
+        }
+    }
+    internal var selectedIssueListRowIDs: Set<IssueListRow.ID> {
+        get { workspace.selectedIssueListRowIDs }
+        set { workspace.selectedIssueListRowIDs = newValue }
+    }
     var fullPageDetailIssueID: String? { workspace.fullPageDetailIssueID }
     internal var _fullPageDetailIssueID: String? { get { workspace.fullPageDetailIssueID } set { workspace.fullPageDetailIssueID = newValue } }
     var selectedBookmark: BeadBookmark { workspace.selectedBookmark }

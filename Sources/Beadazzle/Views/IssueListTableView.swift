@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 /// AppKit-backed issue list. SwiftUI's `List`/`Table` on macOS both drive `NSTableView`
@@ -30,8 +31,11 @@ struct IssueListTableView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let coordinator = context.coordinator
+        makeScrollView(coordinator: context.coordinator)
+    }
 
+    /// Shared with the native table test harness so tests exercise the production view.
+    func makeScrollView(coordinator: Coordinator) -> NSScrollView {
         let tableView = IssueKeyboardTableView()
         tableView.rowHeight = rowHeight
         tableView.usesAutomaticRowHeights = false
@@ -110,18 +114,20 @@ struct IssueListTableView: NSViewRepresentable {
         static let columnID = NSUserInterfaceItemIdentifier("bead")
         private static let cellID = NSUserInterfaceItemIdentifier("IssueRowCell")
         private static let rowViewID = NSUserInterfaceItemIdentifier("IssueListRowView")
+        private static let logger = Logger(subsystem: "app.beadazzle.macos", category: "IssueListTable")
 
         var parent: IssueListTableView
         fileprivate weak var tableView: IssueKeyboardTableView?
         fileprivate var dataSource: IssueListDiffableDataSource?
 
-        private var orderedIDs: [String] = []
-        private var indexByID: [String: Int] = [:]
-        private var rowByID: [String: IssueListRow] = [:]
+        private var orderedIDs: [IssueListRow.ID] = []
+        private var indexByID: [IssueListRow.ID: Int] = [:]
+        private var rowByID: [IssueListRow.ID: IssueListRow] = [:]
+        private var firstRowIDByIssueID: [String: IssueListRow.ID] = [:]
         private var readyGateGroupRange: Range<Int>?
         private var isSyncingSelection = false
         private var isHandlingContextClick = false
-        private var contextFocusedIssueID: String?
+        private var contextFocusedRowID: IssueListRow.ID?
         private(set) var isLiveScrolling = false
         private var liveScrollEndTask: Task<Void, Never>?
         var liveScrollSettleDuration = Duration.milliseconds(180)
@@ -213,28 +219,44 @@ struct IssueListTableView: NSViewRepresentable {
             if tableView?.rowHeight != updateKey.rowHeight {
                 tableView?.rowHeight = updateKey.rowHeight
             }
-            let rows = parent.rows
             let previousRowByID = rowByID
             let previousIDs = orderedIDs
 
             if rowsChanged {
                 rowReconciliationCount &+= 1
-                let ids = rows.map(\.issueID)
+                var seen = Set<IssueListRow.ID>()
+                var ids: [IssueListRow.ID] = []
+                var rows: [IssueListRow] = []
+                ids.reserveCapacity(parent.rows.count)
+                rows.reserveCapacity(parent.rows.count)
+                for row in parent.rows {
+                    let id = row.id
+                    guard seen.insert(id).inserted else { continue }
+                    ids.append(id)
+                    rows.append(row)
+                }
+                let duplicateCount = parent.rows.count - rows.count
+                if duplicateCount > 0 {
+                    Self.logger.error("Discarded \(duplicateCount) duplicate issue-list rows.")
+                }
                 orderedIDs = ids
                 indexByID = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
-                rowByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.issueID, $0) })
+                rowByID = Dictionary(uniqueKeysWithValues: zip(ids, rows))
+                firstRowIDByIssueID = Dictionary(ids.map { ($0.issueID, $0) }, uniquingKeysWith: { first, _ in first })
                 readyGateGroupRange = computeReadyGateGroupRange(rows)
-                if let contextFocusedIssueID, indexByID[contextFocusedIssueID] == nil {
-                    self.contextFocusedIssueID = nil
+                if let contextFocusedRowID, indexByID[contextFocusedRowID] == nil {
+                    self.contextFocusedRowID = nil
                 }
             }
 
             var rebuiltAllVisible = false
             if rowsChanged, force || orderedIDs != previousIDs {
-                var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
+                var snapshot = NSDiffableDataSourceSnapshot<Int, IssueListRow.ID>()
                 snapshot.appendSections([0])
                 snapshot.appendItems(orderedIDs, toSection: 0)
-                dataSource?.apply(snapshot, animatingDifferences: false)
+                withSelectionSync {
+                    dataSource?.apply(snapshot, animatingDifferences: false)
+                }
                 // A wholesale turnover (bookmark switch / sort / filter) deletes every old
                 // item and inserts every new one, so `apply` already rebuilds all visible
                 // cells fresh — the reconfigure pass below would just build them a second time.
@@ -281,7 +303,7 @@ struct IssueListTableView: NSViewRepresentable {
         /// True when the old and new row sets overlap little (bookmark/filter change) or are
         /// the same set in a different order (sort) — cases where diffing costs more than a
         /// plain reload and scroll position isn't worth preserving.
-        private func isWholesaleChange(from oldIDs: [String], to newIDs: [String]) -> Bool {
+        private func isWholesaleChange(from oldIDs: [IssueListRow.ID], to newIDs: [IssueListRow.ID]) -> Bool {
             let oldSet = Set(oldIDs)
             let newSet = Set(newIDs)
             if oldSet == newSet { return true } // pure reorder (sort)
@@ -289,7 +311,7 @@ struct IssueListTableView: NSViewRepresentable {
             return common * 2 < max(oldSet.count, newSet.count)
         }
 
-        func makeCell(for itemID: String, in table: NSTableView) -> NSView {
+        func makeCell(for itemID: IssueListRow.ID, in table: NSTableView) -> NSView {
             let cell: RowCellView
             if let reused = table.makeView(withIdentifier: Self.cellID, owner: self) as? RowCellView {
                 cell = reused
@@ -297,9 +319,9 @@ struct IssueListTableView: NSViewRepresentable {
                 cell = RowCellView()
                 cell.identifier = Self.cellID
             }
-            cell.representedIssueID = itemID
-            cell.onContextFocusChange = { [weak self] issueID in
-                self?.setContextFocusedIssueID(issueID)
+            cell.representedRowID = itemID
+            cell.onContextFocusChange = { [weak self] rowID in
+                self?.setContextFocusedRowID(rowID)
             }
             cell.onContextClickChange = { [weak self] isActive in
                 self?.setContextClickActive(isActive)
@@ -311,7 +333,7 @@ struct IssueListTableView: NSViewRepresentable {
         /// Re-pushes fresh SwiftUI content into the on-screen cells matching `shouldReconfigure`.
         /// Handles content changes (e.g. a title/status edit, an expansion toggle) that leave a
         /// row's identity in place, which a diffable snapshot alone would not refresh.
-        func reconfigureVisibleRows(where shouldReconfigure: (String) -> Bool) {
+        func reconfigureVisibleRows(where shouldReconfigure: (IssueListRow.ID) -> Bool) {
             guard let tableView else { return }
             let visible = tableView.rows(in: tableView.visibleRect)
             guard visible.length > 0 else { return }
@@ -325,7 +347,7 @@ struct IssueListTableView: NSViewRepresentable {
             }
         }
 
-        private func rowView(for itemID: String) -> IssueListHostedRow {
+        private func rowView(for itemID: IssueListRow.ID) -> IssueListHostedRow {
             guard let row = rowByID[itemID] else {
                 return .empty
             }
@@ -338,7 +360,7 @@ struct IssueListTableView: NSViewRepresentable {
                 bookmark: parent.bookmark,
                 displayOptions: parent.displayOptions,
                 blockedReason: store.blockedReasonPresentation(
-                    for: itemID,
+                    for: row.issueID,
                     bookmark: parent.bookmark,
                     now: parent.gateClock
                 ),
@@ -349,7 +371,7 @@ struct IssueListTableView: NSViewRepresentable {
                 rowHeight: parent.rowHeight,
                 openRelatedIssue: { store.openIssueFromDetail(issueID: $0) },
                 toggleExpansion: {
-                    store.toggleIssueExpansion(issueID: itemID, isExpanded: row.isExpanded)
+                    store.toggleIssueExpansion(issueID: row.issueID, isExpanded: row.isExpanded)
                 }
             )
         }
@@ -386,7 +408,7 @@ struct IssueListTableView: NSViewRepresentable {
             return groupStart..<groupEnd
         }
 
-        private func readyGateGroupPosition(for itemID: String) -> ReadyGateGroupPosition {
+        private func readyGateGroupPosition(for itemID: IssueListRow.ID) -> ReadyGateGroupPosition {
             guard let rowIndex = indexByID[itemID],
                   let readyGateGroupRange,
                   readyGateGroupRange.contains(rowIndex)
@@ -401,16 +423,28 @@ struct IssueListTableView: NSViewRepresentable {
 
         // MARK: Selection
 
+        private func withSelectionSync(_ action: () -> Void) {
+            let wasSyncing = isSyncingSelection
+            isSyncingSelection = true
+            defer { isSyncingSelection = wasSyncing }
+            action()
+        }
+
         func syncSelection(_ ids: Set<String>) {
             guard let tableView, !tableView.isHandlingPrimaryMouseInteraction else { return }
-            var target = IndexSet()
-            for id in ids {
-                if let index = indexByID[id] { target.insert(index) }
+            // The store owns row selection, including fallback when an occurrence disappears.
+            var selectedRowIDs = parent.store.selectedIssueListRowIDs.filter {
+                ids.contains($0.issueID) && indexByID[$0] != nil
             }
+            let retainedIssueIDs = Set(selectedRowIDs.map(\.issueID))
+            for issueID in ids.subtracting(retainedIssueIDs) {
+                if let rowID = firstRowIDByIssueID[issueID] { selectedRowIDs.insert(rowID) }
+            }
+            let target = IndexSet(selectedRowIDs.compactMap { indexByID[$0] })
             guard target != tableView.selectedRowIndexes else { return }
-            isSyncingSelection = true
-            tableView.selectRowIndexes(target, byExtendingSelection: false)
-            isSyncingSelection = false
+            withSelectionSync {
+                tableView.selectRowIndexes(target, byExtendingSelection: false)
+            }
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -430,12 +464,11 @@ struct IssueListTableView: NSViewRepresentable {
 
         private func commitTableSelection() {
             guard let tableView else { return }
-            let ids = Set(tableView.selectedRowIndexes.compactMap { index -> String? in
+            let selectedRowIDs = Set(tableView.selectedRowIndexes.compactMap { index -> IssueListRow.ID? in
                 index >= 0 && index < orderedIDs.count ? orderedIDs[index] : nil
             })
-            guard ids != parent.selectedIDs else { return }
-            setContextFocusedIssueID(nil)
-            parent.store.select(ids)
+            setContextFocusedRowID(nil)
+            parent.store.selectIssueListRows(selectedRowIDs)
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -459,19 +492,48 @@ struct IssueListTableView: NSViewRepresentable {
 
         func openRow(_ row: Int) {
             guard row >= 0, row < orderedIDs.count else { return }
-            let issueID = orderedIDs[row]
-            setContextFocusedIssueID(nil)
-            if parent.selectedIDs != [issueID] {
-                parent.store.select([issueID])
-            }
+            let rowID = orderedIDs[row]
+            let issueID = rowID.issueID
+            setContextFocusedRowID(nil)
+            parent.store.selectIssueListRows([rowID])
             parent.openDetail(issueID)
         }
 
         func navigateOutline(_ direction: OutlineNavigationDirection) -> Bool {
+            // Navigate from the selected occurrence, including when a bead is repeated.
+            guard parent.mode == .outline,
+                  let tableView,
+                  tableView.selectedRowIndexes.count == 1,
+                  let selectedIndex = tableView.selectedRowIndexes.first,
+                  selectedIndex < orderedIDs.count,
+                  let row = rowByID[orderedIDs[selectedIndex]] else { return false }
+
+            let targetIndex: Int
             switch direction {
-            case .left: return parent.store.navigateIssueOutlineLeft()
-            case .right: return parent.store.navigateIssueOutlineRight()
+            case .left:
+                if row.hasChildren, row.isExpanded {
+                    parent.store.setIssueExpansion(issueID: row.issueID, isExpanded: false)
+                    return true
+                }
+                guard row.depth > 0,
+                      let parentIndex = (0..<selectedIndex).last(where: {
+                          rowByID[orderedIDs[$0]]?.depth == row.depth - 1
+                      }) else { return false }
+                targetIndex = parentIndex
+            case .right:
+                guard row.hasChildren else { return false }
+                if !row.isExpanded {
+                    parent.store.setIssueExpansion(issueID: row.issueID, isExpanded: true)
+                    return true
+                }
+                let childIndex = selectedIndex + 1
+                guard childIndex < orderedIDs.count,
+                      rowByID[orderedIDs[childIndex]]?.depth == row.depth + 1 else { return false }
+                targetIndex = childIndex
             }
+            tableView.selectRowIndexes(IndexSet(integer: targetIndex), byExtendingSelection: false)
+            tableView.scrollRowToVisible(targetIndex)
+            return true
         }
 
         // MARK: Drag and drop
@@ -479,7 +541,7 @@ struct IssueListTableView: NSViewRepresentable {
         func pasteboardWriter(forRow row: Int) -> (any NSPasteboardWriting)? {
             guard row >= 0,
                   row < orderedIDs.count,
-                  let payload = parent.store.beadDragPayload(issueID: orderedIDs[row])
+                  let payload = parent.store.beadDragPayload(issueID: orderedIDs[row].issueID)
             else { return nil }
             return BeadDragPasteboardItem.make(payload: payload)
         }
@@ -533,18 +595,18 @@ struct IssueListTableView: NSViewRepresentable {
 
         func setContextFocusedRow(_ row: Int?) {
             guard let row, row >= 0, row < orderedIDs.count else {
-                setContextFocusedIssueID(nil)
+                setContextFocusedRowID(nil)
                 return
             }
-            setContextFocusedIssueID(orderedIDs[row])
+            setContextFocusedRowID(orderedIDs[row])
         }
 
-        private func setContextFocusedIssueID(_ issueID: String?) {
-            guard contextFocusedIssueID != issueID else { return }
-            let previousID = contextFocusedIssueID
-            contextFocusedIssueID = issueID
+        private func setContextFocusedRowID(_ rowID: IssueListRow.ID?) {
+            guard contextFocusedRowID != rowID else { return }
+            let previousID = contextFocusedRowID
+            contextFocusedRowID = rowID
             updateFocusPresentation(for: previousID)
-            updateFocusPresentation(for: issueID)
+            updateFocusPresentation(for: rowID)
         }
 
         private func updateVisibleFocusOutlines() {
@@ -560,9 +622,9 @@ struct IssueListTableView: NSViewRepresentable {
             }
         }
 
-        private func updateFocusPresentation(for issueID: String?) {
-            guard let issueID,
-                  let row = indexByID[issueID],
+        private func updateFocusPresentation(for rowID: IssueListRow.ID?) {
+            guard let rowID,
+                  let row = indexByID[rowID],
                   let tableView
             else { return }
             let shouldShow = shouldShowFocusOutline(forRow: row)
@@ -572,7 +634,7 @@ struct IssueListTableView: NSViewRepresentable {
                 rowView.displayIfNeeded()
             }
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? RowCellView {
-                cell.rootView = rowView(for: issueID)
+                cell.rootView = rowView(for: rowID)
                 cell.layoutSubtreeIfNeeded()
                 cell.displayIfNeeded()
             }
@@ -581,13 +643,13 @@ struct IssueListTableView: NSViewRepresentable {
         private func shouldShowFocusOutline(forRow row: Int) -> Bool {
             guard row >= 0,
                   row < orderedIDs.count,
-                  contextFocusedIssueID == orderedIDs[row]
+                  contextFocusedRowID == orderedIDs[row]
             else { return false }
             return true
         }
 
-        private func shouldShowFocusOutline(for issueID: String) -> Bool {
-            contextFocusedIssueID == issueID
+        private func shouldShowFocusOutline(for rowID: IssueListRow.ID) -> Bool {
+            contextFocusedRowID == rowID
         }
 
         private func readyGateGroupPosition(forRow row: Int) -> ReadyGateGroupPosition {
@@ -604,10 +666,10 @@ struct IssueListTableView: NSViewRepresentable {
         func contextMenu(forClickedRow row: Int) -> NSMenu? {
             guard row >= 0, row < orderedIDs.count else { return nil }
             let itemID = orderedIDs[row]
-            setContextFocusedIssueID(itemID)
+            setContextFocusedRowID(itemID)
             setContextClickActive(true)
 
-            let ids = parent.selectedIDs.contains(itemID) ? parent.selectedIDs : [itemID]
+            let ids = parent.selectedIDs.contains(itemID.issueID) ? parent.selectedIDs : [itemID.issueID]
             guard !ids.isEmpty else { return nil }
 
             let menu = NSMenu()
@@ -784,14 +846,14 @@ struct IssueListTableView: NSViewRepresentable {
                   let folderID = action.folderID
             else { return }
             parent.store.addIssueIDs(
-                orderedContextIssueIDs(action.ids),
+                parent.store.orderedIssueIDsForCurrentRows(Set(action.ids)),
                 toFolder: folderID
             )
         }
 
         @objc private func createFolderFromContextBeads(_ sender: NSMenuItem) {
             guard let action = sender.representedObject as? ContextMenuAction else { return }
-            parent.store.requestNewFolder(issueIDs: orderedContextIssueIDs(action.ids))
+            parent.store.requestNewFolder(issueIDs: parent.store.orderedIssueIDsForCurrentRows(Set(action.ids)))
         }
 
         @objc private func removeContextBeadsFromFolder(_ sender: NSMenuItem) {
@@ -819,11 +881,6 @@ struct IssueListTableView: NSViewRepresentable {
             )
         }
 
-        private func orderedContextIssueIDs(_ ids: [String]) -> [String] {
-            let idSet = Set(ids)
-            return orderedIDs.filter(idSet.contains)
-        }
-
         @objc private func setContextStatus(_ sender: NSMenuItem) {
             guard let action = sender.representedObject as? ContextMenuAction,
                   let status = action.status
@@ -847,7 +904,7 @@ struct IssueListTableView: NSViewRepresentable {
 }
 
 @MainActor
-final class IssueListDiffableDataSource: NSTableViewDiffableDataSource<Int, String> {
+final class IssueListDiffableDataSource: NSTableViewDiffableDataSource<Int, IssueListRow.ID> {
     var pasteboardWriter: ((Int) -> (any NSPasteboardWriting)?)?
     var validateDrop: ((any NSDraggingInfo, Int, NSTableView.DropOperation) -> NSDragOperation)?
     var acceptDrop: ((any NSDraggingInfo, Int, NSTableView.DropOperation) -> Bool)?
@@ -1312,7 +1369,7 @@ private struct IssueListHostedRow: View {
                 presentation: presentation,
                 row: row,
                 now: gateClock,
-                showsDisclosure: mode == .outline || bookmark == .gates,
+                showsDisclosure: mode == .outline,
                 allowsHoverPresentation: allowsHoverPresentation,
                 rowHeight: rowHeight,
                 toggleExpansion: toggleExpansion
@@ -1327,12 +1384,12 @@ private struct IssueListHostedRow: View {
 private final class RowCellView: NSView {
     private let hostingView = RowHostingView()
 
-    var representedIssueID: String? {
-        get { hostingView.representedIssueID }
-        set { hostingView.representedIssueID = newValue }
+    var representedRowID: IssueListRow.ID? {
+        get { hostingView.representedRowID }
+        set { hostingView.representedRowID = newValue }
     }
 
-    var onContextFocusChange: ((String?) -> Void)? {
+    var onContextFocusChange: ((IssueListRow.ID?) -> Void)? {
         get { hostingView.onContextFocusChange }
         set { hostingView.onContextFocusChange = newValue }
     }
@@ -1364,8 +1421,8 @@ private final class RowCellView: NSView {
 }
 
 private final class RowHostingView: NSHostingView<IssueListHostedRow> {
-    var representedIssueID: String?
-    var onContextFocusChange: ((String?) -> Void)?
+    var representedRowID: IssueListRow.ID?
+    var onContextFocusChange: ((IssueListRow.ID?) -> Void)?
     var onContextClickChange: ((Bool) -> Void)?
 
     required init(rootView: IssueListHostedRow) {
@@ -1416,9 +1473,9 @@ private final class RowHostingView: NSHostingView<IssueListHostedRow> {
     }
 
     private func focusContextTarget() {
-        guard let representedIssueID else { return }
+        guard let representedRowID else { return }
         enclosingIssueTableView?.window?.makeFirstResponder(enclosingIssueTableView)
-        onContextFocusChange?(representedIssueID)
+        onContextFocusChange?(representedRowID)
     }
 
     private func clearContextTarget() {

@@ -354,10 +354,11 @@ extension BeadStore {
     internal var selectedOutlineRow: IssueListRow? {
         guard effectiveIssueListMode == .outline,
               selectedIDs.count == 1,
-              let selectedID = selectedIDs.first else {
+              selectedIssueListRowIDs.count == 1,
+              let selectedRowID = selectedIssueListRowIDs.first else {
             return nil
         }
-        return issueListRows.first { $0.issueID == selectedID }
+        return issueListRows.first { $0.id == selectedRowID }
     }
 
     internal func setSelectedIssueChildrenExpanded(_ isExpanded: Bool) -> Bool {
@@ -375,23 +376,6 @@ extension BeadStore {
         outlineState.setExpansion(issueID: issueID, isExpanded: isExpanded)
         rebuildIssueListRows()
         syncCurrentWorkspaceSnapshotIfNeeded()
-    }
-
-    internal func firstVisibleChildID(of row: IssueListRow) -> String? {
-        guard let selectedIndex = issueListRows.firstIndex(where: { $0.issueID == row.issueID }) else {
-            return nil
-        }
-        let childDepth = row.depth + 1
-        return issueListRows.dropFirst(selectedIndex + 1).first { $0.depth == childDepth }?.issueID
-    }
-
-    internal func visibleParentID(of row: IssueListRow) -> String? {
-        guard row.depth > 0,
-              let selectedIndex = issueListRows.firstIndex(where: { $0.issueID == row.issueID }) else {
-            return nil
-        }
-        let parentDepth = row.depth - 1
-        return issueListRows[..<selectedIndex].reversed().first { $0.depth == parentDepth }?.issueID
     }
 
     internal func rebuildIssueListRows(pruneExpansion: Bool = false) {
