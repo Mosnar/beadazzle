@@ -68,9 +68,11 @@ final class BeadStoreBeadsSetupTests: XCTestCase {
     func testProjectSwitchCancelsSetupBeforeAnotherStepCanRun() async throws {
         let firstProjectURL = try makeProject(named: "first")
         let secondProjectURL = try makeProject(named: "second")
+        let (applyGate, resumeApply) = AsyncStream<Void>.makeStream()
+        defer { resumeApply.finish() }
         let service = BeadsSetupServiceStub(
             assessment: assessment(projectURL: firstProjectURL, autoPush: nil),
-            applyDelay: .milliseconds(100)
+            applyGate: applyGate
         )
         let store = BeadStore(
             userDefaults: makeUserDefaults(),
@@ -91,6 +93,7 @@ final class BeadStoreBeadsSetupTests: XCTestCase {
         try await waitUntil { await service.applyCallCount == 1 }
 
         store.openProject(secondProjectURL)
+        resumeApply.finish()
 
         do {
             _ = try await applyTask.value
@@ -320,7 +323,7 @@ final class BeadStoreBeadsSetupTests: XCTestCase {
 
 private actor BeadsSetupServiceStub: BeadsSetupServicing {
     let assessment: BeadsSetupAssessment
-    let applyDelay: Duration?
+    let applyGate: AsyncStream<Void>?
     let postApplyInspectDelay: Duration?
     private(set) var applyCallCount = 0
     private(set) var inspectCallCount = 0
@@ -328,11 +331,11 @@ private actor BeadsSetupServiceStub: BeadsSetupServicing {
 
     init(
         assessment: BeadsSetupAssessment,
-        applyDelay: Duration? = nil,
+        applyGate: AsyncStream<Void>? = nil,
         postApplyInspectDelay: Duration? = nil
     ) {
         self.assessment = assessment
-        self.applyDelay = applyDelay
+        self.applyGate = applyGate
         self.postApplyInspectDelay = postApplyInspectDelay
     }
 
@@ -357,8 +360,9 @@ private actor BeadsSetupServiceStub: BeadsSetupServicing {
     ) async throws -> BeadsSetupApplyReport {
         applyCallCount += 1
         do {
-            if let applyDelay {
-                try await Task.sleep(for: applyDelay)
+            if let applyGate {
+                // The test controls when setup can continue after switching projects.
+                for await _ in applyGate {}
             }
             try cancellationToken.checkCancellation()
             for step in plan.steps {
