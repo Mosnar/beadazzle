@@ -57,14 +57,7 @@ final class ProjectPreflightHealthTests: XCTestCase {
 
     func testStaleSnapshotWarnsWhileMissingHooksRemainOptional() {
         let fixture = PreflightFixture()
-        let freshness = ProjectSnapshotFreshness(
-            state: .possiblyStale,
-            message: "Snapshot may be stale",
-            detail: "A Beads export marker changed before the readable snapshot changed.",
-            evaluatedAt: Date(timeIntervalSinceReferenceDate: 0),
-            loadedFiles: nil,
-            observedFiles: nil
-        )
+        let freshness = fixture.freshness.possiblyStale(afterFailedRefresh: "Fixture export failed.")
         let health = fixture.health(
             hooks: BeadsHooksStatus(hooks: [
                 BeadsHooksStatus.Hook(name: "pre-commit", state: .missing, detail: "not installed")
