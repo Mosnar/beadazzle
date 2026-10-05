@@ -96,6 +96,12 @@ final class BeadProjectStore {
     @ObservationIgnored fileprivate(set) var projectHealthGeneration = 0
     @ObservationIgnored fileprivate(set) var reconcileDebounceTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var reconcileState = SnapshotReconcileState()
+    @ObservationIgnored private(set) var journalBaseline: BeadsJournalBaseline?
+    @ObservationIgnored private(set) var journalDiscoveryCache: BeadsJournalDiscoveryCache?
+    @ObservationIgnored private(set) var journalVerificationTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var journalVerificationDeadline: ContinuousClock.Instant?
+    @ObservationIgnored private var journalVerificationGeneration = 0
+    private(set) var journalRefreshInactiveReason: String?
     @ObservationIgnored fileprivate(set) var projectHealthTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var projectDoltRemotesTask: Task<Void, Never>?
     @ObservationIgnored fileprivate(set) var projectDoltRemotesGeneration = 0
@@ -136,6 +142,7 @@ final class BeadProjectStore {
     }
 
     func cancelLifecycleWork() {
+        resetJournalState()
         setupApplicationGeneration &+= 1
         setupApplicationCancellation?()
         setupApplicationCancellation = nil
@@ -178,6 +185,57 @@ final class BeadProjectStore {
     func cancelReconciliationWork() {
         reconcileDebounceTask?.cancel()
         reconcileDebounceTask = nil
+    }
+
+    func cancelJournalVerification() {
+        journalVerificationGeneration &+= 1
+        journalVerificationTask?.cancel()
+        journalVerificationTask = nil
+    }
+
+    func resetJournalVerification() {
+        cancelJournalVerification()
+        journalVerificationDeadline = nil
+        reconcileState.removeJournalVerificationRequest()
+    }
+
+    func resetJournalState() {
+        resetJournalVerification()
+        reconcileState.removeJournalConfigurationRequest()
+        journalBaseline = nil
+        journalDiscoveryCache = nil
+        journalRefreshInactiveReason = nil
+    }
+
+    func acceptJournalState(from loaded: LoadedProject, verificationDelay: Duration) {
+        journalBaseline = loaded.journalBaseline
+        // A direct snapshot reload (including sync) invalidates the projection,
+        // but can retain the discovery position. It cannot authorize a fast read.
+        journalDiscoveryCache = loaded.journalDiscoveryCache
+            ?? journalDiscoveryCache.flatMap { $0.matches(loaded.environment) ? $0 : nil }
+        journalRefreshInactiveReason = journalDiscoveryCache?.inactiveReason
+        if loaded.journalRefresh.requiresVerification {
+            if journalVerificationDeadline == nil || loaded.snapshotRefreshWarning != nil {
+                journalVerificationDeadline = .now.advanced(by: verificationDelay)
+            }
+        } else {
+            resetJournalVerification()
+        }
+    }
+
+    func startJournalVerification(_ operation: @escaping @MainActor () async -> Void) {
+        guard journalVerificationTask == nil else { return }
+        journalVerificationGeneration &+= 1
+        let generation = journalVerificationGeneration
+        journalVerificationTask = Task { @MainActor [weak self] in
+            defer {
+                // A cancelled task must not clear its replacement.
+                if self?.journalVerificationGeneration == generation {
+                    self?.journalVerificationTask = nil
+                }
+            }
+            await operation()
+        }
     }
 
     func cacheProjectConfigurationInspection(_ inspection: BeadsProjectConfigurationInspection?) {
@@ -984,6 +1042,13 @@ final class BeadStore {
             externalRefreshPreferenceDidChange()
         }
     }
+    var usesExperimentalJournalRefresh = false {
+        didSet {
+            guard oldValue != usesExperimentalJournalRefresh, !isLoadingProjectPreferences else { return }
+            persistJournalRefreshPreference()
+            journalRefreshPreferenceDidChange()
+        }
+    }
     var showsOwnerInBeadList = false {
         didSet {
             guard oldValue != showsOwnerInBeadList else { return }
@@ -1128,9 +1193,9 @@ final class BeadStore {
     @ObservationIgnored internal let commands: any BeadsCommanding
     @ObservationIgnored internal let beadsSetupService: any BeadsSetupServicing
     @ObservationIgnored internal let trackerRecoveryService: any BeadsTrackerRecovering
-    @ObservationIgnored internal var activeDoltRemoteFreshnessSceneIDs: Set<UUID> = []
-    internal var isDoltRemoteFreshnessSceneActive: Bool {
-        !activeDoltRemoteFreshnessSceneIDs.isEmpty
+    @ObservationIgnored internal var activeWorkspaceSceneIDs: Set<UUID> = []
+    internal var isWorkspaceSceneActive: Bool {
+        !activeWorkspaceSceneIDs.isEmpty
     }
     @ObservationIgnored internal let doltRemoteFreshnessCheckInterval: TimeInterval
     @ObservationIgnored internal let projectLoader: BeadProjectLoader
@@ -1235,6 +1300,7 @@ final class BeadStore {
         set { project.stateLabelOverridesByIssueID = newValue }
     }
     @ObservationIgnored internal let userDefaults: UserDefaults
+    @ObservationIgnored internal let journalVerificationDelay: Duration
 
     /// Set by `BeadWorkspaceWindowRegistry` when this store backs a workspace window.
     /// App-wide state (preferences, recent projects) lives in `UserDefaults`, so a change
@@ -1271,9 +1337,11 @@ final class BeadStore {
         trackerRecoveryService: any BeadsTrackerRecovering = BeadsTrackerRecoveryService(),
         activityHistoryRepository: BeadActivityHistoryRepository = BeadActivityHistoryRepository(),
         ownerIdentityResolver: any BeadOwnerIdentityResolving = BeadOwnerIdentityResolver(),
-        doltRemoteFreshnessCheckInterval: TimeInterval = 5 * 60
+        doltRemoteFreshnessCheckInterval: TimeInterval = 5 * 60,
+        journalVerificationDelay: Duration = .seconds(60)
     ) {
         self.userDefaults = userDefaults
+        self.journalVerificationDelay = journalVerificationDelay
         self.commands = commands
         self.beadsSetupService = beadsSetupService ?? commands
         self.trackerRecoveryService = trackerRecoveryService

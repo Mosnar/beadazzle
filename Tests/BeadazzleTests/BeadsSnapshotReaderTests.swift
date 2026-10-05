@@ -818,20 +818,6 @@ final class BeadsSnapshotReaderTests: XCTestCase {
         return exportStateURL
     }
 
-    @MainActor
-    private func waitUntil(
-        timeout: TimeInterval = 3.0,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 }
 
 private final class ExportCallRecorder: @unchecked Sendable {

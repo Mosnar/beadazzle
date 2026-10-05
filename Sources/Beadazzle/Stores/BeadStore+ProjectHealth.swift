@@ -537,7 +537,7 @@ extension BeadStore {
 
             let reloadMutationRevision = mutations.optimisticMutationRevision
             let requiresFreshExport = reloadMutationRevision != exportedMutationRevision
-            guard beginImmediateReconcile(trigger: .externalMarker) else {
+            guard beginImmediateReconcile(trigger: .remoteSync) else {
                 if let inFlightRefresh = refreshTask {
                     _ = await inFlightRefresh.value
                     continue

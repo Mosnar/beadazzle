@@ -463,9 +463,20 @@ extension BeadStore {
         // Mutations and explicit user refreshes must re-export the readable JSONL
         // snapshot first: automatic export is optional and may be throttled, so
         // recent `bd` writes may not appear immediately.
+        // The initial load has not resolved its storage mode yet. The loader
+        // rejects journal work for server modes after that first resolution.
+        let usesJournalRefresh = self.usesJournalRefresh || (reason == .initial
+            && projectEnvironment == nil && usesExperimentalJournalRefresh && automaticallyRefreshesExternalChanges)
         let forcesSnapshotExport = reason == .reconcile
             || reason == .manual
-            || (reason == .initial && mutations.requiresReadableSnapshotExport)
+            || (reason == .initial && (mutations.requiresReadableSnapshotExport || usesJournalRefresh))
+        let journalBaseline = usesJournalRefresh ? project.journalBaseline : nil
+        let journalDiscoveryCache = usesJournalRefresh ? project.journalDiscoveryCache : nil
+        let mayApplyJournal = reason == .reconcile
+            && journalBaseline?.allowsIncrementalRefresh == true
+            && reconcileState.inFlightTriggers == [.externalMarker]
+            && mutations.projection.isEmpty
+            && !mutations.requiresReadableSnapshotExport
 
         // Status/type definitions rarely change, and reading them costs two `bd`
         // subprocesses. Reuse the cache except when the user explicitly refreshes, on the
@@ -503,7 +514,11 @@ extension BeadStore {
                             cachedDefinitions: definitionsForLoad,
                             cachedDefinitionsTrackerDirectoryURL: definitionsTrackerForLoad,
                             cachedEnvironment: environmentForLoad,
-                            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing
+                            loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+                            usesJournalRefresh: usesJournalRefresh,
+                            mayApplyJournal: mayApplyJournal,
+                            journalBaseline: journalBaseline,
+                            journalDiscoveryCache: journalDiscoveryCache
                         )
                     }
                     return try await projectLoader.loadProject(
@@ -536,7 +551,14 @@ extension BeadStore {
                     self.queueRefreshAfterMutation(reason: reason)
                     return false
                 }
+                if loadedProject.journalRefresh.requiresVerification, !self.usesJournalRefresh {
+                    // The option was disabled while a read was in flight.
+                    if showsLoadingIndicator { self._isLoading = false }
+                    self.finishReconcileAfterRefreshTermination(projectURL: projectURL, refreshGeneration: refreshGeneration)
+                    return false
+                }
                 if reason == .dataSourceChanged,
+                   preparedSnapshot == nil,
                    self.currentDataSource == loadedProject.source,
                    self.mutations.projection.isEmpty {
                     let deferredMonitorRoles = self.reconcileState.complete(
@@ -545,11 +567,20 @@ extension BeadStore {
                     if showsLoadingIndicator {
                         self._isLoading = false
                     }
-                    self.markSnapshotFreshnessLoaded(
-                        projectURL: projectURL,
-                        beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
-                        source: loadedProject.source
-                    )
+                    if self.snapshotFreshness.requiresSnapshotVerification {
+                        // The file has not changed, but the displayed data can be newer.
+                        self._snapshotFreshness = self.snapshotFreshness.evaluatingCurrentFiles(
+                            projectURL: projectURL,
+                            beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
+                            source: loadedProject.source
+                        ).freshness
+                    } else {
+                        self.markSnapshotFreshnessLoaded(
+                            projectURL: projectURL,
+                            beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
+                            source: loadedProject.source
+                        )
+                    }
                     self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
                     if !deferredMonitorRoles.isEmpty {
                         self.handleDataSourceMonitorEvent(
@@ -565,7 +596,7 @@ extension BeadStore {
                     projectURL: projectURL,
                     queuesInitialExternalRefresh: reason == .initial,
                     metadataBaseline: metadataBaseline,
-                    confirmsReadableSnapshotExport: forcesSnapshotExport
+                    confirmsReadableSnapshotExport: forcesSnapshotExport && !loadedProject.journalRefresh.requiresVerification
                 )
                 self.refreshSemanticDefinitionsIfNeeded(projectURL: projectURL)
                 return true
@@ -761,6 +792,16 @@ extension BeadStore {
             beadsDirectoryURL: loadedProject.environment.beadsDirectoryURL,
             source: loadedProject.source
         )
+        switch loadedProject.journalRefresh {
+        case .projected(let files):
+            _snapshotFreshness = .loadedFromJournal(files: files)
+        case .heldAfterFailedVerification:
+            if let files = snapshotFreshness.loadedFiles {
+                _snapshotFreshness = .loadedFromJournal(files: files)
+            }
+        case .none:
+            break
+        }
         if let warning = loadedProject.snapshotRefreshWarning {
             _snapshotFreshness = snapshotFreshness.possiblyStale(afterFailedRefresh: warning)
         }
@@ -811,6 +852,7 @@ extension BeadStore {
         }
         pruneWorkspaceDraftsToCurrentIssues()
         resetWorkspaceHistory()
+        journalRefreshDidApply(loadedProject)
         if !deferredMonitorRoles.isEmpty {
             handleDataSourceMonitorEvent(
                 BeadsDataSourceMonitor.Event(roles: deferredMonitorRoles),
@@ -844,6 +886,7 @@ extension BeadStore {
     ) -> Bool {
         guard self.projectURL == projectURL,
               currentDataSource == source,
+              !snapshotFreshness.requiresSnapshotVerification,
               mutations.projection.isEmpty,
               let beadsDirectoryURL = projectEnvironment?.beadsDirectoryURL else {
             return false

@@ -539,18 +539,6 @@ final class BeadStoreTrackerMigrationTests: XCTestCase {
         makeIsolatedUserDefaults()
     }
 
-    private func waitUntil(
-        timeout: Duration = .seconds(3),
-        condition: @escaping () async -> Bool
-    ) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while clock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Timed out waiting for condition")
-    }
 }
 
 /// Reproduces an unmigrated tracker: every `bd --readonly` read fails with the schema

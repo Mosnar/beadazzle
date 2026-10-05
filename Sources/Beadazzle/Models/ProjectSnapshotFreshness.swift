@@ -115,6 +115,22 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
     var evaluatedAt: Date
     var loadedFiles: ProjectSnapshotFreshnessFiles?
     var observedFiles: ProjectSnapshotFreshnessFiles?
+    var isJournalProjection = false
+    private var unresolvedWarning: String?
+
+    var requiresSnapshotVerification: Bool {
+        isJournalProjection || unresolvedWarning != nil
+    }
+
+    static func loadedFromJournal(files: ProjectSnapshotFreshnessFiles) -> ProjectSnapshotFreshness {
+        ProjectSnapshotFreshness(
+            state: .current,
+            message: "Updated from change feed",
+            detail: "A full snapshot check is pending.",
+            evaluatedAt: Date(), loadedFiles: files, observedFiles: files,
+            isJournalProjection: true
+        )
+    }
 
     static var unknown: ProjectSnapshotFreshness {
         ProjectSnapshotFreshness(
@@ -162,59 +178,34 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
             beadsDirectoryURL: beadsDirectoryURL,
             source: source
         )
+        var copy = self
+        copy.observedFiles = observedFiles
         guard let loadedFiles else {
-            return Evaluation(
-                freshness: ProjectSnapshotFreshness(
-                    state: .refreshing,
-                    message: "Refreshing snapshot",
-                    detail: "Loaded snapshot baseline is unavailable.",
-                    evaluatedAt: Date(),
-                    loadedFiles: nil,
-                    observedFiles: observedFiles
-                ),
-                requiresReload: true
-            )
+            return Evaluation(freshness: copy.updating(
+                state: .refreshing, message: "Refreshing snapshot", detail: "Loaded snapshot baseline is unavailable."
+            ), requiresReload: true)
         }
-
         guard !observedFiles.requiresReload(comparedTo: loadedFiles) else {
-            return Evaluation(
-                freshness: ProjectSnapshotFreshness(
-                    state: .refreshing,
-                    message: "Refreshing snapshot",
-                    detail: "The active snapshot changed on disk.",
-                    evaluatedAt: Date(),
-                    loadedFiles: loadedFiles,
-                    observedFiles: observedFiles
-                ),
-                requiresReload: true
-            )
+            return Evaluation(freshness: copy.updating(
+                state: .refreshing, message: "Refreshing snapshot", detail: "The active snapshot changed on disk."
+            ), requiresReload: true)
         }
-
-        guard source.kind != .jsonl || !observedFiles.markerChanged(comparedTo: loadedFiles) else {
-            return Evaluation(
-                freshness: ProjectSnapshotFreshness(
-                    state: .possiblyStale,
-                    message: "Snapshot may be stale",
-                    detail: "A Beads export marker changed before the readable snapshot changed.",
-                    evaluatedAt: Date(),
-                    loadedFiles: loadedFiles,
-                    observedFiles: observedFiles
-                ),
-                requiresReload: false
-            )
+        // An unrelated file event is not proof that an export failure was repaired.
+        if let unresolvedWarning {
+            return Evaluation(freshness: copy.updating(
+                state: .possiblyStale, message: "Snapshot may be stale", detail: unresolvedWarning
+            ), requiresReload: false)
         }
-
-        return Evaluation(
-            freshness: ProjectSnapshotFreshness(
-                state: .current,
-                message: source.kind == .jsonl ? "Snapshot current" : "Data source current",
-                detail: nil,
-                evaluatedAt: Date(),
-                loadedFiles: loadedFiles,
-                observedFiles: observedFiles
-            ),
-            requiresReload: false
+        if source.kind == .jsonl, observedFiles.markerChanged(comparedTo: loadedFiles) {
+            return Evaluation(freshness: copy.updating(
+                state: .possiblyStale, message: "Snapshot may be stale",
+                detail: "A Beads export marker changed before the readable snapshot changed."
+            ), requiresReload: false)
+        }
+        let current = isJournalProjection ? Self.loadedFromJournal(files: observedFiles) : copy.updating(
+            state: .current, message: source.kind == .jsonl ? "Snapshot current" : "Data source current", detail: nil
         )
+        return Evaluation(freshness: current, requiresReload: false)
     }
 
     func refreshing(
@@ -222,39 +213,41 @@ struct ProjectSnapshotFreshness: Equatable, Sendable {
         beadsDirectoryURL: URL? = nil,
         source: BeadsDataSource
     ) -> ProjectSnapshotFreshness {
-        ProjectSnapshotFreshness(
-            state: .refreshing,
-            message: "Refreshing snapshot",
-            detail: nil,
-            evaluatedAt: Date(),
-            loadedFiles: loadedFiles,
-            observedFiles: ProjectSnapshotFreshnessFiles.load(
-                projectURL: projectURL,
-                beadsDirectoryURL: beadsDirectoryURL,
-                source: source
-            )
+        var copy = updating(state: .refreshing, message: "Refreshing snapshot", detail: nil)
+        copy.observedFiles = ProjectSnapshotFreshnessFiles.load(
+            projectURL: projectURL, beadsDirectoryURL: beadsDirectoryURL, source: source
         )
+        return copy
     }
 
     func failed(_ message: String) -> ProjectSnapshotFreshness {
-        ProjectSnapshotFreshness(
-            state: .unknown,
-            message: "Freshness unknown",
-            detail: message,
-            evaluatedAt: Date(),
-            loadedFiles: loadedFiles,
-            observedFiles: observedFiles
-        )
+        var copy = updating(state: .unknown, message: "Freshness unknown", detail: message)
+        copy.unresolvedWarning = message
+        return copy
     }
 
     func possiblyStale(afterFailedRefresh message: String) -> ProjectSnapshotFreshness {
-        ProjectSnapshotFreshness(
-            state: .possiblyStale,
-            message: "Snapshot may be stale",
-            detail: "Could not export the latest Beads data. \(message)",
-            evaluatedAt: Date(),
-            loadedFiles: loadedFiles,
-            observedFiles: observedFiles
-        )
+        let warning = "Could not export the latest Beads data. \(message)"
+        var copy = updating(state: .possiblyStale, message: "Snapshot may be stale", detail: warning)
+        copy.unresolvedWarning = warning
+        return copy
+    }
+
+    func stoppingJournalRefresh() -> Self {
+        guard isJournalProjection else { return self }
+        var copy = updating(state: .possiblyStale, message: "Snapshot may be stale",
+                            detail: "The change feed is off. A full snapshot refresh is still needed.")
+        copy.isJournalProjection = false
+        copy.unresolvedWarning = unresolvedWarning ?? copy.detail
+        return copy
+    }
+
+    private func updating(state: State, message: String, detail: String?) -> Self {
+        var copy = self
+        copy.state = state
+        copy.message = message
+        copy.detail = detail
+        copy.evaluatedAt = Date()
+        return copy
     }
 }

@@ -34,6 +34,9 @@ struct LoadedProject: Sendable {
     /// True only when this load actually ran the metadata commands. Cached definitions
     /// must not renew their own freshness timestamp.
     var definitionsLoadedFromCommands: Bool
+    var journalBaseline: BeadsJournalBaseline? = nil
+    var journalDiscoveryCache: BeadsJournalDiscoveryCache? = nil
+    var journalRefresh: BeadsJournalRefreshResult = .none
 }
 
 struct BeadProjectLoader: Sendable {
@@ -270,12 +273,89 @@ struct BeadProjectLoader: Sendable {
         cachedDefinitions: BeadSemanticDefinitions? = nil,
         cachedDefinitionsTrackerDirectoryURL: URL? = nil,
         cachedEnvironment: BeadsProjectEnvironment? = nil,
-        loadsDefinitionsIfMissing: Bool = true
+        loadsDefinitionsIfMissing: Bool = true,
+        usesJournalRefresh: Bool = false,
+        mayApplyJournal: Bool = false,
+        journalBaseline: BeadsJournalBaseline? = nil,
+        journalDiscoveryCache: BeadsJournalDiscoveryCache? = nil
     ) async throws -> LoadedProject {
+        let configurationChanged = cachedEnvironment.map { environment in
+            if let journalDiscoveryCache { return !journalDiscoveryCache.matches(environment) }
+            if let journalBaseline { return !journalBaseline.configurationMatches(environment) }
+            return false
+        } ?? false
         let environment = try await resolveEnvironment(
             projectURL: projectURL,
-            cachedEnvironment: cachedEnvironment
+            // A cursor belongs to a resolved tracker, not a project path. Re-check
+            // routing before using it, including worktree and contributor redirects.
+            cachedEnvironment: usesJournalRefresh && (mayApplyJournal || configurationChanged) ? nil : cachedEnvironment
         )
+        if usesJournalRefresh, mayApplyJournal,
+           let journalBaseline, journalBaseline.allowsIncrementalRefresh,
+           environment.storageMode == .embedded, journalBaseline.matches(environment) {
+            do {
+                let observedFiles = ProjectSnapshotFreshnessFiles.load(
+                    projectURL: projectURL, beadsDirectoryURL: environment.beadsDirectoryURL,
+                    source: journalBaseline.source
+                )
+                guard case .records(let records) = try await commands.readEventsJournal(
+                        projectURL: projectURL, since: max(0, journalBaseline.cursor - 1),
+                        limit: BeadsJournalPage.recordLimit
+                      ) else { throw BeadsJournalError.requiresSnapshot }
+                let advanced = try journalBaseline.applying(records)
+                guard advanced.matches(environment), observedFiles == ProjectSnapshotFreshnessFiles.load(
+                    projectURL: projectURL, beadsDirectoryURL: environment.beadsDirectoryURL,
+                    source: advanced.source
+                ) else { throw BeadsJournalError.configurationChanged }
+                var loaded = try await loadResolvedProject(
+                    projectURL: projectURL, environment: environment,
+                    staleCutoffDays: staleCutoffDays,
+                    hidesParentsWithOnlyBlockedChildrenInReady: hidesParentsWithOnlyBlockedChildrenInReady,
+                    cachedDefinitions: cachedDefinitions,
+                    cachedDefinitionsTrackerDirectoryURL: cachedDefinitionsTrackerDirectoryURL,
+                    loadsDefinitionsIfMissing: loadsDefinitionsIfMissing,
+                    preparedSnapshot: LoadedBeadsSnapshot(source: advanced.source, snapshot: advanced.snapshot)
+                )
+                loaded.journalBaseline = advanced
+                var cache = journalDiscoveryCache ?? BeadsJournalDiscoveryCache(
+                    configuration: advanced.configuration, availability: .enabled
+                )
+                cache.position = BeadsJournalPosition(
+                    cursor: advanced.cursor, anchor: advanced.anchor, configuration: advanced.configuration
+                )
+                loaded.journalDiscoveryCache = cache
+                loaded.journalRefresh = .projected(observedFiles: observedFiles)
+                return loaded
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // This is an optional optimization. Any uncertainty takes the normal
+                // export path; partial records and cursors are never installed.
+                BeadsJournalError.logFallback(error)
+            }
+        } else if usesJournalRefresh, mayApplyJournal, journalBaseline != nil {
+            BeadsJournalError.logFallback(BeadsJournalError.configurationChanged)
+        }
+        let journalPosition: BeadsJournalPosition?
+        var discoveryCache = journalDiscoveryCache
+        if usesJournalRefresh {
+            do {
+                let discovery = try await BeadsJournalPosition.discover(
+                    commands: commands, environment: environment,
+                    baseline: journalBaseline, cache: journalDiscoveryCache
+                )
+                journalPosition = discovery.position
+                discoveryCache = discovery.cache
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                BeadsJournalError.logFallback(error)
+                journalPosition = nil
+                discoveryCache = nil
+            }
+        } else {
+            journalPosition = nil
+            discoveryCache = nil
+        }
         var snapshotRefreshWarning: String?
         var preparedSnapshot: LoadedBeadsSnapshot?
         if Self.directoryExists(at: environment.beadsDirectoryURL) {
@@ -285,8 +365,18 @@ struct BeadProjectLoader: Sendable {
                     beadsDirectoryURL: environment.beadsDirectoryURL
                 )
                 preparedSnapshot = exportResult.loadedSnapshot
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 snapshotRefreshWarning = error.localizedDescription
+                // A failed verification must not roll a newer in-memory view back
+                // to the older disk snapshot that the fast path deliberately left alone.
+                if usesJournalRefresh, let journalBaseline, journalBaseline.hasProjectedChanges,
+                   journalBaseline.matches(environment) {
+                    preparedSnapshot = LoadedBeadsSnapshot(
+                        source: journalBaseline.source, snapshot: journalBaseline.snapshot
+                    )
+                }
             }
         }
         var loadedProject = try await loadResolvedProject(
@@ -300,6 +390,21 @@ struct BeadProjectLoader: Sendable {
             preparedSnapshot: preparedSnapshot
         )
         loadedProject.snapshotRefreshWarning = snapshotRefreshWarning
+        loadedProject.journalDiscoveryCache = discoveryCache
+        if let journalPosition, snapshotRefreshWarning == nil {
+            do {
+                loadedProject.journalBaseline = try await journalPosition.baseline(commands: commands, loaded: loadedProject)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                BeadsJournalError.logFallback(error)
+                loadedProject.journalBaseline = nil
+            }
+        } else if usesJournalRefresh, snapshotRefreshWarning != nil, var journalBaseline,
+                  journalBaseline.hasProjectedChanges, journalBaseline.matches(environment) {
+            journalBaseline.allowsIncrementalRefresh = false
+            loadedProject.journalBaseline = journalBaseline
+            loadedProject.journalRefresh = .heldAfterFailedVerification
+        }
         return loadedProject
     }
 

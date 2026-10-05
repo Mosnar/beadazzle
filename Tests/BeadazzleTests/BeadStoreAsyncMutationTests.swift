@@ -18,7 +18,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             2,
             "the first list should not wait for both embedded-Dolt metadata commands"
         )
-        try await waitUntilAsync { await commands.definitionLoadCallCount == 2 }
+        try await waitUntil { await commands.definitionLoadCallCount == 2 }
     }
 
     func testPersistentDefinitionsKeepNextLaunchReadableDuringBackgroundVerification() async throws {
@@ -45,7 +45,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
             2,
             "the cached list should not wait for background definition verification"
         )
-        try await waitUntilAsync { await secondCommands.definitionLoadCallCount == 2 }
+        try await waitUntil { await secondCommands.definitionLoadCallCount == 2 }
     }
 
     func testCachedDefinitionsAreCorrectedInMemoryAfterBackgroundVerification() async throws {
@@ -312,7 +312,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(calls.map(\.ids), [["bd-1"], ["bd-2"]])
 
         store.retryCurrentFailure()
-        try await waitUntilAsync {
+        try await waitUntil {
             await commands.labelUpdateCalls.count == 3
         }
         await store.waitForPendingFolderAutomation()
@@ -448,7 +448,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
                 BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
             ])
         ))
-        try await waitUntilAsync {
+        try await waitUntil {
             await commands.setStateCalls.count == 1
         }
         try await waitUntil { store.folderAutomationProgress != nil }
@@ -485,7 +485,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
                 BeadFolderPropertyAssignment(dimension: "workflow", value: "review")
             ])
         ))
-        try await waitUntilAsync {
+        try await waitUntil {
             await commands.setStateCalls.count == 1
         }
         try await waitUntil { store.folderAutomationProgress != nil }
@@ -1359,7 +1359,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         await commands.setDefinitionLoadDelay(.milliseconds(300))
 
         store.refresh()
-        try await waitUntilAsync {
+        try await waitUntil {
             await commands.definitionLoadCallCount >= definitionCallsBeforeRefresh + 2
         }
         let updateSucceeded = await store.updateMetadata(issueID: "bd-1", labels: ["new"])
@@ -1447,7 +1447,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(store.lastError?.contains("Refresh the project") == true)
         let metadataUpdateCalls = await commands.metadataUpdateCalls
         XCTAssertTrue(metadataUpdateCalls.isEmpty)
-        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeClear }
+        try await waitUntil { await commands.exportCallCount > exportsBeforeClear }
     }
 
     func testPendingLabelCandidatesReachTheBoundBeforeClearCanEnqueue() async throws {
@@ -2045,7 +2045,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let exportsBeforeRefresh = await commands.exportCallCount
         store.refresh()
-        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+        try await waitUntil { await commands.exportCallCount > exportsBeforeRefresh }
         try await waitUntil { !store.isLoading }
 
         XCTAssertTrue(store.mutations.possiblyPersistedLabels(for: "bd-1").isEmpty)
@@ -2325,7 +2325,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let succeeded = await store.bulkSet(status: "closed")
 
         XCTAssertFalse(succeeded)
-        try await waitUntilAsync { await commands.exportCallCount > exportsBefore }
+        try await waitUntil { await commands.exportCallCount > exportsBefore }
     }
 
     func testSuccessfulMutationReconcilesByReExportingSnapshot() async throws {
@@ -2342,7 +2342,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let succeeded = await store.bulkSet(status: "closed")
         XCTAssertTrue(succeeded)
 
-        try await waitUntilAsync { await commands.exportCallCount > exportsBefore }
+        try await waitUntil { await commands.exportCallCount > exportsBefore }
     }
 
     func testRapidMutationsCoalesceIntoASingleReconcile() async throws {
@@ -2361,7 +2361,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         }
 
         // Exactly one reconcile fires for the whole burst.
-        try await waitUntilAsync { await commands.exportCallCount == exportsBefore + 1 }
+        try await waitUntil { await commands.exportCallCount == exportsBefore + 1 }
         // ...and it stays at one after the debounce window has fully elapsed.
         try await Task.sleep(for: .milliseconds(900))
         let exportsAfter = await commands.exportCallCount
@@ -2385,7 +2385,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(exportsMidFlight, exportsBefore)
 
         _ = await task.value
-        try await waitUntilAsync { await commands.exportCallCount == exportsBefore + 1 }
+        try await waitUntil { await commands.exportCallCount == exportsBefore + 1 }
     }
 
     func testManualRefreshReExportsReadableSnapshot() async throws {
@@ -2398,7 +2398,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         store.refresh()
 
-        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+        try await waitUntil { await commands.exportCallCount > exportsBeforeRefresh }
     }
 
     func testManualRefreshWaitsForActiveGenericMutation() async throws {
@@ -2435,7 +2435,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         await commands.setDefinitionLoadDelay(.milliseconds(400))
 
         store.refresh()
-        try await waitUntilAsync {
+        try await waitUntil {
             await commands.definitionLoadCallCount >= definitionCallsBeforeRefresh + 2
         }
         var editedDraft = IssueDraft(issue: try XCTUnwrap(store.issue(with: "bd-1")))
@@ -2528,7 +2528,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let bulkSucceeded = await bulkTask.value
         XCTAssertFalse(bulkSucceeded)
-        try await waitUntilAsync { await commands.exportCallCount > exportsAfterReopen }
+        try await waitUntil { await commands.exportCallCount > exportsAfterReopen }
     }
 
     func testProjectSwitchDoesNotDelayNewProjectOptimisticMutation() async throws {
@@ -2578,7 +2578,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let exportsBeforeRefresh = await commands.exportCallCount
 
         store.refresh()
-        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+        try await waitUntil { await commands.exportCallCount > exportsBeforeRefresh }
 
         let oldProjectSaveSucceeded = await saveTask.value
         XCTAssertFalse(oldProjectSaveSucceeded)
@@ -2804,7 +2804,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let createTask = Task {
             await store.submitCreationDraft()
         }
-        try await waitUntilAsync { await !commands.createCalls.isEmpty }
+        try await waitUntil { await !commands.createCalls.isEmpty }
 
         XCTAssertTrue(store.isSubmittingCreationDraft)
         XCTAssertEqual(store.creationDraft, creationDraft)
@@ -3106,7 +3106,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let createTask = Task { @MainActor in
             await store.createAndRevealBead(self.draft(title: "Stale create"))
         }
-        try await waitUntilAsync { await !commands.createCalls.isEmpty }
+        try await waitUntil { await !commands.createCalls.isEmpty }
         store.openProject(secondProjectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
         store.openProject(firstProjectURL)
@@ -3116,7 +3116,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let createdIssueID = await createTask.value
         XCTAssertNil(createdIssueID)
         XCTAssertFalse(store.selectedIDs.contains("bd-created"))
-        try await waitUntilAsync { await commands.exportCallCount > exportsAfterReopen }
+        try await waitUntil { await commands.exportCallCount > exportsAfterReopen }
     }
 
     func testInlineCreateFinishingInAnotherProjectClearsPersistedDraft() async throws {
@@ -3135,7 +3135,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let createTask = Task { @MainActor in
             await store.submitCreationDraft()
         }
-        try await waitUntilAsync { await !commands.createCalls.isEmpty }
+        try await waitUntil { await !commands.createCalls.isEmpty }
         store.openProject(secondProjectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
 
@@ -3164,7 +3164,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         store.updateIssueEditDraft(editDraft, for: issue)
 
         let saveTask = Task { @MainActor in await store.save(editDraft) }
-        try await waitUntilAsync { await commands.updateCallStartCount == 1 }
+        try await waitUntil { await commands.updateCallStartCount == 1 }
         store.openProject(secondProjectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
 
@@ -3190,7 +3190,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let addTask = Task { @MainActor in
             await store.addComment(issueID: "bd-1", text: "Posted while away")
         }
-        try await waitUntilAsync { await commands.addCommentCalls.count == 1 }
+        try await waitUntil { await commands.addCommentCalls.count == 1 }
         store.openProject(secondProjectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-2") != nil }
 
@@ -3220,7 +3220,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertEqual(store.issue(with: unwrappedCreatedIssueID)?.title, "Committed create")
 
         store.refresh()
-        try await waitUntilAsync { await commands.exportCallCount > exportsAfterCreate }
+        try await waitUntil { await commands.exportCallCount > exportsAfterCreate }
         await commands.setExportDelay(nil)
     }
 
@@ -4123,7 +4123,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         await commands.setAddLabelsErrors([nil])
         store.retryCurrentFailure()
-        try await waitUntilAsync { await commands.addLabelsCalls.count == 3 }
+        try await waitUntil { await commands.addLabelsCalls.count == 3 }
 
         calls = await commands.addLabelsCalls
         XCTAssertEqual(calls.map(\.ids), [["bd-1"], ["bd-2"], ["bd-2"]])
@@ -4150,7 +4150,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
                 maximumCommandArgumentBytes: 28
             )
         }
-        try await waitUntilAsync { await commands.addLabelsCalls.count == 1 }
+        try await waitUntil { await commands.addLabelsCalls.count == 1 }
         task.cancel()
 
         let result = await task.value
@@ -4226,7 +4226,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         await commands.setSetStateErrors([nil])
         store.retryCurrentFailure()
-        try await waitUntilAsync { await commands.setStateCalls.count == 3 }
+        try await waitUntil { await commands.setStateCalls.count == 3 }
 
         calls = await commands.setStateCalls
         XCTAssertEqual(calls.map(\.issueID), ["bd-1", "bd-2", "bd-2"])
@@ -4256,7 +4256,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
                 value: "implementation"
             )
         }
-        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        try await waitUntil { await commands.setStateCalls.count == 1 }
         store.openProject(secondProjectURL)
 
         let result = await task.value
@@ -4294,7 +4294,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let secondWrite = Task { @MainActor in
             await firstStore.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
         }
-        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        try await waitUntil { await commands.setStateCalls.count == 1 }
         registry.releaseWindow(firstRequest.id)
 
         // The draining tracker is reserved: the blank-window fallback must not take it.
@@ -4324,7 +4324,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         // Exactly one export ran after the close: retirement's final snapshot. The
         // settled writes must not have scheduled reconciles on the retired store.
-        try await waitUntilAsync { await commands.exportCallCount == 1 }
+        try await waitUntil { await commands.exportCallCount == 1 }
         try? await Task.sleep(for: .milliseconds(800))
         let exportCount = await commands.exportCallCount
         XCTAssertEqual(exportCount, 1)
@@ -4360,7 +4360,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let secondWrite = Task { @MainActor in
             await firstStore.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
         }
-        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        try await waitUntil { await commands.setStateCalls.count == 1 }
         registry.releaseWindow(firstRequest.id)
 
         let aliasRequest = BeadWorkspaceWindowRequest()
@@ -4406,7 +4406,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let secondWrite = Task { @MainActor in
             await store.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
         }
-        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        try await waitUntil { await commands.setStateCalls.count == 1 }
 
         let delegate = AppDelegate()
         delegate.registry = registry
@@ -4453,7 +4453,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         registry.releaseWindow(request.id)
 
-        try await waitUntilAsync { await commands.exportCallCount == 1 }
+        try await waitUntil { await commands.exportCallCount == 1 }
         try await Task.sleep(for: .milliseconds(800))
         let exportCount = await commands.exportCallCount
         XCTAssertEqual(exportCount, 1)
@@ -4483,7 +4483,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         XCTAssertTrue(succeeded)
         registry.releaseWindow(request.id)
 
-        try await waitUntilAsync { await commands.exportCallCount == 1 }
+        try await waitUntil { await commands.exportCallCount == 1 }
         let exportDirectories = await commands.exportBeadsDirectoryURLs
         XCTAssertEqual(
             exportDirectories.map(\.standardizedFileURL.path),
@@ -4583,7 +4583,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let second = Task { @MainActor in
             await store.setState(issueID: "bd-2", dimension: "phase", value: "implementation")
         }
-        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        try await waitUntil { await commands.setStateCalls.count == 1 }
         store.prepareForWindowClose()
 
         let firstSucceeded = await first.value
@@ -4608,7 +4608,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         let addTask = Task { @MainActor in
             await store.addComment(issueID: "bd-1", text: "Post before closing")
         }
-        try await waitUntilAsync { await commands.addCommentCalls.count == 1 }
+        try await waitUntil { await commands.addCommentCalls.count == 1 }
         store.prepareForWindowClose()
 
         XCTAssertTrue(store.requiresWindowCloseMutationFinalization)
@@ -4643,7 +4643,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
                 value: "implementation"
             )
         }
-        try await waitUntilAsync { await commands.setStateCalls.count == 1 }
+        try await waitUntil { await commands.setStateCalls.count == 1 }
         task.cancel()
 
         let result = await task.value
@@ -4860,7 +4860,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let exportsBeforeRefresh = await commands.exportCallCount
         store.refresh()
-        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+        try await waitUntil { await commands.exportCallCount > exportsBeforeRefresh }
         try await waitUntil { !store.isLoading }
 
         XCTAssertEqual(
@@ -4890,7 +4890,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
 
         let exportsBeforeRefresh = await commands.exportCallCount
         store.refresh()
-        try await waitUntilAsync { await commands.exportCallCount > exportsBeforeRefresh }
+        try await waitUntil { await commands.exportCallCount > exportsBeforeRefresh }
         try await waitUntil { !store.isLoading }
 
         XCTAssertEqual(
@@ -5447,33 +5447,7 @@ final class BeadStoreAsyncMutationTests: XCTestCase {
         makeIsolatedUserDefaults()
     }
 
-    private func waitUntil(
-        timeout: TimeInterval = 3.0,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 
-    private func waitUntilAsync(
-        timeout: TimeInterval = 3.0,
-        _ condition: @escaping () async -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while await !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 }
 
 private actor AsyncTestGate {

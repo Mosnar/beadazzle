@@ -316,18 +316,6 @@ final class BeadStoreBeadsSetupTests: XCTestCase {
         makeIsolatedUserDefaults()
     }
 
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        condition: @escaping @MainActor () async -> Bool
-    ) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while clock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Timed out waiting for condition")
-    }
 }
 
 private actor BeadsSetupServiceStub: BeadsSetupServicing {

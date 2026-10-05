@@ -3,11 +3,15 @@ import Foundation
 enum SnapshotReconcileTrigger: Hashable, Sendable {
     case mutation
     case externalMarker
+    case journalVerification
+    case journalConfiguration
+    case remoteSync
 }
 
 struct SnapshotReconcileState: Equatable, Sendable {
     private(set) var pendingTriggers: Set<SnapshotReconcileTrigger> = []
     private(set) var isInFlight = false
+    private(set) var inFlightTriggers: Set<SnapshotReconcileTrigger> = []
     private(set) var deferredMonitorRoles: Set<BeadsDataSourceMonitor.Role> = []
 
     var hasPendingRequest: Bool {
@@ -22,8 +26,17 @@ struct SnapshotReconcileState: Equatable, Sendable {
         pendingTriggers.remove(.externalMarker)
     }
 
+    mutating func removeJournalVerificationRequest() {
+        pendingTriggers.remove(.journalVerification)
+    }
+
+    mutating func removeJournalConfigurationRequest() {
+        pendingTriggers.remove(.journalConfiguration)
+    }
+
     mutating func beginIfPossible(activeMutationCount: Int) -> Bool {
         guard hasPendingRequest, activeMutationCount == 0, !isInFlight else { return false }
+        inFlightTriggers = pendingTriggers
         pendingTriggers.removeAll()
         isInFlight = true
         return true
@@ -32,6 +45,7 @@ struct SnapshotReconcileState: Equatable, Sendable {
     mutating func cancelInFlightForMutation() -> Bool {
         guard isInFlight else { return false }
         isInFlight = false
+        inFlightTriggers.removeAll()
         deferredMonitorRoles.removeAll()
         return true
     }
@@ -45,12 +59,14 @@ struct SnapshotReconcileState: Equatable, Sendable {
     mutating func complete(replaysDeferredEvents: Bool) -> Set<BeadsDataSourceMonitor.Role> {
         let roles = isInFlight && replaysDeferredEvents ? deferredMonitorRoles : []
         isInFlight = false
+        inFlightTriggers.removeAll()
         deferredMonitorRoles.removeAll()
         return roles
     }
 
     mutating func terminate() {
         isInFlight = false
+        inFlightTriggers.removeAll()
         deferredMonitorRoles.removeAll()
     }
 

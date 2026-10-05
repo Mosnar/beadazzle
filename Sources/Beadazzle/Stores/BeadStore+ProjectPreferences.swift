@@ -680,6 +680,11 @@ extension BeadStore {
             key: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: url),
             defaultValue: true
         )
+        usesExperimentalJournalRefresh = Self.boolValue(
+            userDefaults,
+            key: BeadazzlePreferenceKeys.usesExperimentalJournalRefresh(projectURL: url),
+            defaultValue: false
+        )
     }
 
     internal func persistProjectVisibility() {
@@ -721,6 +726,14 @@ extension BeadStore {
         userDefaults.set(
             automaticallyRefreshesExternalChanges,
             forKey: BeadazzlePreferenceKeys.automaticallyRefreshesExternalChanges(projectURL: projectURL)
+        )
+    }
+
+    internal func persistJournalRefreshPreference() {
+        guard let projectURL else { return }
+        userDefaults.set(
+            usesExperimentalJournalRefresh,
+            forKey: BeadazzlePreferenceKeys.usesExperimentalJournalRefresh(projectURL: projectURL)
         )
     }
 

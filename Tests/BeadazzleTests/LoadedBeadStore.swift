@@ -30,19 +30,10 @@ extension XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while store.isLoading || (requiresVisibleRows && store.issueListRows.isEmpty) {
-            guard ContinuousClock.now < deadline else {
-                XCTFail("Timed out loading test project: \(store.lastError ?? "no error")", file: file, line: line)
-                throw TestStoreLoadError.timedOut
-            }
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil("loaded test project", timeout: .seconds(5), file: file, line: line) {
+            !store.isLoading && (!requiresVisibleRows || !store.issueListRows.isEmpty)
         }
         await store.waitForPendingQueryRecompute()
         XCTAssertNil(store.lastError, file: file, line: line)
     }
-}
-
-private enum TestStoreLoadError: Error {
-    case timedOut
 }

@@ -96,7 +96,7 @@ extension BeadStore {
             kind: kind,
             record: initialRecord,
             automaticallyChecks: automaticallyChecksDoltRemotes,
-            hasActiveScene: isDoltRemoteFreshnessSceneActive,
+            hasActiveScene: isWorkspaceSceneActive,
             isChecking: doltRemoteFreshness.isChecking,
             now: now,
             checkInterval: doltRemoteFreshnessCheckInterval
@@ -335,17 +335,19 @@ extension BeadStore {
         }
     }
 
-    func setDoltRemoteFreshnessSceneActive(_ isActive: Bool, sceneID: UUID) {
-        let wasActive = isDoltRemoteFreshnessSceneActive
+    func setWorkspaceSceneActive(_ isActive: Bool, sceneID: UUID) {
+        let wasActive = isWorkspaceSceneActive
         if isActive {
-            activeDoltRemoteFreshnessSceneIDs.insert(sceneID)
+            activeWorkspaceSceneIDs.insert(sceneID)
         } else {
-            activeDoltRemoteFreshnessSceneIDs.remove(sceneID)
+            activeWorkspaceSceneIDs.remove(sceneID)
         }
-        guard wasActive != isDoltRemoteFreshnessSceneActive else { return }
-        if isDoltRemoteFreshnessSceneActive {
+        guard wasActive != isWorkspaceSceneActive else { return }
+        if isWorkspaceSceneActive {
+            scheduleJournalVerificationIfNeeded()
             restartDoltRemoteFreshnessMonitoring()
         } else {
+            project.cancelJournalVerification()
             project.cancelDoltRemoteFreshnessMonitoring()
         }
     }
@@ -404,7 +406,7 @@ extension BeadStore {
         projectURL expectedProjectURL: URL
     ) -> DoltRemoteFreshnessMonitoringContext? {
         guard projectURL == expectedProjectURL,
-              isDoltRemoteFreshnessSceneActive,
+              isWorkspaceSceneActive,
               automaticallyChecksDoltRemotes,
               projectEnvironment?.storageMode == .embedded,
               let trackerIdentity = doltRemoteFreshnessTrackerIdentity,

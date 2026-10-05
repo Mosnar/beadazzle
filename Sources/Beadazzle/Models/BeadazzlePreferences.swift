@@ -53,6 +53,10 @@ enum BeadazzlePreferenceKeys {
         "AutomaticallyRefreshExternalChanges.\(projectURL.standardizedFileURL.path)"
     }
 
+    static func usesExperimentalJournalRefresh(projectURL: URL) -> String {
+        "ExperimentalJournalRefresh.\(projectURL.standardizedFileURL.path)"
+    }
+
     static func newBeadAssigneeOverrideMode(projectURL: URL) -> String {
         "NewBeads.DefaultAssignee.OverrideMode.\(projectURL.standardizedFileURL.path)"
     }
@@ -530,8 +534,17 @@ enum BeadazzleOptionInventory {
             scope: .projectConfiguration,
             persistence: "AutomaticallyRefreshExternalChanges.<project path>",
             defaultValue: "On",
-            uiLocation: "Project Settings > Storage",
+            uiLocation: "Project Settings > Sync & Backup",
             behavior: "Exports and reloads marker-only external Beads changes without polling."
+        ),
+        BeadazzleOptionInventoryEntry(
+            id: "usesExperimentalJournalRefresh",
+            title: "Use change feed (experimental)",
+            scope: .projectConfiguration,
+            persistence: "ExperimentalJournalRefresh.<project path>",
+            defaultValue: "Off",
+            uiLocation: "Project Settings > Sync & Backup",
+            behavior: "Uses an existing embedded Beads journal for field edits, with full snapshot checks. Does not enable the journal."
         ),
         BeadazzleOptionInventoryEntry(
             id: "hiddenTypes",

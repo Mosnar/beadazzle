@@ -475,20 +475,6 @@ final class BeadStoreHierarchyMutationTests: XCTestCase {
         return #"{"_type":"issue","id":"\#(id)","title":"\#(title)","status":"closed","priority":1,"issue_type":"task","updated_at":"2026-07-03T20:58:35Z","closed_at":"2026-07-03T20:58:35Z"\#(parentFragment)}"#
     }
 
-    private func waitUntil(
-        _ label: String = "condition",
-        timeout: TimeInterval = 3.0,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for \(label)")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 }
 
 private actor RecordingHierarchyBeadsCommands: BeadsCommanding {

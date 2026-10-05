@@ -927,19 +927,6 @@ final class BeadWorkspaceWindowRegistryTests: XCTestCase {
         return trackerURL
     }
 
-    private func waitUntil(
-        timeout: TimeInterval = 5.0,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
-                return
-            }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-    }
 }
 
 /// Routes every project root to one shared tracker directory, the shape `bd context`

@@ -444,13 +444,13 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         await store.waitForPendingProjectDoltRemotesLoad()
         let sceneID = UUID()
-        store.setDoltRemoteFreshnessSceneActive(true, sceneID: sceneID)
+        store.setWorkspaceSceneActive(true, sceneID: sceneID)
 
         let didSync = await store.synchronizeProjectIssues()
         XCTAssertTrue(didSync)
         await store.waitForPendingDoltRemoteFreshnessCheck()
         guard case .unchangedSinceSync = store.doltRemoteFreshness.result else {
-            store.setDoltRemoteFreshnessSceneActive(false, sceneID: sceneID)
+            store.setWorkspaceSceneActive(false, sceneID: sceneID)
             return XCTFail("Sync should establish the periodic check checkpoint")
         }
 
@@ -458,7 +458,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         try await waitUntil(timeout: 1) {
             store.doltRemoteFreshness.result.hasRemoteChanges
         }
-        store.setDoltRemoteFreshnessSceneActive(false, sceneID: sceneID)
+        store.setWorkspaceSceneActive(false, sceneID: sceneID)
 
         let periodicCallCount = await commands.doltRemoteGenerationCallCount
         XCTAssertGreaterThanOrEqual(periodicCallCount, 2)
@@ -474,21 +474,21 @@ final class BeadStoreProjectHealthTests: XCTestCase {
 
         let firstSceneID = UUID()
         let secondSceneID = UUID()
-        store.setDoltRemoteFreshnessSceneActive(true, sceneID: firstSceneID)
-        store.setDoltRemoteFreshnessSceneActive(true, sceneID: secondSceneID)
+        store.setWorkspaceSceneActive(true, sceneID: firstSceneID)
+        store.setWorkspaceSceneActive(true, sceneID: secondSceneID)
         let didSync = await store.synchronizeProjectIssues()
         XCTAssertTrue(didSync)
         await store.waitForPendingDoltRemoteFreshnessCheck()
         XCTAssertNotNil(store.doltRemoteFreshnessMonitorTask)
 
-        store.setDoltRemoteFreshnessSceneActive(false, sceneID: firstSceneID)
+        store.setWorkspaceSceneActive(false, sceneID: firstSceneID)
 
-        XCTAssertTrue(store.isDoltRemoteFreshnessSceneActive)
+        XCTAssertTrue(store.isWorkspaceSceneActive)
         XCTAssertNotNil(store.doltRemoteFreshnessMonitorTask)
 
-        store.setDoltRemoteFreshnessSceneActive(false, sceneID: secondSceneID)
+        store.setWorkspaceSceneActive(false, sceneID: secondSceneID)
 
-        XCTAssertFalse(store.isDoltRemoteFreshnessSceneActive)
+        XCTAssertFalse(store.isWorkspaceSceneActive)
         XCTAssertNil(store.doltRemoteFreshnessMonitorTask)
     }
 
@@ -510,7 +510,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
         await store.waitForPendingProjectDoltRemotesLoad()
         let sceneID = UUID()
-        store.setDoltRemoteFreshnessSceneActive(true, sceneID: sceneID)
+        store.setWorkspaceSceneActive(true, sceneID: sceneID)
         let didSync = await store.synchronizeProjectIssues()
         XCTAssertTrue(didSync)
         await store.waitForPendingDoltRemoteFreshnessCheck()
@@ -546,7 +546,7 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         let finalCallCount = await commands.doltRemoteGenerationCallCount
         XCTAssertEqual(finalCallCount, callCountAfterRemoteChange)
-        store.setDoltRemoteFreshnessSceneActive(false, sceneID: sceneID)
+        store.setWorkspaceSceneActive(false, sceneID: sceneID)
     }
 
     func testRemoteCheckpointPersistsAcrossWorktreesForSameTracker() async throws {
@@ -1489,19 +1489,6 @@ final class BeadStoreProjectHealthTests: XCTestCase {
         return projectURL
     }
 
-    private func waitUntil(
-        timeout: TimeInterval = 3.0,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 }
 
 private actor ProjectHealthTestCommands: BeadsCommanding {

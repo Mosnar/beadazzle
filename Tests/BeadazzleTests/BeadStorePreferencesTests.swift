@@ -653,6 +653,8 @@ final class BeadStorePreferencesTests: XCTestCase {
         let store = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-1") != nil }
+        await store.semanticDefinitionsRefreshTask?.value
+        await store.waitForPendingQueryRecompute()
 
         store.setStatus("qa", isHidden: true)
         store.setStatus("open", isHidden: true)
@@ -672,6 +674,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let reloadedStore = BeadStore(userDefaults: defaults, commands: PreferenceTestCommands())
         reloadedStore.openProject(projectURL)
         try await waitUntil { !reloadedStore.isLoading && reloadedStore.issue(with: "bd-1") != nil }
+        await reloadedStore.semanticDefinitionsRefreshTask?.value
 
         XCTAssertTrue(reloadedStore.isStatusHidden("qa"))
         XCTAssertTrue(reloadedStore.isTypeHidden("incident"))
@@ -693,6 +696,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         let store = BeadStore(userDefaults: makeUserDefaults(), commands: PreferenceTestCommands())
         store.openProject(projectURL)
         try await waitUntil { !store.isLoading && store.issue(with: "bd-qa") != nil }
+        await store.semanticDefinitionsRefreshTask?.value
 
         XCTAssertEqual(store.statusChangeOptions(excluding: "open"), ["qa"])
         XCTAssertEqual(store.statusChangeOptions(excluding: "qa"), ["open"])
@@ -910,56 +914,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         return projectURL
     }
 
-    func testOptionInventoryDocumentsPersistentOptionOwnership() {
-        let entries = BeadazzleOptionInventory.entries
-        let expectedIDs: Set<String> = [
-            "bdCLIPath",
-            "projectOpenDestination",
-            "beadListDensity",
-            "automaticallyChecksDoltRemotes",
-            "automaticallyChecksForUpdates",
-            "receivesBetaUpdates",
-            "defaultNewBeadAssignee",
-            "issueTextSectionVisibilityMode",
-            "issueTextSectionSuggestions",
-            "issueTextSectionOrder",
-            "showsBackNavigationButton",
-            "showsForwardNavigationButton",
-            "showsAllChildrenInOutline",
-            "opensSplitViewOnSingleClick",
-            "showsBeadIDUnderTitle",
-            "showsCopyBeadIDButtonInBreadcrumbs",
-            "showsProjectNameInBreadcrumbs",
-            "showsClosedBeadsInSidebar",
-            "showsGatesInSidebar",
-            "showsZeroCountSidebarSections",
-            "projectNewBeadAssigneeOverride",
-            "projectIssueTextSectionOverrides",
-            "create.require-description",
-            "validation.on-create",
-            "staleCutoffDays",
-            "hidesParentsWithOnlyBlockedChildrenInReady",
-            "automaticallyRefreshesExternalChanges",
-            "hiddenTypes",
-            "hiddenStatuses",
-            "showsOwnerInBeadList",
-            "showsAssigneeInBeadList",
-            "showsDueDateInBeadList",
-            "showsCommentsInBeadList",
-            "pinnedStateDimensions",
-            "stateDimensionDisplayNames",
-            "stateValueDisplayNames",
-            "archivedStateValues",
-            "savedViews",
-            "workspaceState"
-        ]
-
-        XCTAssertEqual(Set(entries.map(\.id)), expectedIDs)
-        XCTAssertEqual(entries.map(\.id).count, Set(entries.map(\.id)).count)
-        XCTAssertTrue(entries.allSatisfy { !$0.persistence.isEmpty })
-        XCTAssertTrue(entries.allSatisfy { !$0.defaultValue.isEmpty })
-        XCTAssertTrue(entries.allSatisfy { !$0.uiLocation.isEmpty })
-        XCTAssertTrue(entries.allSatisfy { !$0.behavior.isEmpty })
+    func testAppBooleanPreferencesHaveDistinctPersistenceKeys() {
         XCTAssertEqual(
             BeadazzleAppBoolPreferences.all.count,
             Set(BeadazzleAppBoolPreferences.all.map(\.id)).count
@@ -967,46 +922,6 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(
             BeadazzleAppBoolPreferences.all.count,
             Set(BeadazzleAppBoolPreferences.all.map(\.key)).count
-        )
-        let displayPreferences = BeadazzleAppBoolPreferences.all.filter {
-            $0.key.hasPrefix("Display.")
-        }
-        let booleanDisplayEntries = entries.filter {
-            displayPreferences.map(\.id).contains($0.id)
-        }
-        XCTAssertEqual(Set(displayPreferences.map(\.id)), Set(booleanDisplayEntries.map(\.id)))
-        XCTAssertEqual(Set(displayPreferences.map(\.key)), Set(booleanDisplayEntries.map(\.persistence)))
-        XCTAssertEqual(
-            Dictionary(
-                uniqueKeysWithValues: displayPreferences.map {
-                    ($0.id, $0.defaultValueDescription)
-                }
-            ),
-            Dictionary(
-                uniqueKeysWithValues: booleanDisplayEntries.map { ($0.id, $0.defaultValue) }
-            )
-        )
-        XCTAssertEqual(
-            entries.first { $0.id == "beadListDensity" }?.defaultValue,
-            BeadListDensity.default.title
-        )
-        XCTAssertTrue(
-            entries.first { $0.id == "defaultNewBeadAssignee" }?
-                .persistence.contains(BeadazzlePreferenceKeys.defaultNewBeadAssigneeValue) == true
-        )
-        XCTAssertTrue(
-            entries.first { $0.id == "projectNewBeadAssigneeOverride" }?
-                .persistence.contains("OverrideValue.<project path>") == true
-        )
-        XCTAssertEqual(
-            Set(entries.filter { $0.scope == .projectViewOption }.map(\.uiLocation)),
-            Set([
-                "Issue List > View Options",
-                "Sidebar > Bookmarks",
-                "Project Settings > Storage",
-                "Project Settings > Properties",
-                "Project Settings > Content"
-            ])
         )
     }
 
@@ -1565,19 +1480,6 @@ final class BeadStorePreferencesTests: XCTestCase {
         makeIsolatedUserDefaults()
     }
 
-    private func waitUntil(
-        timeout: TimeInterval = 3.0,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("Timed out waiting for condition")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 }
 
 private struct PreferenceOwnerIdentityResolver: BeadOwnerIdentityResolving {

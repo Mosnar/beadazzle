@@ -114,6 +114,8 @@ private final class LockedProcessData: @unchecked Sendable {
 }
 
 protocol BeadsCommanding: BeadsSetupServicing, Sendable {
+    func isEventsJournalEnabled(projectURL: URL) async throws -> Bool
+    func readEventsJournal(projectURL: URL, since: Int64, limit: Int) async throws -> BeadsJournalPage
     func exportReadableSnapshot(projectURL: URL) async throws
     func exportReadableSnapshot(projectURL: URL, beadsDirectoryURL: URL) async throws
     func exportReadableSnapshotWithResult(
@@ -192,6 +194,11 @@ protocol BeadsCommanding: BeadsSetupServicing, Sendable {
 }
 
 extension BeadsCommanding {
+    func isEventsJournalEnabled(projectURL _: URL) async throws -> Bool { false }
+
+    func readEventsJournal(projectURL _: URL, since _: Int64, limit _: Int) async throws -> BeadsJournalPage {
+        throw BeadsJournalError.unavailable
+    }
     func migrateTrackerSchema(projectURL _: URL, allowsRemoteMigration _: Bool) async throws {
         throw BeadError.commandFailed(
             command: "bd migrate",
@@ -1158,6 +1165,28 @@ struct BeadsCommandService {
                 arguments: ["config", "set", "validation.on-create", settings.mode.rawValue]
             )
         }
+    }
+
+    func isEventsJournalEnabled(projectURL: URL) async throws -> Bool {
+        ProjectStorageConfig.bool(from: try await configValue(projectURL: projectURL, key: "events-journal")) == true
+    }
+
+    func readEventsJournal(projectURL: URL, since: Int64, limit: Int) async throws -> BeadsJournalPage {
+        guard since >= 0, (1...BeadsJournalPage.recordLimit).contains(limit) else {
+            throw BeadsJournalError.unavailable
+        }
+        let executable = executable()
+        let result = try await CancellableProcessRunner.run(
+            executableURL: executable.url,
+            arguments: executable.prefix + ["--readonly", "events", "tail", "--since", String(since), "--limit", String(limit), "--json"],
+            currentDirectoryURL: projectURL,
+            environment: BeadsCLI.subprocessEnvironment(executableURL: executable.url),
+            outputLimit: BeadsJournalPage.outputLimit,
+            timeout: min(readOnlyCommandTimeout, BeadsJournalPage.commandTimeout)
+        )
+        try Task.checkCancellation()
+        guard !result.outputWasTruncated else { throw BeadsJournalError.unavailable }
+        return try BeadsJournalPage.decode(result.output, exitStatus: result.terminationStatus)
     }
 
     func loadProjectContext(projectURL: URL) async throws -> BeadsProjectContext {

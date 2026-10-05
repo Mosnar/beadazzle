@@ -13,6 +13,10 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Added
+
+- Embedded projects can opt in to faster refreshes for external issue-field edits through an existing Beads events journal, in Project Settings > Sync & Backup. Full refreshes remain in use for other changes and verification. Turning the option off queues one full refresh when automatic refresh is on. The option is off by default and does not enable journaling in Beads. See [#7](https://github.com/Mosnar/beadazzle/issues/7). Thanks to [@csells](https://github.com/csells) for the proposal.
+
 ### Fixed
 
 - Opening Gates no longer crashes when two gates block the same bead. The bead remains visible under each gate, with selection and keyboard navigation kept on the selected row. Closes [#8](https://github.com/Mosnar/beadazzle/issues/8). Thanks to [@mrschober](https://github.com/mrschober) for the report and diagnosis.

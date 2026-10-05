@@ -149,7 +149,7 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let isActive = phase == .active
-            store.setDoltRemoteFreshnessSceneActive(
+            store.setWorkspaceSceneActive(
                 isActive,
                 sceneID: doltRemoteFreshnessSceneID
             )
@@ -157,7 +157,7 @@ struct ContentView: View {
             store.refreshServerProjectOnActivation()
         }
         .onDisappear {
-            store.setDoltRemoteFreshnessSceneActive(
+            store.setWorkspaceSceneActive(
                 false,
                 sceneID: doltRemoteFreshnessSceneID
             )

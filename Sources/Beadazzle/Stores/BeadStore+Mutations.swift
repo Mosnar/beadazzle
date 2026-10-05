@@ -228,6 +228,8 @@ extension BeadStore {
 
     internal func externalRefreshPreferenceDidChange() {
         guard automaticallyRefreshesExternalChanges else {
+            project.resetJournalState()
+            _snapshotFreshness = snapshotFreshness.stoppingJournalRefresh()
             reconcileState.removeExternalMarkerRequest()
             if !reconcileState.hasPendingRequest {
                 reconcileDebounceTask?.cancel()
@@ -235,6 +237,7 @@ extension BeadStore {
             }
             return
         }
+        scheduleJournalVerificationIfNeeded()
         guard currentDataSource?.kind == .jsonl,
               snapshotFreshness.state == .possiblyStale else { return }
         requestReconcile(trigger: .externalMarker)

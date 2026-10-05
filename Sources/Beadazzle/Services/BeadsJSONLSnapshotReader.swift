@@ -57,7 +57,7 @@ struct BeadsJSONLSnapshotReader {
         }
     }
 
-    private func loadIssue(
+    func loadIssue(
         record: [String: Any],
         id: String,
         dependencyRecords: [[String: Any]]

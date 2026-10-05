@@ -53,10 +53,22 @@ private struct ProjectExternalRefreshSection: View {
                 "Automatically refresh external changes",
                 isOn: $store.automaticallyRefreshesExternalChanges
             )
+            if project.projectEnvironment?.storageMode == .embedded {
+                Toggle("Use change feed (experimental)", isOn: $store.usesExperimentalJournalRefresh)
+                    .disabled(!store.automaticallyRefreshesExternalChanges)
+            }
         } header: {
             Text("External Changes")
         } footer: {
-            Text(refreshExplanation)
+            VStack(alignment: .leading) {
+                Text(refreshExplanation)
+                if project.projectEnvironment?.storageMode == .embedded {
+                    Text("The change feed requires an enabled Beads 1.3 events journal. It speeds up issue-field edits and keeps full snapshot checks. This option does not change Beads settings.")
+                    if store.usesExperimentalJournalRefresh, let reason = project.journalRefreshInactiveReason {
+                        Text(reason)
+                    }
+                }
+            }
         }
     }
 

@@ -229,6 +229,49 @@ If Dolt reports a real merge conflict, use Beads diagnostics such as
 `bd doctor --fix`. Do not edit Dolt internals or run raw `dolt` commands against
 a database managed by a running Beads server.
 
+### Optional journal refresh
+
+Project Settings > Sync & Backup has **Use change feed (experimental)**. It is
+off by default and is private to this Mac and project. It does not enable or
+change Beads' `events-journal` setting. It requires an already enabled journal
+in an embedded Beads 1.3-or-later project. All writers must record their changes.
+
+File notifications trigger bounded `bd events tail` reads. There is no
+continuous listener or polling while data is current. This first version accelerates field
+edits to existing exported issues. Creates, deletes, comments, dependencies,
+type or owner changes, unknown records, and uncertain reads use a full export.
+The cursor remains in memory and is installed only with its accepted snapshot.
+Opening a project, app writes, manual refresh, and sync still use full exports.
+
+After an accelerated update, an active window performs a full check within
+about one minute, after pending app writes settle. Inactive windows defer this
+check until activation. This catches changes that writers did not journal.
+The UI identifies feed updates as awaiting a full snapshot check. A failed
+check keeps the newer in-memory data and reports stale data instead of rolling
+back to the older file. Only checks that retain data from an actual journal
+update retry about once per minute while the window is active. An ordinary
+export failure before any journal update shows a stale warning without a timer.
+Turning the change feed off cancels its checks and queues one normal full
+refresh when automatic refresh is on. This one-off refresh waits for local
+writes and does not retry on a timer. With automatic refresh off, displayed
+data stays in place until the next manual refresh.
+
+The current CLI has no head-only command. Initial discovery reads at most
+2,048 retained records and captures at most 8 MiB per command. Later discovery
+starts at the saved position, so total history can exceed this limit. The
+enabled check is cached while configuration is unchanged. Routine full refreshes reuse
+the resolved tracker unless its configuration changed; fast reads still check
+the tracker with `bd context`.
+
+If a discovery read reaches the limit, Beadazzle remembers that result instead
+of reading the same history on every refresh. Settings distinguishes oversized
+initial history from a large backlog after the saved position. Reopen the
+project, change its configuration, or turn the option off
+and on to retry. A busy export or an uncertain checkpoint also uses the normal
+snapshot path. Debug logs in the `JournalRefresh` category record fallback
+reasons without issue contents or paths. Pruned journals can report their head
+directly. Server/shared-server projects and HTTP are not part of this path.
+
 ## Lightweight Remote-Change Checks
 
 The check is an indicator, not synchronization. It compares the Git-backed
