@@ -13,6 +13,8 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-04
+
 ### Added
 
 - Embedded projects can opt in to faster refreshes for external issue-field edits through an existing Beads events journal, in Project Settings > Sync & Backup. Full refreshes remain in use for other changes and verification. Turning the option off queues one full refresh when automatic refresh is on. The option is off by default and does not enable journaling in Beads. See [#7](https://github.com/Mosnar/beadazzle/issues/7). Thanks to [@csells](https://github.com/csells) for the proposal.
@@ -354,7 +356,8 @@ for users, not for the commit log.
   projects; all mutations route through the `bd` CLI.
 - Signed and notarized DMG distribution.
 
-[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/Mosnar/beadazzle/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/Mosnar/beadazzle/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Mosnar/beadazzle/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/Mosnar/beadazzle/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/Mosnar/beadazzle/compare/v1.5.0...v1.6.0
