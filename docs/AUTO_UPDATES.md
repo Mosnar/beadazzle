@@ -29,7 +29,7 @@ baked into the app; the **private** key signs the appcast in CI.
 
 ```bash
 # Download the Sparkle tools (match SPARKLE_TOOLS_VERSION in the workflow / Package.swift)
-curl -fsSL https://github.com/sparkle-project/Sparkle/releases/download/2.9.4/Sparkle-2.9.4.tar.xz | tar -xJ bin/
+curl -fsSL https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz | tar -xJ bin/
 ./bin/generate_keys                     # creates the private key in your login Keychain, prints the PUBLIC key
 ./bin/generate_keys -x private-key.txt  # exports the base64 PRIVATE key to a file
 ```

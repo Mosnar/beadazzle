@@ -68,7 +68,7 @@ jobs:
           echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
 
       - name: Check out release ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ steps.release.outputs.target_ref }}
@@ -106,7 +106,7 @@ jobs:
       SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
       # Keep in sync with the Sparkle version pinned in Package.swift so the
       # generate_appcast tool matches the embedded framework.
-      SPARKLE_TOOLS_VERSION: "2.9.4"
+      SPARKLE_TOOLS_VERSION: "2.10.0"
     steps:
       - name: Validate release secrets
         shell: bash
@@ -129,7 +129,7 @@ jobs:
           done
 
       - name: Check out release ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.validate.outputs.target_ref }}
@@ -302,7 +302,7 @@ jobs:
           echo "site_dir=$site_dir" >> "$GITHUB_OUTPUT"
 
       - name: Upload appcast as Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: ${{ steps.appcast.outputs.site_dir }}
 
@@ -323,4 +323,4 @@ jobs:
     steps:
       - name: Deploy appcast to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5.0.1

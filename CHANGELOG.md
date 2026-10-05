@@ -13,6 +13,16 @@ for users, not for the commit log.
 
 ## [Unreleased]
 
+### Changed
+
+- Large Markdown fields open faster, and long lists respond faster while you edit them.
+
+### Fixed
+
+- Automatic updates include the latest Sparkle security fixes and installation fixes for macOS 27.
+- Nested lists keep their levels when copied and pasted, and Markdown tables follow window size changes more reliably.
+- Switching between beads no longer leaves stale code-block state that can cause a crash or show a copy button over plain text.
+
 ## [1.8.0] - 2026-10-04
 
 ### Added

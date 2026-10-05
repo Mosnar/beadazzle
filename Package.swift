@@ -12,9 +12,9 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/Mosnar/swift-markdown-engine",
-            revision: "049233f2007842d118ea95474b065ce2af66be29"
+            revision: "f239d2e4556959836e64e9cebe23154850ece31a"
         ),
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4")
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
     ],
     targets: [
         .executableTarget(
