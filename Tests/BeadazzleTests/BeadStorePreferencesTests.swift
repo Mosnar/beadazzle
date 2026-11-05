@@ -29,7 +29,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertEqual(store.issueTextSectionSuggestions, .beadsDefault)
         XCTAssertFalse(store.showsBackNavigationButton)
         XCTAssertFalse(store.showsForwardNavigationButton)
-        XCTAssertTrue(store.showsAllChildrenInOutline)
+        XCTAssertFalse(store.showsAllChildrenInOutline)
         XCTAssertTrue(store.opensSplitViewOnSingleClick)
         XCTAssertTrue(store.showsBeadIDUnderTitle)
         XCTAssertTrue(store.showsCopyBeadIDButtonInBreadcrumbs)
@@ -53,7 +53,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         store.automaticallyChecksDoltRemotes = false
         store.showsBackNavigationButton = true
         store.showsForwardNavigationButton = true
-        store.showsAllChildrenInOutline = false
+        store.showsAllChildrenInOutline = true
         store.opensSplitViewOnSingleClick = false
         store.showsBeadIDUnderTitle = false
         store.showsCopyBeadIDButtonInBreadcrumbs = false
@@ -80,7 +80,7 @@ final class BeadStorePreferencesTests: XCTestCase {
         XCTAssertFalse(reloadedStore.automaticallyChecksDoltRemotes)
         XCTAssertTrue(reloadedStore.showsBackNavigationButton)
         XCTAssertTrue(reloadedStore.showsForwardNavigationButton)
-        XCTAssertFalse(reloadedStore.showsAllChildrenInOutline)
+        XCTAssertTrue(reloadedStore.showsAllChildrenInOutline)
         XCTAssertFalse(reloadedStore.opensSplitViewOnSingleClick)
         XCTAssertFalse(reloadedStore.showsBeadIDUnderTitle)
         XCTAssertFalse(reloadedStore.showsCopyBeadIDButtonInBreadcrumbs)

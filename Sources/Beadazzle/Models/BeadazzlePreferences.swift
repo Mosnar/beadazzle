@@ -159,7 +159,7 @@ enum BeadazzleAppBoolPreferences {
     static let showsAllChildrenInOutline = BeadazzleBoolPreferenceDescriptor(
         id: "showsAllChildrenInOutline",
         key: "Display.BeadList.ShowsAllChildrenInOutline",
-        defaultValue: true
+        defaultValue: false
     )
     static let opensSplitViewOnSingleClick = BeadazzleBoolPreferenceDescriptor(
         id: "opensSplitViewOnSingleClick",

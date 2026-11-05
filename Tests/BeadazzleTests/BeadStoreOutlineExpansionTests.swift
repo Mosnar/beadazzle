@@ -62,6 +62,7 @@ final class BeadStoreOutlineExpansionTests: XCTestCase {
             {"_type":"issue","id":"bd-closed-child","title":"Closed child","status":"closed","priority":2,"issue_type":"task","parent_id":"bd-parent","closed_at":"2026-07-01T00:00:00Z"}
             """
         )
+        store.showsAllChildrenInOutline = true
 
         store.applyBookmark(.open)
         await store.waitForPendingQueryRecompute()

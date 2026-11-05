@@ -15,6 +15,7 @@ for users, not for the commit log.
 
 ### Changed
 
+- Filters and search now narrow the outline the same way they narrow the flat list. Child beads that don't match, such as closed tasks under an open epic, stay hidden unless you turn on **Show all children** in the bead list's View menu or in Settings > Display. Parents of matching beads still appear for context. If you already changed this setting, your choice is kept.
 - Large Markdown fields open faster, and long lists respond faster while you edit them.
 
 ### Fixed
